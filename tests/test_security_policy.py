@@ -271,8 +271,9 @@ def test_plugin_param_file_io_uses_path_jail() -> None:
     ]
     for name in handlers:
         # Extract method body roughly until next def at same indent class level
+        # Allow multi-line signatures: def foo(\n        self, ...
         m = re.search(
-            rf"(    def {name}\(self.*?)(?=\n    def |\nclass |\Z)",
+            rf"(    def {name}\(\s*self.*?)(?=\n    def |\nclass |\Z)",
             text,
             re.DOTALL,
         )
@@ -282,13 +283,14 @@ def test_plugin_param_file_io_uses_path_jail() -> None:
             f"{name} must jail user paths via _jail_path / resolve_under_root"
         )
 
-    # _export_to_path should document that callers jail first OR jail itself
+    # _export_to_path should jail itself (defense-in-depth) even if callers jail first
     export_m = re.search(
-        r"(    def _export_to_path\(self.*?)(?=\n    def |\nclass |\Z)",
+        r"(    def _export_to_path\(\s*self.*?)(?=\n    def |\nclass |\Z)",
         text,
         re.DOTALL,
     )
     assert export_m is not None
+    assert "_jail_path" in export_m.group(1), "_export_to_path must re-check path jail"
     # Prefer callers jail at entry; _export_to_path may also re-check
     # At least one of: jail inside or all callers jail (checked above for public entries)
 
