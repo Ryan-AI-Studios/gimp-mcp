@@ -2976,17 +2976,22 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 ug_ok = image.undo_group_start()
                 self._gimp_bool_or_fail(ug_ok, "image.undo_group_start")
+                body_err: BaseException | None = None
                 try:
                     if applied and ops:
                         ops_started = True
                         self._apply_orientation_ops(image, ops)
                     meta_ok, meta_err = self._set_orientation_tags_to_1(image)
+                except BaseException as e:
+                    body_err = e
                 finally:
-                    try:
-                        ug_end = image.undo_group_end()
-                        self._gimp_bool_or_fail(ug_end, "image.undo_group_end")
-                    except RuntimeError as ug_err:
-                        print(f"[MCP] normalize undo_group_end: {ug_err}")
+                    # Always end the group; explicit False is a hard failure
+                    # (do not swallow — fail closed before success/gen bump).
+                    ug_end = image.undo_group_end()
+                    self._gimp_bool_or_fail(ug_end, "image.undo_group_end")
+
+                if body_err is not None:
+                    raise body_err
 
                 if not meta_ok:
                     if ops_started:
@@ -3010,7 +3015,9 @@ class MCPPlugin(Gimp.PlugIn):
                 return {
                     "status": "success",
                     "results": {
-                        "original_orientation": original_orientation,
+                        "original_orientation": _coords.orientation_for_manifest(
+                            original_orientation
+                        ),
                         "mode_applied": mode,
                         "applied": bool(applied),
                         "pixel_orientation_normalized": True,
