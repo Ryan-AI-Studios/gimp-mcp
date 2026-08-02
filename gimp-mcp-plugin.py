@@ -2948,7 +2948,9 @@ class MCPPlugin(Gimp.PlugIn):
                     applied = bool(ops)
                 # tag null/1: no-op success, applied=false, still normalize tags
 
-            # Atomic group: pixel ops (if any) + metadata write (H4, BS5)
+            # Atomic group: pixel ops (if any) + metadata write (H4, BS5).
+            # On metadata failure after pixel ops, call image.undo() so the
+            # closed group does not leave the canvas rotated with a stale tag.
             image.undo_group_start()
             meta_ok = False
             meta_err = None
@@ -2960,7 +2962,12 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
 
             if not meta_ok:
-                # Undo group rolls back pixel ops; do not set session flag / gen
+                if applied and ops:
+                    try:
+                        image.undo()
+                    except Exception as undo_err:
+                        print(f"[MCP] normalize undo after metadata fail: {undo_err}")
+                # Do not set session flag / gen bump
                 return _sec.make_error(
                     _sec.CODE_METADATA_WRITE_FAILED,
                     meta_err or "failed to write orientation metadata",
