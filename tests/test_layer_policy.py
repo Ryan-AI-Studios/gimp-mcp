@@ -364,16 +364,27 @@ def test_wiring_confirm_destructive_sites() -> None:
         end = rest.find("\n    def ")
         return rest[:end] if end != -1 else rest[:4000]
 
-    for m in (
-        "def _flatten_image",
-        "def _merge_visible_layers",
-        "def _rotate_image",
-        "def _resize_canvas",
-    ):
+    # Always-gated live stack destroyers
+    for m in ("def _flatten_image", "def _merge_visible_layers"):
         body = method_body(m)
-        assert "confirm_destructive" in body, f"{m} must gate confirm_destructive"
-        assert (
-            "CONFIRM_REQUIRED" in body
-            or "CODE_CONFIRM_REQUIRED" in body
-            or "_require_confirm_destructive" in body
-        ), f"{m} must require confirm_destructive"
+        assert "_require_confirm_destructive" in body, f"{m} must require confirm_destructive"
+
+    # Free-angle only: confirm must be under needs_free_angle_flatten branch
+    rotate = method_body("def _rotate_image")
+    assert "needs_free_angle_flatten" in rotate
+    assert "_require_confirm_destructive" in rotate
+    # Confirm call appears after the free-angle flag, not as unconditional first action
+    flag_pos = rotate.find("needs_free_angle_flatten")
+    conf_pos = rotate.find("_require_confirm_destructive")
+    assert flag_pos != -1 and conf_pos != -1 and flag_pos < conf_pos
+    assert "if needs_free_angle_flatten:" in rotate
+
+    # Non-transparent fill only: confirm under will_flatten
+    resize = method_body("def _resize_canvas")
+    assert "will_flatten" in resize
+    assert "_require_confirm_destructive" in resize
+    assert 'str(fill).lower() != "transparent"' in resize or '!= "transparent"' in resize
+    flag_pos = resize.find("will_flatten")
+    conf_pos = resize.find("_require_confirm_destructive")
+    assert flag_pos != -1 and conf_pos != -1 and flag_pos < conf_pos
+    assert "if will_flatten:" in resize

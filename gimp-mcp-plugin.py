@@ -5791,14 +5791,12 @@ class MCPPlugin(Gimp.PlugIn):
                 layers=layers,
             )
             if include_orient:
-                # Optional additive snapshot (default False per M6)
-                try:
-                    sidecar["orient_note"] = (
-                        "include_orient_snapshot requested; full orient dump omitted "
-                        "from sidecar (agent should call orient_workspace after restore)"
-                    )
-                except Exception:
-                    pass
+                # M6 default False. True is honesty-only: no full orient payload
+                # embedded (agent must orient_workspace after restore / reopen).
+                sidecar["orient_note"] = (
+                    "include_orient_snapshot=true: note-only; full orient dump not "
+                    "embedded in sidecar (call orient_workspace after restore)"
+                )
 
             try:
                 validated = _policy.validate_sidecar(sidecar)

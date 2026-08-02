@@ -2545,7 +2545,9 @@ def checkpoint_create(
     - label: checkpoint label
     - image_index: Target image index (default 0)
     - overwrite: replace existing label (default False → CHECKPOINT_EXISTS)
-    - include_orient_snapshot: default False (orient dump not embedded)
+    - include_orient_snapshot: default False. When True, records an honesty
+      note only (full orient dump is not embedded — call orient_workspace
+      after restore). Reserved for a richer dump later.
 
     Returns: paths, xcf_sha256, generation, handle.
     """
