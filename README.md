@@ -24,7 +24,7 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 
 - The AI can *see* the image at any point in the workflow without saving to disk (`get_state_snapshot`)
 - Supports fully autonomous multi-step pipelines: open → edit → verify → refine → export
-- 56 dedicated tool commands covering every major GIMP operation
+- 57 dedicated tool commands covering every major GIMP operation
 - Fully compatible with GIMP 3.2.x (all breaking API changes resolved)
 
 ## Key Features
@@ -33,7 +33,7 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 |---|---|
 | 👁️ **Live Visual Feedback** | `get_state_snapshot` returns a PNG preview mid-workflow so the AI verifies each step |
 | 🧭 **Workspace Orientation** | `orient_workspace` returns a schema-versioned state manifest (layers tree, kinds, handles, capabilities) |
-| 🎨 **56+ GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
+| 🎨 **57+ GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
 | 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested |
 | 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
 | 🖼️ **Region Snapshots** | Zoom into any area for detail verification (face, mouth, corner, etc.) |

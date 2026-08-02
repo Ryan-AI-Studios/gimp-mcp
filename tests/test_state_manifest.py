@@ -323,6 +323,64 @@ def test_classify_layer_kind() -> None:
     assert state.classify_layer_kind("unknown") == "raster"
 
 
+def test_parse_layer_offsets() -> None:
+    """parse_layer_offsets handles GIMP offset objects, tuples, and failures."""
+
+    class _Off:
+        def __init__(self, x: int, y: int) -> None:
+            self.offset_x = x
+            self.offset_y = y
+
+    assert state.parse_layer_offsets(_Off(12, -4)) == (12, -4)
+    assert state.parse_layer_offsets(_Off(0, 0)) == (0, 0)
+    assert state.parse_layer_offsets((3, 7)) == (3, 7)
+    assert state.parse_layer_offsets([10, 20]) == (10, 20)
+    assert state.parse_layer_offsets([_Off(5, 6)]) == (5, 6)
+    assert state.parse_layer_offsets(None) == (0, 0)
+    assert state.parse_layer_offsets("bad") == (0, 0)
+    assert state.parse_layer_offsets([]) == (0, 0)
+
+    class _Partial:
+        offset_x = 9  # no offset_y
+
+    assert state.parse_layer_offsets(_Partial()) == (9, 0)
+
+
+def test_image_requires_orientation_fields() -> None:
+    """Promoted imageManifest fields are required by validate_manifest."""
+    doc = golden_multi_image()
+    img = doc["images"][0]
+    for key in (
+        "selection",
+        "alpha_present",
+        "color_profile",
+        "metadata",
+        "active_layer_handles",
+        "channels",
+        "paths",
+    ):
+        missing = dict(img)
+        del missing[key]
+        bad = golden_empty()
+        bad["images"] = [missing]
+        errors = state.validate_manifest(bad)
+        assert any(key in e for e in errors), f"expected missing {key}: {errors}"
+
+    # metadata sub-keys
+    meta_bad = dict(img)
+    meta_bad["metadata"] = {"exif_orientation_original": 1}
+    bad2 = golden_empty()
+    bad2["images"] = [meta_bad]
+    errors2 = state.validate_manifest(bad2)
+    assert any("pixel_orientation_normalized" in e for e in errors2)
+
+    # parent_handle required on layer nodes
+    layer_bad = golden_nested_group()
+    del layer_bad["images"][0]["layers"][0]["parent_handle"]
+    errors3 = state.validate_manifest(layer_bad)
+    assert any("parent_handle" in e for e in errors3)
+
+
 # ---------------------------------------------------------------------------
 # Capabilities honesty
 # ---------------------------------------------------------------------------
@@ -412,13 +470,40 @@ def test_finalize_normalizes_grayscale() -> None:
                 "precision": "u8",
                 "dirty": False,
                 "selected": False,
+                "alpha_present": False,
+                "color_profile": None,
+                "metadata": {
+                    "exif_orientation_original": None,
+                    "pixel_orientation_normalized": False,
+                },
+                "selection": {"empty": True},
+                "active_layer_handles": [],
                 "layers": [],
+                "channels": [],
+                "paths": [],
             }
         ],
         "context": {},
     }
     doc = state.finalize_manifest(raw, authenticated=False, port=1)
     assert doc["images"][0]["base_type"] == "GRAY"
+
+
+def test_finalize_preserves_warnings() -> None:
+    raw = {
+        "session": {"session_id": "s", "epoch": 1},
+        "gimp": {
+            "version": "3",
+            "api_version": "3.0",
+            "os": "Linux",
+            "executable": "gimp",
+        },
+        "images": [],
+        "context": {},
+        "warnings": [{"image_index": 1, "error": "boom"}],
+    }
+    doc = state.finalize_manifest(raw, authenticated=True, port=9)
+    assert doc["warnings"] == [{"image_index": 1, "error": "boom"}]
 
 
 # ---------------------------------------------------------------------------
@@ -462,6 +547,7 @@ def test_state_module_exports() -> None:
     assert "def finalize_manifest" in text
     assert "def default_capabilities" in text
     assert "def classify_layer_kind" in text
+    assert "def parse_layer_offsets" in text
 
 
 def test_orient_workspace_wiring_when_present() -> None:
@@ -481,23 +567,38 @@ def test_orient_workspace_wiring_when_present() -> None:
     assert "undo_group_start" not in body
     assert "undo_group_end" not in body
     assert "self.session_id" in body
+    # Partial dump failures surface as warnings (not silent drop)
+    assert "warnings" in body
 
     # Tree walk uses _layer_children (not flat _iter_layers_recursive) in orient helpers
     layer_node = _method_body(plugin, "_orient_layer_node")
     assert "self._layer_children" in layer_node
     assert "_iter_layers_recursive" not in layer_node
     assert "self._get_layer_type_string" not in layer_node
+    # Offset parsing handles GIMP 3 object attrs (not list-only)
+    assert "offset_x" in layer_node
+    assert "offset_y" in layer_node
     classify = _method_body(plugin, "_orient_classify_kind")
     assert "self._get_layer_type_string" not in classify
     assert "isinstance" in classify
+    # No substring kind heuristics
+    assert '"group" in lower' not in classify
+    assert "'group' in lower" not in classify
 
     init_body = _method_body(plugin, "__init__")
     assert "self.session_id" in init_body
     assert "self.session_epoch" in init_body
     assert "self.session_started_at" in init_body
 
-    # get_image_metadata three-edit hygiene
-    assert "image_index" in _function_body(server, "get_image_metadata")
+    # get_image_metadata three-edit hygiene (server params + dispatcher + plugin)
+    server_meta = _function_body(server, "get_image_metadata")
+    assert "image_index" in server_meta
+    assert 'send_command("get_image_metadata"' in server_meta
+    assert (
+        '"image_index": image_index' in server_meta or "'image_index': image_index" in server_meta
+    )
+    assert '_get_current_image_metadata(j.get("params"' in plugin
     meta_body = _method_body(plugin, "_get_current_image_metadata")
     assert "_get_image" in meta_body
+    assert "image_index" in meta_body
     assert "images[0]" not in meta_body

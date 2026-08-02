@@ -1260,15 +1260,24 @@ class MCPPlugin(Gimp.PlugIn):
             }
             if name in mapping:
                 return mapping[name]
+            # Exact short forms only (no substring heuristics like "group" in name).
             lower = name.lower()
-            if "group" in lower:
-                return "group"
-            if "text" in lower:
-                return "text"
-            if "link" in lower:
-                return "link"
-            if "vector" in lower:
-                return "vector"
+            exact = {
+                "gimpgrouplayer": "group",
+                "grouplayer": "group",
+                "group": "group",
+                "gimptextlayer": "text",
+                "textlayer": "text",
+                "text": "text",
+                "gimplinklayer": "link",
+                "linklayer": "link",
+                "link": "link",
+                "gimpvectorlayer": "vector",
+                "vectorlayer": "vector",
+                "vector": "vector",
+            }
+            if lower in exact:
+                return exact[lower]
         # is_group() fallback for group layers when types are missing
         try:
             if hasattr(layer, "is_group") and callable(layer.is_group) and layer.is_group():
@@ -1424,15 +1433,25 @@ class MCPPlugin(Gimp.PlugIn):
             blend_mode = str(layer.get_mode())
         except Exception:
             blend_mode = "unknown"
+        # GIMP 3.x get_offsets() returns an object with offset_x/offset_y
+        # (see drop-shadow path). Fall back to 2-tuple / wrapped object.
+        ox, oy = 0, 0
         try:
             offsets = layer.get_offsets()
-            if isinstance(offsets, (list, tuple)) and len(offsets) >= 2:
-                ox, oy = int(offsets[0]), int(offsets[1])
-            else:
-                # GIMP sometimes returns (success, x, y)
-                ox = int(offsets[1]) if offsets and len(offsets) >= 3 else 0
-                oy = int(offsets[2]) if offsets and len(offsets) >= 3 else 0
-        except Exception:
+            if offsets is not None:
+                if hasattr(offsets, "offset_x") or hasattr(offsets, "offset_y"):
+                    ox = int(getattr(offsets, "offset_x", 0) or 0)
+                    oy = int(getattr(offsets, "offset_y", 0) or 0)
+                elif isinstance(offsets, (list, tuple)) and len(offsets) >= 2:
+                    ox, oy = int(offsets[0]), int(offsets[1])
+                elif (
+                    isinstance(offsets, (list, tuple))
+                    and len(offsets) == 1
+                    and hasattr(offsets[0], "offset_x")
+                ):
+                    ox = int(offsets[0].offset_x)
+                    oy = int(offsets[0].offset_y)
+        except (TypeError, ValueError, AttributeError, RuntimeError):
             ox, oy = 0, 0
         try:
             lw = int(layer.get_width())
@@ -1727,7 +1746,8 @@ class MCPPlugin(Gimp.PlugIn):
             except Exception:
                 all_images = []
 
-            if image_index is not None:
+            explicit_index = image_index is not None
+            if explicit_index:
                 idx = int(image_index)
                 if idx < 0 or idx >= len(all_images):
                     return {
@@ -1737,16 +1757,50 @@ class MCPPlugin(Gimp.PlugIn):
                         ),
                     }
                 images_to_dump = [all_images[idx]]
+                dump_indices = [idx]
             else:
                 images_to_dump = all_images
+                dump_indices = list(range(len(all_images)))
 
             image_entries = []
-            for image in images_to_dump:
+            warnings = []
+            for dump_i, image in enumerate(images_to_dump):
+                img_id = None
+                try:
+                    img_id = int(image.get_id())
+                except Exception:
+                    img_id = None
                 try:
                     image_entries.append(self._orient_image_entry(image, front_id, summary_only))
                 except Exception as img_err:
                     print(f"[MCP] orient image entry failed: {img_err}")
                     traceback.print_exc()
+                    warn = {
+                        "image_index": dump_indices[dump_i],
+                        "error": str(img_err),
+                    }
+                    if img_id is not None:
+                        warn["image_id"] = img_id
+                    warnings.append(warn)
+
+            # Fail closed: explicit image_index must succeed
+            if explicit_index and warnings:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"Failed to orient image_index {dump_indices[0]}: "
+                        f"{warnings[0].get('error', 'unknown error')}"
+                    ),
+                    "warnings": warnings,
+                }
+
+            # Fail closed: open images existed but none dumped successfully
+            if not image_entries and images_to_dump:
+                return {
+                    "status": "error",
+                    "error": "Failed to orient all requested images",
+                    "warnings": warnings,
+                }
 
             raw = {
                 "session": {
@@ -1758,6 +1812,8 @@ class MCPPlugin(Gimp.PlugIn):
                 "images": image_entries,
                 "context": self._orient_context(displays_open),
             }
+            if warnings:
+                raw["warnings"] = warnings
             return {"status": "success", "results": raw}
         except Exception as e:
             print(f"Error in orient_workspace: {e!s}")

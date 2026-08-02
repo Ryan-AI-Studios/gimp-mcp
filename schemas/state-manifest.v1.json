@@ -142,6 +142,7 @@
         "handle",
         "name",
         "kind",
+        "parent_handle",
         "visible",
         "opacity",
         "blend_mode",
@@ -204,7 +205,14 @@
         "precision",
         "dirty",
         "selected",
-        "layers"
+        "selection",
+        "alpha_present",
+        "color_profile",
+        "metadata",
+        "active_layer_handles",
+        "layers",
+        "channels",
+        "paths"
       ],
       "properties": {
         "handle": { "$ref": "#/$defs/imageHandle" },
@@ -229,6 +237,10 @@
         },
         "metadata": {
           "type": "object",
+          "required": [
+            "exif_orientation_original",
+            "pixel_orientation_normalized"
+          ],
           "properties": {
             "exif_orientation_original": {
               "type": ["integer", "null"],

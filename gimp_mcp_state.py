@@ -123,6 +123,33 @@ def normalize_opacity(value: Any) -> float:
     return v
 
 
+def parse_layer_offsets(offsets: Any) -> tuple[int, int]:
+    """Parse GIMP ``layer.get_offsets()`` return values to ``(x, y)``.
+
+    GIMP 3.x returns an object with ``offset_x`` / ``offset_y``. Alternate
+    bindings may return a 2-tuple or a one-element sequence wrapping the
+    object. Returns ``(0, 0)`` on any parse failure.
+    """
+    ox, oy = 0, 0
+    try:
+        if offsets is not None:
+            if hasattr(offsets, "offset_x") or hasattr(offsets, "offset_y"):
+                ox = int(getattr(offsets, "offset_x", 0) or 0)
+                oy = int(getattr(offsets, "offset_y", 0) or 0)
+            elif isinstance(offsets, (list, tuple)) and len(offsets) >= 2:
+                ox, oy = int(offsets[0]), int(offsets[1])
+            elif (
+                isinstance(offsets, (list, tuple))
+                and len(offsets) == 1
+                and hasattr(offsets[0], "offset_x")
+            ):
+                ox = int(offsets[0].offset_x)
+                oy = int(offsets[0].offset_y)
+    except (TypeError, ValueError, AttributeError, RuntimeError):
+        ox, oy = 0, 0
+    return ox, oy
+
+
 def classify_layer_kind(type_name: str | None) -> str:
     """Map a stable GObject type name to a layer kind enum string.
 
@@ -220,6 +247,7 @@ def _validate_layer_node(node: Any, path: str, errors: list[str], depth: int = 0
         "handle",
         "name",
         "kind",
+        "parent_handle",
         "visible",
         "opacity",
         "blend_mode",
@@ -318,7 +346,14 @@ def _validate_image(image: Any, path: str, errors: list[str]) -> None:
         "precision",
         "dirty",
         "selected",
+        "selection",
+        "alpha_present",
+        "color_profile",
+        "metadata",
+        "active_layer_handles",
         "layers",
+        "channels",
+        "paths",
     )
     for key in required:
         if key not in image:
@@ -357,6 +392,10 @@ def _validate_image(image: Any, path: str, errors: list[str]) -> None:
     if "alpha_present" in image and not isinstance(image["alpha_present"], bool):
         errors.append(_err(f"{path}.alpha_present", "must be a boolean"))
 
+    if "color_profile" in image and image["color_profile"] is not None:
+        if not isinstance(image["color_profile"], dict):
+            errors.append(_err(f"{path}.color_profile", "must be an object or null"))
+
     if "selection" in image:
         sel = image["selection"]
         if not isinstance(sel, dict):
@@ -366,17 +405,36 @@ def _validate_image(image: Any, path: str, errors: list[str]) -> None:
         elif not isinstance(sel["empty"], bool):
             errors.append(_err(f"{path}.selection.empty", "must be a boolean"))
 
-    if "metadata" in image and image["metadata"] is not None:
+    if "metadata" in image:
         meta = image["metadata"]
         if not isinstance(meta, dict):
             errors.append(_err(f"{path}.metadata", "must be an object"))
         else:
-            exo = meta.get("exif_orientation_original", None)
-            if exo is not None and (
-                not isinstance(exo, int) or isinstance(exo, bool) or not (1 <= int(exo) <= 8)
-            ):
+            if "exif_orientation_original" not in meta:
                 errors.append(
-                    _err(f"{path}.metadata.exif_orientation_original", "must be 1..8 or null")
+                    _err(f"{path}.metadata", "missing required field 'exif_orientation_original'")
+                )
+            else:
+                exo = meta["exif_orientation_original"]
+                if exo is not None and (
+                    not isinstance(exo, int) or isinstance(exo, bool) or not (1 <= int(exo) <= 8)
+                ):
+                    errors.append(
+                        _err(
+                            f"{path}.metadata.exif_orientation_original",
+                            "must be 1..8 or null",
+                        )
+                    )
+            if "pixel_orientation_normalized" not in meta:
+                errors.append(
+                    _err(
+                        f"{path}.metadata",
+                        "missing required field 'pixel_orientation_normalized'",
+                    )
+                )
+            elif not isinstance(meta["pixel_orientation_normalized"], bool):
+                errors.append(
+                    _err(f"{path}.metadata.pixel_orientation_normalized", "must be a boolean")
                 )
 
     if "active_layer_handles" in image:
