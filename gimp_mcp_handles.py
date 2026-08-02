@@ -23,6 +23,29 @@ from gimp_mcp_security import (
 MAX_SELECT_LAYERS = 64
 
 
+def prune_image_generations(
+    generations: dict[Any, Any],
+    open_ids: set[int] | list[int] | tuple[int, ...],
+) -> list[int]:
+    """Drop generation-map keys not in the open-id set. Does not reseed.
+
+    Mutates ``generations`` in place. Returns the list of dropped image ids.
+    Closed ids are removed only — never re-inserted at generation 1.
+    """
+    open_set = {int(i) for i in open_ids}
+    dropped: list[int] = []
+    for key in list(generations.keys()):
+        try:
+            iid = int(key)
+        except (TypeError, ValueError):
+            generations.pop(key, None)
+            continue
+        if iid not in open_set:
+            generations.pop(key, None)
+            dropped.append(iid)
+    return dropped
+
+
 class HandleError(Exception):
     """Handle validation failure with a stable machine-readable code."""
 

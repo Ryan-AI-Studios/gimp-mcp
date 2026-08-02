@@ -1732,7 +1732,7 @@ class MCPPlugin(Gimp.PlugIn):
         """Read-only raw workspace dump for host finalize_manifest (track 0006).
 
         Zero mutation: no undo groups, no Selection mutators, no export/dup/flatten,
-        no displays_flush.
+        no displays_flush. Prunes generation map to open images only (no reseed).
         """
         try:
             params = params or {}
@@ -1763,6 +1763,9 @@ class MCPPlugin(Gimp.PlugIn):
                 all_images = list(Gimp.get_images() or [])
             except Exception:
                 all_images = []
+
+            # F1: drop closed-image generation keys; never reseed them here
+            self._sync_image_generations(all_images)
 
             explicit_index = image_index is not None
             if explicit_index:
@@ -2453,6 +2456,25 @@ class MCPPlugin(Gimp.PlugIn):
         """Drop registry entry when image is closed."""
         self._image_generations.pop(int(image_id), None)
 
+    def _sync_image_generations(self, open_images=None):
+        """Prune generation map to currently open images. Does not reseed closed ids.
+
+        Call at orient start (and anytime the open set is known). Keys for
+        closed/invalid image ids are dropped; open ids keep their counters.
+        """
+        if open_images is None:
+            try:
+                open_images = list(Gimp.get_images() or [])
+            except Exception:
+                open_images = []
+        open_ids = set()
+        for img in open_images:
+            try:
+                open_ids.add(int(img.get_id()))
+            except Exception:
+                continue
+        return _handles.prune_image_generations(self._image_generations, open_ids)
+
     def _emit_image_handle_id(self, image_id):
         gen = self._image_generation(image_id)
         return _handles.image_handle(
@@ -2590,7 +2612,8 @@ class MCPPlugin(Gimp.PlugIn):
     def _get_image_by_id(self, image_id):
         """Resolve image by GIMP id; raise RuntimeError with HANDLE_NOT_FOUND semantics.
 
-        Does not change legacy ``_get_image(index)``.
+        Does not change legacy ``_get_image(index)``. Drops registry entry when id
+        is invalid (no reseed of closed images).
         """
         iid = int(image_id)
         try:
@@ -2598,12 +2621,15 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception:
             valid = False
         if not valid:
+            self._drop_image_generation(iid)
             raise RuntimeError(f"HANDLE_NOT_FOUND: image_id {iid} is not valid")
         try:
             image = Gimp.Image.get_by_id(iid)
         except Exception as e:
+            self._drop_image_generation(iid)
             raise RuntimeError(f"HANDLE_NOT_FOUND: image_id {iid}: {e}") from e
         if image is None:
+            self._drop_image_generation(iid)
             raise RuntimeError(f"HANDLE_NOT_FOUND: image_id {iid} not found")
         return image
 
@@ -2749,7 +2775,8 @@ class MCPPlugin(Gimp.PlugIn):
                     _sec.CODE_INVALID_HANDLE, "handles must all share the same image_id"
                 )
             image_id = image_ids[0]
-            live_gen = self._image_generation(image_id)
+            # Do not seed closed images during validation — .get only until open confirmed
+            live_gen = self._image_generations.get(image_id, 1)
 
             id_valid_flags = []
             belongs_flags = []
@@ -2796,26 +2823,21 @@ class MCPPlugin(Gimp.PlugIn):
             except _handles.HandleError as e:
                 return self._handle_error_response(e)
 
-            # Resolve image and set selection
+            # Resolve image (live only) then seed/emit generation for open image
             image = self._get_image_by_id(image_id)
             selected_layers = [ly for ly in layers if ly is not None]
             try:
                 image.set_selected_layers(selected_layers)
             except Exception as e:
                 msg = str(e).lower()
-                if (
-                    "float" in msg
-                    or "floating" in msg
-                    or "anchor" in msg
-                    or "execution error" in msg
-                ):
+                # Only float/floating/anchor → SELECTION_CONFLICT (not generic PDB failures)
+                if "float" in msg or "floating" in msg or "anchor" in msg:
                     return _sec.make_error(
                         _sec.CODE_SELECTION_CONFLICT,
                         "Cannot set selected layers while a floating selection exists; "
                         "anchor or remove floating selection first",
                     )
-                # Also try detecting floating selection API if present
-                raise
+                return _sec.make_error(_sec.CODE_INTERNAL, str(e))
 
             Gimp.displays_flush()
             selected_handles = [
@@ -2838,7 +2860,7 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": msg, "traceback": traceback.format_exc()}
         except Exception as e:
             msg = str(e).lower()
-            if "float" in msg or "floating" in msg:
+            if "float" in msg or "floating" in msg or "anchor" in msg:
                 return _sec.make_error(
                     _sec.CODE_SELECTION_CONFLICT,
                     "Cannot set selected layers while a floating selection exists; "

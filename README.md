@@ -275,14 +275,18 @@ Supports `image_index` (default 0). Returns PNG image content plus the same
 | `select_image` | Bind active document by **stable image handle** (no new display) |
 | `select_layers` | Select layers by **stable item handles** (max 64; floating → `SELECTION_CONFLICT`) |
 | `create_layer` | New empty layer (returns `generation` + `handle`) |
-| `duplicate_layer` | Duplicate active layer |
-| `delete_layer` | Delete named layer |
+| `duplicate_layer` | Duplicate layer (returns `generation` + item `handle`) |
+| `delete_layer` | Delete layer (returns `generation` + image `handle`) |
 | `rename_layer` | Rename layer (non-structural; generation unchanged) |
 | `set_layer_properties` | Opacity, blend mode, visibility |
-| `reorder_layer` | Move layer in stack |
-| `merge_visible_layers` | Flatten visible to one layer |
-| `flatten_image` | Flatten all layers |
+| `reorder_layer` | Move layer in stack (returns `generation` + item `handle`) |
+| `merge_visible_layers` | Flatten visible to one layer (returns `generation` + item `handle`) |
+| `flatten_image` | Flatten all layers (returns `generation` + image `handle`) |
 | `list_layers` | List all layers with properties |
+
+Structural layer tools (`create_layer`, `duplicate_layer`, `delete_layer`, `reorder_layer`,
+`merge_visible_layers`, `flatten_image`, plus `add_text` / `apply_drop_shadow`) return live
+`generation` and a stable `handle` on success so agents can refresh stale handles after mutations.
 
 ### 🖌️ Drawing & Fill
 | Tool | Description |

@@ -297,6 +297,14 @@ def test_wiring_plugin_registry_and_bumps() -> None:
     assert "_bump_image_generation" not in snap_chunk
 
 
+def _method_body(text: str, method_def: str) -> str:
+    start = text.find(method_def)
+    assert start != -1, method_def
+    rest = text[start + len(method_def) :]
+    end = rest.find("\n    def ")
+    return rest[:end] if end != -1 else rest[:4000]
+
+
 def test_wiring_structural_mutators_call_bump() -> None:
     text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
     methods = [
@@ -310,13 +318,86 @@ def test_wiring_structural_mutators_call_bump() -> None:
         "def _apply_drop_shadow",
     ]
     for m in methods:
-        start = text.find(m)
-        assert start != -1, m
-        # body until next "    def " at class method indent
-        rest = text[start + len(m) :]
-        end = rest.find("\n    def ")
-        body = rest[:end] if end != -1 else rest[:4000]
+        body = _method_body(text, m)
         assert "_bump_image_generation" in body, f"{m} missing bump"
+
+
+def test_wiring_structural_mutators_success_return_generation_handle() -> None:
+    """F4: structural success paths must include generation (+ handle for item mutators)."""
+    text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    # All structural mutators return generation in results construction
+    with_generation = [
+        "def _create_layer",
+        "def _duplicate_layer",
+        "def _delete_layer",
+        "def _reorder_layer",
+        "def _flatten_image",
+        "def _merge_visible_layers",
+        "def _add_text",
+        "def _apply_drop_shadow",
+    ]
+    # Item-handle mutators (delete/flatten may return image handle instead)
+    with_item_or_image_handle = [
+        "def _create_layer",
+        "def _duplicate_layer",
+        "def _delete_layer",
+        "def _reorder_layer",
+        "def _flatten_image",
+        "def _merge_visible_layers",
+        "def _add_text",
+        "def _apply_drop_shadow",
+    ]
+    for m in with_generation:
+        body = _method_body(text, m)
+        assert "generation" in body, f"{m} success path missing generation"
+        assert '"generation"' in body or "'generation'" in body, (
+            f"{m} results construction missing generation key"
+        )
+    for m in with_item_or_image_handle:
+        body = _method_body(text, m)
+        assert "handle" in body, f"{m} success path missing handle"
+        assert '"handle"' in body or "'handle'" in body, (
+            f"{m} results construction missing handle key"
+        )
+
+
+def test_wiring_export_to_path_no_bump() -> None:
+    """F5: export path must not bump structural generation."""
+    text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    body = _method_body(text, "def _export_to_path")
+    assert "_bump_image_generation" not in body
+
+
+def test_wiring_orient_syncs_image_generations() -> None:
+    """F1: orient must call _sync_image_generations to prune closed ids."""
+    text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    assert "def _sync_image_generations" in text
+    body = _method_body(text, "def _orient_workspace")
+    assert "_sync_image_generations" in body
+
+
+def test_wiring_select_layers_no_seed_before_validity() -> None:
+    """F3: select_layers must not call _image_generation before image is confirmed open."""
+    text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    body = _method_body(text, "def _select_layers")
+    # live_gen during validation uses .get, not seeding helper
+    assert "_image_generations.get" in body
+    # Seed helper only after open image path (emit / success generation), not for live_gen=
+    live_gen_line = [ln for ln in body.splitlines() if "live_gen" in ln]
+    for ln in live_gen_line:
+        assert "_image_generation(" not in ln, f"select_layers seeds via live_gen: {ln!r}"
+
+
+def test_wiring_selection_conflict_narrow() -> None:
+    """F2: SELECTION_CONFLICT only for float/floating/anchor — not bare execution error."""
+    text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    body = _method_body(text, "def _select_layers")
+    # Old bare match must be gone (substring check on source)
+    assert '"execution error"' not in body
+    assert "'execution error'" not in body
+    assert "float" in body
+    assert "floating" in body or "anchor" in body
+    assert "CODE_SELECTION_CONFLICT" in body
 
 
 def test_wiring_orient_uses_live_generation_not_hardcoded_alone() -> None:
@@ -332,8 +413,24 @@ def test_wiring_orient_uses_live_generation_not_hardcoded_alone() -> None:
     assert '"generation": 1' not in body
 
 
+def test_prune_image_generations_pure() -> None:
+    """F1: pure prune helper drops closed ids without reseeding."""
+    gens = {1: 3, 2: 5, 9: 1}
+    dropped = handles.prune_image_generations(gens, {1, 2})
+    assert set(dropped) == {9}
+    assert gens == {1: 3, 2: 5}
+    # empty open set clears all; no reseed
+    dropped2 = handles.prune_image_generations(gens, set())
+    assert set(dropped2) == {1, 2}
+    assert gens == {}
+    # open id not in map is not added
+    handles.prune_image_generations(gens, {42})
+    assert gens == {}
+
+
 def test_wiring_security_codes_in_handles_module() -> None:
     text = (ROOT / "gimp_mcp_handles.py").read_text(encoding="utf-8")
     assert "CODE_STALE_HANDLE" in text
     assert "CODE_FOREIGN_SESSION" in text
     assert "CODE_SELECTION_CONFLICT" in sec.__dict__ or hasattr(sec, "CODE_SELECTION_CONFLICT")
+    assert "def prune_image_generations" in text
