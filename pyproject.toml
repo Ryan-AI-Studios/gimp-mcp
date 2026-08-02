@@ -46,13 +46,13 @@ extend-exclude = [
     ".ledgerful",
     "docs",
     "*.md",
+    # Product bulk surface excluded until 0002 Phases 3–4 format+lint commits.
     "gimp-mcp-plugin.py",
     "agent_edit_demo.py",
     "bg_remove.py",
     "bg_remove_iterative.py",
     "run_tests.py",
-    "tests/continuous_edit_test",
-    "tests/test_add_text_metadata.py",
+    "scripts",
 ]
 
 [tool.ruff.lint]
@@ -120,7 +120,8 @@ reportAny = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-norecursedirs = [".git", ".venv", "continuous_edit_test", "files", "output"]
+# Live GIMP scripts live under scripts/ (not collected). Keep output/ out of discovery.
+norecursedirs = [".git", ".venv", "files", "output"]
 addopts = ["-q", "--strict-markers", "--strict-config"]
 markers = [
     "integration: requires live GIMP MCP plugin on localhost:9877",
