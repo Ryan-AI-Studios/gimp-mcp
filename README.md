@@ -323,7 +323,8 @@ Supports `image_index` (default 0). Returns PNG image content plus the same
 ### 🔍 Info & Context
 | Tool | Description |
 |---|---|
-| `get_image_metadata` | Image size, mode, layers, filename |
+| `orient_workspace` | **Orientation SoT** — schema-versioned state-manifest v1 (recursive layers, handles, selection, capabilities) |
+| `get_image_metadata` | Image size, mode, layers, filename (prefer `orient_workspace` for agents) |
 | `get_gimp_info` | GIMP version, platform, capabilities |
 | `get_context_state` | Current colors, brush, opacity, mode |
 | `get_pixel_color` | Color value at a specific pixel |
