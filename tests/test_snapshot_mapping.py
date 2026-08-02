@@ -121,6 +121,30 @@ def test_build_mapping_full_canvas_scales() -> None:
     assert m["composite_method"] == snap.COMPOSITE_METHOD_MERGE
     assert m["scale_x"] == pytest.approx(512 / 4000)
     assert m["scale_y"] == pytest.approx(384 / 3000)
+    # Additive coordinate declaration (track 0008)
+    assert m["coordinate_space"] == "image-pixels"
+    assert m["origin"] == "top-left"
+    assert m["x_axis"] == "right"
+    assert m["y_axis"] == "down"
+    assert m["preview_padding_x"] == 0
+    assert m["preview_padding_y"] == 0
+    assert m["view_rotation_ignored"] is True
+    assert m["pixel_orientation_normalized"] is False
+    assert m["exif_orientation_original"] is None
+
+
+def test_build_mapping_exif_kwargs() -> None:
+    m = snap.build_mapping_metadata(
+        image_index=0,
+        source_width=100,
+        source_height=100,
+        rendered_width=50,
+        rendered_height=50,
+        pixel_orientation_normalized=True,
+        exif_orientation_original=6,
+    )
+    assert m["pixel_orientation_normalized"] is True
+    assert m["exif_orientation_original"] == 6
 
 
 def test_build_mapping_region_relative_scales() -> None:
@@ -262,3 +286,102 @@ def test_validate_png_file_with_signature(tmp_path: Path) -> None:
     p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
     assert snap.validate_png_file(p) is True
     assert snap.validate_png_file(str(p)) is True
+
+
+# ---------------------------------------------------------------------------
+# Server ToolResult pass-through copies additive 0008 keys (H5)
+# ---------------------------------------------------------------------------
+
+
+def test_server_pass_through_copies_coordinate_space() -> None:
+    """Pass-through branch must emit coordinate_space (not only rebuild path)."""
+    import base64
+
+    # Minimal valid PNG signature as payload for ToolResult builder
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    plugin_results = {
+        "image_data": base64.b64encode(png).decode("ascii"),
+        "mode": "visible_composite",
+        "scale_x": 0.5,
+        "scale_y": 0.5,
+        "source_width": 200,
+        "source_height": 100,
+        "rendered_width": 100,
+        "rendered_height": 50,
+        "width": 100,
+        "height": 50,
+        "image_index": 0,
+        "region": None,
+        "composite_method": "merge_visible_layers",
+        # Additive keys present (as plugin flattens them)
+        "coordinate_space": "image-pixels",
+        "origin": "top-left",
+        "x_axis": "right",
+        "y_axis": "down",
+        "preview_padding_x": 0,
+        "preview_padding_y": 0,
+        "view_rotation_ignored": True,
+        "pixel_orientation_normalized": True,
+        "exif_orientation_original": 6,
+    }
+    # Import after env is fine — server module is pure enough for unit
+    from gimp_mcp_server import _snapshot_tool_result
+
+    tr = _snapshot_tool_result(plugin_results, image_index=0)
+    # ToolResult may expose structured_content or structuredContent
+    sc = getattr(tr, "structured_content", None) or getattr(tr, "structuredContent", None)
+    assert sc is not None
+    assert sc["coordinate_space"] == "image-pixels"
+    assert sc["origin"] == "top-left"
+    assert sc["x_axis"] == "right"
+    assert sc["y_axis"] == "down"
+    assert sc["preview_padding_x"] == 0
+    assert sc["preview_padding_y"] == 0
+    assert sc["view_rotation_ignored"] is True
+    assert sc["pixel_orientation_normalized"] is True
+    assert sc["exif_orientation_original"] == 6
+    assert sc["scale_x"] == pytest.approx(0.5)
+
+
+def test_server_pass_through_defaults_missing_additive_keys() -> None:
+    """When plugin omits additive keys, pass-through still defaults them."""
+    import base64
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    plugin_results = {
+        "image_data": base64.b64encode(png).decode("ascii"),
+        "mode": "visible_composite",
+        "scale_x": 1.0,
+        "scale_y": 1.0,
+        "source_width": 10,
+        "source_height": 10,
+        "rendered_width": 10,
+        "rendered_height": 10,
+        "width": 10,
+        "height": 10,
+        "image_index": 0,
+    }
+    from gimp_mcp_server import _snapshot_tool_result
+
+    tr = _snapshot_tool_result(plugin_results, image_index=0)
+    sc = getattr(tr, "structured_content", None) or getattr(tr, "structuredContent", None)
+    assert sc is not None
+    assert sc["coordinate_space"] == "image-pixels"
+    assert sc["view_rotation_ignored"] is True
+    assert sc["preview_padding_x"] == 0
+    assert sc["pixel_orientation_normalized"] is False
+    assert sc["exif_orientation_original"] is None
+
+
+def test_wiring_plugin_bitmap_flattens_additive_keys() -> None:
+    """Plugin get_image_bitmap results must flatten coordinate_space for pass-through."""
+    text = (Path(__file__).resolve().parents[1] / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    body_start = text.find("def _get_current_image_bitmap")
+    assert body_start != -1
+    rest = text[body_start:]
+    end = rest.find("\n    def ")
+    body = rest[:end] if end != -1 else rest[:40000]
+    assert "coordinate_space" in body
+    assert "pixel_orientation_normalized" in body
+    assert "exif_orientation_original" in body
+    assert "build_mapping_metadata" in body

@@ -205,7 +205,7 @@ def default_capabilities() -> dict[str, bool]:
         "alpha_preserving_export": True,  # 0005
         "state_manifest_orientation": True,  # 0006
         "stable_handle_registry": True,  # 0007
-        "coordinate_exif_normalized": False,  # 0008
+        "coordinate_exif_normalized": True,  # 0008
     }
 
 

@@ -60,6 +60,13 @@ except ImportError as _handles_imp_err:  # pragma: no cover - fail closed at run
         "gimp_mcp_handles.py must sit next to gimp-mcp-plugin.py "
         f"(looked in {_plugin_dir}): {_handles_imp_err}"
     ) from _handles_imp_err
+try:
+    import gimp_mcp_coords as _coords
+except ImportError as _coords_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_coords.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_coords_imp_err}"
+    ) from _coords_imp_err
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
@@ -126,6 +133,9 @@ class MCPPlugin(Gimp.PlugIn):
         # Last generation when closed/pruned — ID-recycle defense (never reseed at 1
         # if this GIMP id was seen before in this process).
         self._retired_generations: dict = {}
+        # Per-image EXIF/pixel orientation normalized flags (track 0008).
+        # True after successful normalize_image_orientation in this session.
+        self._orientation_normalized: dict[int, bool] = {}
 
         print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
         if not _sec.is_loopback_host(self.host):
@@ -520,6 +530,8 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._select_image(j.get("params", {}))
             elif "type" in j and j["type"] == "select_layers":
                 return self._select_layers(j.get("params", {}))
+            elif "type" in j and j["type"] == "normalize_image_orientation":
+                return self._normalize_image_orientation(j.get("params", {}))
             elif "type" in j and j["type"] == "get_gimp_info":
                 return self._get_gimp_info()
             elif "type" in j and j["type"] == "get_context_state":
@@ -1033,6 +1045,14 @@ class MCPPlugin(Gimp.PlugIn):
                     "height": int(region_height),
                 }
 
+            # Snapshot-time EXIF + session honesty (track 0008) for mapping.
+            try:
+                image_id_for_map = int(original_image.get_id())
+            except Exception:
+                image_id_for_map = None
+            exif_orig = self._orient_exif_orientation(original_image)
+            pixel_norm = self._pixel_orientation_normalized(image_id_for_map, exif_orig)
+
             mapping = _snap.build_mapping_metadata(
                 image_index=image_index,
                 source_width=source_width,
@@ -1041,6 +1061,8 @@ class MCPPlugin(Gimp.PlugIn):
                 rendered_height=rendered_height,
                 region=region_for_mapping,
                 composite_method=composite_method,
+                pixel_orientation_normalized=pixel_norm,
+                exif_orientation_original=exif_orig,
             )
 
             return {
@@ -1063,6 +1085,16 @@ class MCPPlugin(Gimp.PlugIn):
                     "source_height": source_height,
                     "rendered_width": rendered_width,
                     "rendered_height": rendered_height,
+                    # Flatten additive mapping keys so server pass-through sees them
+                    "coordinate_space": mapping["coordinate_space"],
+                    "origin": mapping["origin"],
+                    "x_axis": mapping["x_axis"],
+                    "y_axis": mapping["y_axis"],
+                    "preview_padding_x": mapping["preview_padding_x"],
+                    "preview_padding_y": mapping["preview_padding_y"],
+                    "view_rotation_ignored": mapping["view_rotation_ignored"],
+                    "pixel_orientation_normalized": mapping["pixel_orientation_normalized"],
+                    "exif_orientation_original": mapping["exif_orientation_original"],
                     "processing_applied": {
                         "region_extracted": region_requested,
                         "scaled": (
@@ -1577,10 +1609,7 @@ class MCPPlugin(Gimp.PlugIn):
             "selected": bool(selected),
             "alpha_present": bool(self._preflight_has_alpha(image)),
             "color_profile": self._orient_color_profile(image),
-            "metadata": {
-                "exif_orientation_original": self._orient_exif_orientation(image),
-                "pixel_orientation_normalized": False,
-            },
+            "metadata": self._orient_metadata_block(image, image_id),
             "selection": self._orient_selection(image),
             "active_layer_handles": [],
             "layers": [],
@@ -2475,13 +2504,15 @@ class MCPPlugin(Gimp.PlugIn):
             prev = int(self._image_generations.pop(iid))
             floor = int(self._retired_generations.get(iid, 0) or 0)
             self._retired_generations[iid] = max(floor, prev)
+        # Session orientation flag must not survive close / id recycle (M1).
+        self._orientation_normalized.pop(iid, None)
 
     def _sync_image_generations(self, open_images=None):
         """Prune generation map to currently open images. Does not reseed closed ids.
 
         Call at orient start (and anytime the open set is known). Keys for
         closed/invalid image ids are tombstoned into ``_retired_generations`` then
-        dropped; open ids keep their counters.
+        dropped; open ids keep their counters. Also prunes orientation flags (M1).
         """
         if open_images is None:
             try:
@@ -2494,9 +2525,54 @@ class MCPPlugin(Gimp.PlugIn):
                 open_ids.add(int(img.get_id()))
             except Exception:
                 continue
-        return _handles.prune_image_generations(
+        dropped = _handles.prune_image_generations(
             self._image_generations, open_ids, retired=self._retired_generations
         )
+        # Drop orientation flags for pruned / non-open ids (same open set).
+        for key in list(self._orientation_normalized.keys()):
+            try:
+                iid = int(key)
+            except (TypeError, ValueError):
+                self._orientation_normalized.pop(key, None)
+                continue
+            if iid not in open_ids:
+                self._orientation_normalized.pop(key, None)
+        return dropped
+
+    def _pixel_orientation_normalized(self, image_id, tag=None):
+        """Honesty (M2): session flag OR tag identity (null/1)."""
+        session_flag = False
+        if image_id is not None:
+            try:
+                session_flag = bool(self._orientation_normalized.get(int(image_id)))
+            except (TypeError, ValueError):
+                session_flag = False
+        return session_flag or _coords.orientation_is_identity(tag)
+
+    def _normalized_basis(self, image_id, tag=None):
+        """Optional basis label for orient honesty."""
+        if image_id is not None:
+            try:
+                if bool(self._orientation_normalized.get(int(image_id))):
+                    return "session_flag"
+            except (TypeError, ValueError):
+                pass
+        if _coords.orientation_is_identity(tag):
+            return "tag_identity"
+        return None
+
+    def _orient_metadata_block(self, image, image_id):
+        """Build image.metadata dict with EXIF + honest normalized flag."""
+        tag = self._orient_exif_orientation(image)
+        normalized = self._pixel_orientation_normalized(image_id, tag)
+        block = {
+            "exif_orientation_original": tag,
+            "pixel_orientation_normalized": bool(normalized),
+        }
+        basis = self._normalized_basis(image_id, tag)
+        if basis is not None and normalized:
+            block["normalized_basis"] = basis
+        return block
 
     def _emit_image_handle_id(self, image_id):
         gen = self._image_generation(image_id)
@@ -2757,6 +2833,157 @@ class MCPPlugin(Gimp.PlugIn):
                     "generation": gen,
                     "selected": True,
                     "display": bool(has_display),
+                },
+            }
+        except _handles.HandleError as e:
+            return self._handle_error_response(e)
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("HANDLE_NOT_FOUND"):
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+            return {"status": "error", "error": msg, "traceback": traceback.format_exc()}
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _apply_orientation_ops(self, image, ops):
+        """Apply ordered EXIF bake ops via direct image.rotate/flip (never policy_rotate)."""
+        rot_map = {
+            "rot90": Gimp.RotationType.DEGREES90,
+            "rot180": Gimp.RotationType.DEGREES180,
+            "rot270": Gimp.RotationType.DEGREES270,
+        }
+        for op in ops:
+            if op == "flip_h":
+                image.flip(Gimp.OrientationType.HORIZONTAL)
+            elif op == "flip_v":
+                image.flip(Gimp.OrientationType.VERTICAL)
+            elif op in rot_map:
+                image.rotate(rot_map[op])
+            else:
+                raise RuntimeError(f"unknown orientation op: {op!r}")
+
+    def _set_orientation_tags_to_1(self, image):
+        """Ensure metadata exists; set both Orientation tags to 1; return set_metadata ok.
+
+        Returns (ok: bool, error_message: str|None). Does not bump generation.
+        """
+        meta = None
+        try:
+            if hasattr(image, "get_metadata"):
+                meta = image.get_metadata()
+        except Exception:
+            meta = None
+        if meta is None:
+            try:
+                if hasattr(Gimp, "Metadata") and hasattr(Gimp.Metadata, "new"):
+                    meta = Gimp.Metadata.new()
+                else:
+                    return False, "Gimp.Metadata.new() unavailable"
+            except Exception as e:
+                return False, f"Metadata.new failed: {e}"
+        try:
+            for tag in ("Exif.Image.Orientation", "Exif.Photo.Orientation"):
+                if hasattr(meta, "set_tag_long"):
+                    meta.set_tag_long(tag, 1)
+                elif hasattr(meta, "set_tag_string"):
+                    meta.set_tag_string(tag, "1")
+                else:
+                    return False, "metadata has no set_tag_long/set_tag_string"
+        except Exception as e:
+            return False, f"set orientation tag failed: {e}"
+        try:
+            if not hasattr(image, "set_metadata"):
+                return False, "image.set_metadata unavailable"
+            ok = image.set_metadata(meta)
+            # GI may return True/False or None (treat None as success when no exception)
+            if ok is False:
+                return False, "image.set_metadata returned false"
+            return True, None
+        except Exception as e:
+            return False, f"image.set_metadata failed: {e}"
+
+    def _normalize_image_orientation(self, params):
+        """Normalize EXIF orientation tags (and optionally bake pixels).
+
+        Modes (H1):
+        - assume_pixels_upright (default): set both tags to 1; no pixel ops.
+          Safe after normal GIMP open where policy_rotate may already have
+          uprighted pixels while leaving the tag as 6/8.
+        - trust_tag: apply ordered ORIENTATION_OPS for tags 2–8, then set tags
+          to 1. Opt-in only when pixels still match tag encoding.
+
+        Never calls Image.policy_rotate or reuses _rotate_image/_flip_image.
+        Atomic undo group around pixel ops + metadata; generation bumps only
+        on full success.
+        """
+        try:
+            mode = str(params.get("mode") or _coords.MODE_ASSUME_PIXELS_UPRIGHT).strip()
+            if mode not in _coords.NORMALIZE_MODES:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"mode must be one of {sorted(_coords.NORMALIZE_MODES)}, got {mode!r}"
+                    ),
+                }
+
+            handle = params.get("handle")
+            image = None
+            image_id = None
+            if handle is not None:
+                validated = self._validate_request_handle(handle, kind="image")
+                image_id = int(validated["image_id"])
+                image = self._get_image_by_id(image_id)
+            else:
+                image_index = int(params.get("image_index", 0))
+                image = self._get_image(image_index)
+                image_id = int(image.get_id())
+
+            original_orientation = self._orient_exif_orientation(image)
+            ops: list = []
+            applied = False
+            if mode == _coords.MODE_TRUST_TAG:
+                tag_for_ops = original_orientation
+                if tag_for_ops is not None and int(tag_for_ops) in range(2, 9):
+                    ops = list(_coords.ORIENTATION_OPS.get(int(tag_for_ops), []))
+                    applied = bool(ops)
+                # tag null/1: no-op success, applied=false, still normalize tags
+
+            # Atomic group: pixel ops (if any) + metadata write (H4, BS5)
+            image.undo_group_start()
+            meta_ok = False
+            meta_err = None
+            try:
+                if applied and ops:
+                    self._apply_orientation_ops(image, ops)
+                meta_ok, meta_err = self._set_orientation_tags_to_1(image)
+            finally:
+                image.undo_group_end()
+
+            if not meta_ok:
+                # Undo group rolls back pixel ops; do not set session flag / gen
+                return _sec.make_error(
+                    _sec.CODE_METADATA_WRITE_FAILED,
+                    meta_err or "failed to write orientation metadata",
+                )
+
+            # Full success only:
+            self._orientation_normalized[int(image_id)] = True
+            gen = self._bump_image_generation(int(image_id))
+            try:
+                Gimp.displays_flush()
+            except Exception:
+                pass
+            return {
+                "status": "success",
+                "results": {
+                    "original_orientation": original_orientation,
+                    "mode_applied": mode,
+                    "applied": bool(applied),
+                    "pixel_orientation_normalized": True,
+                    "generation": gen,
+                    "handle": self._emit_image_handle(image),
+                    "image_id": int(image_id),
+                    "ops_applied": list(ops) if applied else [],
                 },
             }
         except _handles.HandleError as e:

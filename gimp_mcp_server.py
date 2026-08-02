@@ -18,6 +18,7 @@ from mcp.server.fastmcp import Context, FastMCP, Image
 from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
 from mcp.types import Annotations
 
+import gimp_mcp_coords as coords
 import gimp_mcp_security as sec
 import gimp_mcp_snapshot as snap
 from gimp_mcp_state import finalize_manifest
@@ -115,6 +116,20 @@ def _snapshot_tool_result(
     composite_method = plugin_results.get("composite_method", snap.COMPOSITE_METHOD_MERGE)
 
     # Prefer plugin-supplied mapping fields; rebuild if incomplete.
+    # Additive 0008 keys must be copied/defaulted on the pass-through path (H5).
+    def _additive_from_plugin(src: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "coordinate_space": src.get("coordinate_space", "image-pixels"),
+            "origin": src.get("origin", "top-left"),
+            "x_axis": src.get("x_axis", "right"),
+            "y_axis": src.get("y_axis", "down"),
+            "preview_padding_x": int(src.get("preview_padding_x", 0) or 0),
+            "preview_padding_y": int(src.get("preview_padding_y", 0) or 0),
+            "view_rotation_ignored": bool(src.get("view_rotation_ignored", True)),
+            "pixel_orientation_normalized": bool(src.get("pixel_orientation_normalized", False)),
+            "exif_orientation_original": src.get("exif_orientation_original"),
+        }
+
     if all(
         k in plugin_results
         for k in (
@@ -139,6 +154,7 @@ def _snapshot_tool_result(
             "region": region,
             "composite_method": composite_method,
         }
+        mapping.update(_additive_from_plugin(plugin_results))
     else:
         mapping = snap.build_mapping_metadata(
             image_index=idx,
@@ -148,7 +164,15 @@ def _snapshot_tool_result(
             rendered_height=rendered_h,
             region=region,
             composite_method=str(composite_method),
+            pixel_orientation_normalized=bool(
+                plugin_results.get("pixel_orientation_normalized", False)
+            ),
+            exif_orientation_original=plugin_results.get("exif_orientation_original"),
         )
+        # Prefer any plugin-supplied additive overrides when present
+        for k, v in _additive_from_plugin(plugin_results).items():
+            if k in plugin_results:
+                mapping[k] = v
 
     img = Image(data=as_bytes, format="png")
     content = img.to_image_content()
@@ -576,6 +600,202 @@ def select_image(ctx: Context, handle: dict) -> dict:
         if str(e).startswith("select_image failed:"):
             raise
         raise Exception(f"select_image failed: {e}")
+
+
+@mcp.tool()
+def normalize_image_orientation(
+    ctx: Context,
+    handle: dict | None = None,
+    image_index: int | None = None,
+    mode: str = "assume_pixels_upright",
+) -> dict:
+    """Normalize EXIF orientation so tag matches upright pixels (track 0008).
+
+    Default mode ``assume_pixels_upright`` only sets both EXIF Orientation tags
+    to 1 — **no** pixel rotate/flip. Safe after normal GIMP open, where
+    ``Image.policy_rotate`` may already have uprighted pixels while leaving the
+    tag as 6/8. Never calls ``policy_rotate``.
+
+    Opt-in ``mode="trust_tag"`` applies ordered pixel ops for tags 2-8 then sets
+    tags to 1. Use only when you know pixels still match the tag encoding
+    (e.g. load path that bypassed orientation policy).
+
+    Parameters:
+    - handle: Preferred image handle from orient_workspace / mutators
+    - image_index: Legacy open-image index when handle is omitted
+    - mode: ``assume_pixels_upright`` (default) or ``trust_tag``
+
+    Returns: ``{original_orientation, mode_applied, applied, pixel_orientation_normalized,
+    generation, handle, image_id, ops_applied}``
+
+    Errors: STALE_HANDLE, FOREIGN_SESSION, INVALID_HANDLE, HANDLE_NOT_FOUND,
+    METADATA_WRITE_FAILED
+    """
+    try:
+        if handle is None and image_index is None:
+            image_index = 0
+        params: dict[str, Any] = {"mode": mode}
+        if handle is not None:
+            params["handle"] = handle
+        if image_index is not None:
+            params["image_index"] = int(image_index)
+        conn = get_gimp_connection()
+        result = conn.send_command("normalize_image_orientation", params)
+        if result.get("status") == "success":
+            return result["results"]
+        _raise_plugin_error(result, "normalize_image_orientation")
+        raise AssertionError("unreachable")  # pragma: no cover
+    except Exception as e:
+        traceback.print_exc()
+        if str(e).startswith("normalize_image_orientation failed:"):
+            raise
+        raise Exception(f"normalize_image_orientation failed: {e}")
+
+
+@mcp.tool()
+def map_preview_to_image(
+    ctx: Context,
+    preview_x: float,
+    preview_y: float,
+    scale_x: float,
+    scale_y: float,
+    region_origin_x: float = 0,
+    region_origin_y: float = 0,
+    preview_padding_x: float = 0,
+    preview_padding_y: float = 0,
+    declaration: dict | None = None,
+) -> dict:
+    """Map preview/snapshot pixel coords → full-canvas image-pixel coords (host-only).
+
+    Pure math from snapshot mapping fields — no GIMP call. Formula::
+
+        image_x = region_origin_x + (preview_x - preview_padding_x) / scale_x
+        image_y = region_origin_y + (preview_y - preview_padding_y) / scale_y
+
+    Rounding: Python half-even (``int(round(x))``).
+
+    Optional ``declaration`` is validated against the locked coordinate-space
+    contract when provided.
+    """
+    try:
+        if declaration is not None:
+            coords.validate_declaration(declaration)
+        ix, iy = coords.preview_to_image_xy(
+            preview_x,
+            preview_y,
+            scale_x=scale_x,
+            scale_y=scale_y,
+            region_origin_x=region_origin_x,
+            region_origin_y=region_origin_y,
+            preview_padding_x=preview_padding_x,
+            preview_padding_y=preview_padding_y,
+        )
+        return {
+            "image_x": ix,
+            "image_y": iy,
+            "coordinate_space": coords.COORDINATE_SPACE,
+            "view_rotation_ignored": coords.VIEW_ROTATION_IGNORED,
+        }
+    except ValueError as e:
+        raise Exception(f"map_preview_to_image failed: {e}") from e
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"map_preview_to_image failed: {e}") from e
+
+
+@mcp.tool()
+def map_image_to_preview(
+    ctx: Context,
+    image_x: float,
+    image_y: float,
+    scale_x: float,
+    scale_y: float,
+    region_origin_x: float = 0,
+    region_origin_y: float = 0,
+    preview_padding_x: float = 0,
+    preview_padding_y: float = 0,
+    declaration: dict | None = None,
+) -> dict:
+    """Inverse of map_preview_to_image (image-pixel → preview). Host-only pure math."""
+    try:
+        if declaration is not None:
+            coords.validate_declaration(declaration)
+        px, py = coords.image_to_preview_xy(
+            image_x,
+            image_y,
+            scale_x=scale_x,
+            scale_y=scale_y,
+            region_origin_x=region_origin_x,
+            region_origin_y=region_origin_y,
+            preview_padding_x=preview_padding_x,
+            preview_padding_y=preview_padding_y,
+        )
+        return {
+            "preview_x": px,
+            "preview_y": py,
+            "coordinate_space": coords.COORDINATE_SPACE,
+            "view_rotation_ignored": coords.VIEW_ROTATION_IGNORED,
+        }
+    except ValueError as e:
+        raise Exception(f"map_image_to_preview failed: {e}") from e
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"map_image_to_preview failed: {e}") from e
+
+
+@mcp.tool()
+def map_layer_local_to_image(
+    ctx: Context,
+    local_x: float,
+    local_y: float,
+    offset_x: float,
+    offset_y: float,
+    declaration: dict | None = None,
+) -> dict:
+    """Map layer-local coords → image canvas: image = local + offset. Host-only.
+
+    Prefer absolute canvas offsets from GIMP ``layer.get_offsets()``.
+    """
+    try:
+        if declaration is not None:
+            coords.validate_declaration(declaration)
+        ix, iy = coords.layer_local_to_image_xy(local_x, local_y, offset_x, offset_y)
+        return {
+            "image_x": ix,
+            "image_y": iy,
+            "coordinate_space": coords.COORDINATE_SPACE,
+        }
+    except ValueError as e:
+        raise Exception(f"map_layer_local_to_image failed: {e}") from e
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"map_layer_local_to_image failed: {e}") from e
+
+
+@mcp.tool()
+def map_image_to_layer_local(
+    ctx: Context,
+    image_x: float,
+    image_y: float,
+    offset_x: float,
+    offset_y: float,
+    declaration: dict | None = None,
+) -> dict:
+    """Inverse: local = image - offset. Host-only pure math."""
+    try:
+        if declaration is not None:
+            coords.validate_declaration(declaration)
+        lx, ly = coords.image_to_layer_local_xy(image_x, image_y, offset_x, offset_y)
+        return {
+            "local_x": lx,
+            "local_y": ly,
+            "coordinate_space": coords.COORDINATE_SPACE,
+        }
+    except ValueError as e:
+        raise Exception(f"map_image_to_layer_local failed: {e}") from e
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"map_image_to_layer_local failed: {e}") from e
 
 
 @mcp.tool()

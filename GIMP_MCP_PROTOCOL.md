@@ -67,8 +67,13 @@ plus mapping metadata in MCP **`structuredContent`**.
 - **Format:** PNG
 - **Returns:** ToolResult — vision ImageContent + structured mapping:
   `mode`, `image_index`, `source_width`/`source_height`, `rendered_width`/`rendered_height`,
-  `scale_x`/`scale_y` (region-relative when `region` is set), `region`, `composite_method`
+  `scale_x`/`scale_y` (region-relative when `region` is set), `region`, `composite_method`,
+  plus coordinate declaration (0008): `coordinate_space="image-pixels"`, `origin="top-left"`,
+  `x_axis="right"`, `y_axis="down"`, `preview_padding_x/y=0`, `view_rotation_ignored=true`,
+  `pixel_orientation_normalized`, `exif_orientation_original` (snapshot-time copy)
 - **Region keys:** `origin_x`/`origin_y` or `x`/`y`, plus `width`/`height`
+- **Recovery:** use host tools `map_preview_to_image` / `map_image_to_preview` with mapping
+  scales + region origin (do not invent formulas)
 
 #### `get_state_snapshot(image_index=0, max_size=512, region=None, label="")`
 Agent-oriented live preview of the **visible composite** (same capture path as
@@ -128,6 +133,30 @@ and live `flatten` paths inside `rotate_image` / `resize_canvas` when they flatt
 - `select_image`: resolve by id; **never** `Display.new`; `display: false` if no window.
 - `select_layers`: same-image handles → `set_selected_layers`; float → `SELECTION_CONFLICT`.
 - Nested layers: resolve by `layer_id`/`item_id`; name match stays **root-only**.
+
+#### Coordinate recovery + EXIF normalize (track 0008)
+
+Capability: `coordinate_exif_normalized: true` (product exposes contract + normalize tool).
+
+| Tool | Where | Notes |
+|---|---|---|
+| `map_preview_to_image` | host pure | preview → image-pixels; optional `declaration` validate |
+| `map_image_to_preview` | host pure | inverse |
+| `map_layer_local_to_image` | host pure | `image = local + offset` (prefer absolute `get_offsets`) |
+| `map_image_to_layer_local` | host pure | inverse |
+| `normalize_image_orientation` | plugin + MCP | handle preferred; `image_index` legacy |
+
+**`normalize_image_orientation(handle?, image_index?, mode="assume_pixels_upright")`**
+
+| Mode | Behavior |
+|---|---|
+| `assume_pixels_upright` (**default**) | Set both `Exif.Image.Orientation` and `Exif.Photo.Orientation` to **1**; **no** pixel ops. Safe after normal GIMP open (`policy_rotate` may already upright pixels). |
+| `trust_tag` | Apply ordered ops for tags 2–8 (`ORIENTATION_OPS`), then set tags to 1. Opt-in only when pixels still match the tag. Tags 5/7: `flip_h` then `rot90`/`rot270`. |
+
+- **Never** call `Image.policy_rotate` for this tool.
+- Atomic undo group; `set_metadata` failure → `METADATA_WRITE_FAILED` (no session flag / no gen bump).
+- Success: `pixel_orientation_normalized=true`, `generation++`, returns handle + `mode_applied` + `applied`.
+- Honesty formula for orient/mapping: session normalize flag **OR** tag is null/1.
 
 #### `get_image_metadata(image_index=0)`
 Returns comprehensive metadata about an open image without transferring bitmap data.
