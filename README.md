@@ -91,8 +91,9 @@ uv sync
 
 ### 2. Install the GIMP Plugin
 
-Copy **both** `gimp-mcp-plugin.py` **and** `gimp_mcp_security.py` to GIMP's plug-ins directory
-(same folder) and restart GIMP. The security module is stdlib-only and must sit next to the plugin.
+Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, and **`gimp_mcp_snapshot.py`**
+to GIMP's plug-ins directory (same folder) and restart GIMP. The security and snapshot
+modules are stdlib-only and must sit next to the plugin.
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
 > (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
@@ -116,7 +117,7 @@ if [ -z "$GIMP_DIR" ]; then
   exit 1
 fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py gimp_mcp_security.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
+cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 ```
@@ -125,8 +126,9 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 ```text
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_security.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_snapshot.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy both files and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy all three files and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
@@ -197,10 +199,19 @@ agent = Agent('openai:gpt-4o', mcp_servers=[server])
 ### 👁️ Visual Feedback
 
 #### `get_state_snapshot(image_index, max_size, region, label)`
-Returns a live PNG of the current image state — the AI's primary feedback mechanism. Call this between any edits to verify the result without saving to disk.
+Returns a live PNG of the **visible composite** (all visible layers, opacity, blend
+modes — GIMP's canvas projection), not a single top layer. Primary AI feedback
+mechanism. Call between edits to verify results without saving to disk. Never mutates
+the user's original image.
+
+Also returns MCP **`structuredContent`** mapping metadata (`mode`, `image_index`,
+source/rendered sizes, `scale_x`/`scale_y`, `region`, `composite_method`) so agents can
+map preview coordinates back to the canvas. When a region is cropped, scales are
+**region-relative** (`rendered / region_size`), not full-canvas. EXIF orientation is
+out of scope here (track 0008).
 
 ```python
-# Full image snapshot
+# Full image snapshot (default max edge 512)
 snapshot = get_state_snapshot(max_size=512)
 
 # Zoom into a face region for detail inspection
@@ -214,7 +225,9 @@ snapshot = get_state_snapshot(
 This enables iterative agentic workflows: **edit → snapshot → assess → refine → repeat**.
 
 #### `get_image_bitmap(image_index, max_width, max_height, region)`
-Lower-level bitmap fetch with region extraction and scaling. Returns base64-encoded PNG.
+Lower-level visible-composite bitmap fetch with region extraction and scaling.
+Supports `image_index` (default 0). Returns PNG image content plus the same
+`structuredContent` mapping as `get_state_snapshot`.
 
 ### 🎨 Adjustments
 | Tool | Description |

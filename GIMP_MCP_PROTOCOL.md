@@ -38,11 +38,24 @@ See [SECURITY.md](SECURITY.md) for env vars, start order, and residuals.
 
 ### 1. Image Export Tools
 
-#### `get_image_bitmap()` 
-Returns the current open image as an MCP-compliant Image object in PNG format.
-- **Returns**: Image object that Claude can directly process
-- **Format**: PNG
-- **MCP Compliant**: Yes - returns proper ImageContent structure
+#### `get_image_bitmap(image_index=0, max_width=None, max_height=None, region=None)`
+Returns the **visible composite** of a specified open image as PNG (MCP ImageContent)
+plus mapping metadata in MCP **`structuredContent`**.
+
+- **Composite:** all visible layers / opacity / blend / masks as GIMP's canvas projection
+  (not the top layer alone). Works on a temporary duplicate; never mutates the user's image.
+- **image_index:** which open document to capture (default `0`)
+- **Format:** PNG
+- **Returns:** ToolResult — vision ImageContent + structured mapping:
+  `mode`, `image_index`, `source_width`/`source_height`, `rendered_width`/`rendered_height`,
+  `scale_x`/`scale_y` (region-relative when `region` is set), `region`, `composite_method`
+- **Region keys:** `origin_x`/`origin_y` or `x`/`y`, plus `width`/`height`
+
+#### `get_state_snapshot(image_index=0, max_size=512, region=None, label="")`
+Agent-oriented live preview of the **visible composite** (same capture path as
+`get_image_bitmap`). Default max edge is **512**. Region may use `{x,y,width,height}`
+shorthand. Returns ToolResult with ImageContent + structuredContent mapping
+(same schema as `get_image_bitmap`).
 
 #### `get_image_metadata()` 
 Returns comprehensive metadata about the current open image without transferring bitmap data.
@@ -309,30 +322,37 @@ Gimp.displays_flush()
 ### Direct Image Access
 The GIMP MCP server now provides dedicated tools for image export that return MCP-compliant Image objects:
 
-#### Using `get_image_bitmap()`
+#### Using `get_image_bitmap()` / `get_state_snapshot()`
 ```python
-# This returns an Image object that Claude can directly process
+# Visible composite of image 0 as PNG + structuredContent mapping
 image = get_image_bitmap()
+preview = get_state_snapshot(max_size=512)
+```
 
-**Purpose:** Get the current image as a base64-encoded PNG bitmap with support for region extraction and scaling
+**Purpose:** Capture the **visible composite** of a specified open image as PNG with
+coordinate-mapping metadata (`structuredContent`). Not a single-layer export.
 
-**Parameters:**
-- `max_width` (integer, optional): Maximum width for full image scaling (center inside)
-- `max_height` (integer, optional): Maximum height for full image scaling (center inside)
-- `origin_x` (integer, optional): X coordinate for region extraction (requires all region params)
-- `origin_y` (integer, optional): Y coordinate for region extraction (requires all region params)
-- `width` (integer, optional): Width of region to extract (requires all region params)
-- `height` (integer, optional): Height of region to extract (requires all region params)
-- `scaled_to_width` (integer, optional): Target width for scaling extracted region
-- `scaled_to_height` (integer, optional): Target height for scaling extracted region
+**Parameters (`get_image_bitmap`):**
+- `image_index` (integer, default 0): which open image to capture
+- `max_width` / `max_height` (integer, optional): full-image fit scale (aspect preserved)
+- `region` (dict, optional): crop then optional scale
+  - `origin_x`/`origin_y` or `x`/`y`, `width`, `height`
+  - optional `max_width`/`max_height` for the cropped region
+
+**Parameters (`get_state_snapshot`):**
+- `image_index` (integer, default 0)
+- `max_size` (integer, default **512**): max edge for the preview
+- `region` (dict, optional): `{x,y,width,height}` or origin_* keys
+- `label` (string, optional): agent bookkeeping only
 
 **Usage Modes:**
-1. **Full Image:** No parameters - returns full image
-2. **Full Image Scaled:** `max_width` + `max_height` - scales full image to fit within bounds
-3. **Region Extract:** `origin_x` + `origin_y` + `width` + `height` - extracts specific region
-4. **Region Extract + Scale:** Region params + `scaled_to_width` + `scaled_to_height` - extracts and scales
+1. **Full Image:** omit max_* — full-resolution visible composite
+2. **Full Image Scaled:** `max_width`+`max_height` or `max_size` — fit scale
+3. **Region Extract:** region dict — crop composite, then optional scale
+4. **Other document:** `image_index=N`
 
-**Scaling Behavior:** All scaling uses "center inside" logic, preserving aspect ratio without cropping or distortion.
+**Scaling Behavior:** Aspect-preserving fit. Mapping `scale_*` uses **region** dims when
+a region is set (`rendered / region_*`); otherwise `rendered / source_*`.
 
 **Response Format:**
 ```json

@@ -90,15 +90,18 @@ minting. Track IDs are creation order, not execution order.
 ### Current product sequence (summary)
 
 ```
-0001 Quality gates bootstrap — Completed (87bc111)
+0001 Quality gates bootstrap — Completed
   → 0002 Quality surface stabilization — Completed
-  → 0003 Security … through 0028 Final product polish (v1) — NEXT
+  → 0003 SecurityHardening — Completed
+  → 0004 VisibleCompositeSnapshot — in progress / next closeout
+  → 0005 AlphaExportCorrectness … through 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
 recipes → packaging → golden path → v1 polish. Most remaining tracks are **Proposed placeholders**
-until a full planning pass. **0002 is Completed.** Next focus: **0003 SecurityHardening**.
-Authoritative table: `conductor/conductor.md`.
+until a full planning pass. **0003 Completed.** **Issue 17** (top-layer snapshot) is addressed in
+**0004** via duplicate + `merge_visible_layers(CLIP_TO_IMAGE)` + ToolResult `structuredContent`
+mapping; EXIF remains **0008**. Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -188,7 +191,7 @@ Known upstream defects (must remain visible until fixed by tracks):
 
 | Issue | Symptom | Track |
 |---|---|---|
-| #17 composite | Snapshot/top-layer buffer ≠ visible canvas | 0004 |
+| #17 composite | Snapshot must be visible canvas composite (not top layer) | **0004** (dup+merge+structuredContent; residual NDE/color-mgmt) |
 | #16 alpha | “Success” export without transparency | 0005 |
 | Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
@@ -265,7 +268,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0003 Completed** → **0004-VisibleCompositeSnapshot** next |
+| Active focus | **0004-VisibleCompositeSnapshot** (Issue 17 composite + structuredContent) → next **0005** |
 | Track count | 0001–0028 (see conductor.md) |
 
 ---
@@ -274,6 +277,7 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-02 | 0004 Issue 17: visible composite via dup+merge; ToolResult structuredContent mapping; install gimp_mcp_snapshot.py |
 | 2026-08-02 | Initial planner handoff for gimp-mcp full-product program |
 | 2026-08-02 | Expanded conductor to 28 placeholder tracks; 0001 Completed; 0002 stabilization Ready |
 | 2026-08-02 | Full plan for 0002: pins ruff 0.16.1 / basedpyright 1.39.9 / pytest 9.1.1; roll-in rules.toml + script layout |
