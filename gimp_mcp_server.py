@@ -1819,13 +1819,20 @@ def crop_to_rect(
 
 
 @mcp.tool()
-def rotate_image(ctx: Context, angle: float, image_index: int = 0) -> dict:
+def rotate_image(
+    ctx: Context,
+    angle: float,
+    image_index: int = 0,
+    confirm_destructive: bool = False,
+) -> dict:
     """Rotate the entire image.
 
     Parameters:
     - angle: Rotation in degrees — 90, 180, 270 use lossless GIMP rotation;
              other values rotate all layers with interpolation and flatten
     - image_index: Target image index (default 0)
+    - confirm_destructive: required True for free-angle branch (live flatten).
+      90/180/270 lossless paths do not require it. Missing → CONFIRM_REQUIRED.
 
     Returns status dict.
     """
@@ -1836,11 +1843,16 @@ def rotate_image(ctx: Context, angle: float, image_index: int = 0) -> dict:
             {
                 "angle": angle,
                 "image_index": image_index,
+                "confirm_destructive": confirm_destructive,
             },
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
+        code = result.get("code")
+        err = result.get("error", "Unknown error")
+        if code:
+            raise Exception(f"{code}: {err}")
+        raise Exception(err)
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"rotate_image failed: {e}")
@@ -1881,6 +1893,7 @@ def resize_canvas(
     anchor: str = "center",
     fill: str = "transparent",
     image_index: int = 0,
+    confirm_destructive: bool = False,
 ) -> dict:
     """Resize the image canvas without scaling the content.
 
@@ -1890,6 +1903,8 @@ def resize_canvas(
               "top-right", "left", "right", "bottom-left", "bottom", "bottom-right"
     - fill: Color for new canvas areas — CSS color or "transparent"
     - image_index: Target image index (default 0)
+    - confirm_destructive: required True when fill != transparent (live flatten).
+      Transparent fill does not require it. Missing → CONFIRM_REQUIRED.
 
     Returns: {status, width, height, offset_x, offset_y}
     """
@@ -1903,11 +1918,16 @@ def resize_canvas(
                 "anchor": anchor,
                 "fill": fill,
                 "image_index": image_index,
+                "confirm_destructive": confirm_destructive,
             },
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
+        code = result.get("code")
+        err = result.get("error", "Unknown error")
+        if code:
+            raise Exception(f"{code}: {err}")
+        raise Exception(err)
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"resize_canvas failed: {e}")
@@ -2367,40 +2387,71 @@ def reorder_layer(
 
 
 @mcp.tool()
-def flatten_image(ctx: Context, image_index: int = 0) -> dict:
-    """Flatten all layers into a single background layer.
+def flatten_image(
+    ctx: Context,
+    image_index: int = 0,
+    confirm_destructive: bool = False,
+) -> dict:
+    """Flatten all layers into a single background layer (destroys live stack).
 
     Parameters:
     - image_index: Target image index (default 0)
+    - confirm_destructive: must be True (default False → CONFIRM_REQUIRED)
 
-    Returns status dict.
+    Prefer ``ensure_source_immutable`` + ``checkpoint_create`` before this.
+    Returns status dict with generation/handle.
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("flatten_image", {"image_index": image_index})
+        result = conn.send_command(
+            "flatten_image",
+            {
+                "image_index": image_index,
+                "confirm_destructive": confirm_destructive,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
+        code = result.get("code")
+        err = result.get("error", "Unknown error")
+        if code:
+            raise Exception(f"{code}: {err}")
+        raise Exception(err)
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"flatten_image failed: {e}")
 
 
 @mcp.tool()
-def merge_visible_layers(ctx: Context, image_index: int = 0) -> dict:
-    """Merge all visible layers into a single layer.
+def merge_visible_layers(
+    ctx: Context,
+    image_index: int = 0,
+    confirm_destructive: bool = False,
+) -> dict:
+    """Merge all visible layers into a single layer (live document).
 
     Parameters:
     - image_index: Target image index (default 0)
+    - confirm_destructive: must be True (default False → CONFIRM_REQUIRED)
 
-    Returns: {layer_name, layer_id}
+    Returns: {layer_name, layer_id, generation, handle}
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("merge_visible_layers", {"image_index": image_index})
+        result = conn.send_command(
+            "merge_visible_layers",
+            {
+                "image_index": image_index,
+                "confirm_destructive": confirm_destructive,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
+        code = result.get("code")
+        err = result.get("error", "Unknown error")
+        if code:
+            raise Exception(f"{code}: {err}")
+        raise Exception(err)
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"merge_visible_layers failed: {e}")
@@ -2427,6 +2478,142 @@ def list_layers(ctx: Context, image_index: int = 0) -> dict:
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"list_layers failed: {e}")
+
+
+@mcp.tool()
+def ensure_source_immutable(
+    ctx: Context,
+    image_index: int = 0,
+    layer_ids: list[int] | None = None,
+) -> dict:
+    """Protect root source layers under a parasite-marked Source_Immutable group.
+
+    For each target root non-group layer (all roots when ``layer_ids`` omitted):
+    1. copy working layer into the original stack slot
+    2. reparent the original into ``Source_Immutable``
+    3. hide + lock content/position/visibility on the original
+
+    Mutating a protected item_id returns ``POLICY_DENIED`` unless the plugin
+    receives ``allow_source_mutation=true``. Idempotent for layers already under
+    the marked group. Single generation bump after all layers.
+
+    Agent intake order: orient_workspace → ensure_source_immutable →
+    checkpoint_create before destructive ops → confirm_destructive for flatten.
+
+    Parameters:
+    - image_index: Target image index (default 0)
+    - layer_ids: optional explicit root layer ids to protect
+
+    Returns: protected/working layer lists, generation, image handle.
+    """
+    try:
+        conn = get_gimp_connection()
+        params: dict[str, Any] = {"image_index": image_index}
+        if layer_ids is not None:
+            params["layer_ids"] = layer_ids
+        result = conn.send_command("ensure_source_immutable", params)
+        if result["status"] == "success":
+            return result["results"]
+        code = result.get("code")
+        err = result.get("error", "Unknown error")
+        if code:
+            raise Exception(f"{code}: {err}")
+        raise Exception(err)
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"ensure_source_immutable failed: {e}")
+
+
+@mcp.tool()
+def checkpoint_create(
+    ctx: Context,
+    label: str,
+    image_index: int = 0,
+    overwrite: bool = False,
+    include_orient_snapshot: bool = False,
+) -> dict:
+    """Save a workspace-jailed XCF checkpoint with integrity sidecar JSON.
+
+    Paths: ``{GIMP_WORKSPACE_ROOT}/.gimp-mcp-checkpoints/{label}/project.xcf``
+    and ``checkpoint.json``. Label rules: ``[A-Za-z0-9._-]+``, max 64; rejects
+    ``..``, Windows reserved names (CON/PRN/…), trailing dots/spaces.
+
+    Sidecar is written **only after** XCF save succeeds. ``xcf_sha256`` is
+    integrity of as-written bytes — **not** XCF reproducibility (0013).
+
+    Parameters:
+    - label: checkpoint label
+    - image_index: Target image index (default 0)
+    - overwrite: replace existing label (default False → CHECKPOINT_EXISTS)
+    - include_orient_snapshot: default False (orient dump not embedded)
+
+    Returns: paths, xcf_sha256, generation, handle.
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command(
+            "checkpoint_create",
+            {
+                "label": label,
+                "image_index": image_index,
+                "overwrite": overwrite,
+                "include_orient_snapshot": include_orient_snapshot,
+            },
+        )
+        if result["status"] == "success":
+            return result["results"]
+        code = result.get("code")
+        err = result.get("error", "Unknown error")
+        if code:
+            raise Exception(f"{code}: {err}")
+        raise Exception(err)
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"checkpoint_create failed: {e}")
+
+
+@mcp.tool()
+def checkpoint_restore(
+    ctx: Context,
+    label: str,
+    close_prior: bool = False,
+    image_index: int | None = None,
+    verify_hash: bool = True,
+) -> dict:
+    """Open a checkpoint XCF as a **new** image (alongside by default).
+
+    Returns a new image handle/generation. Prior handles are invalid if the
+    prior image is closed. Agent **must** call ``orient_workspace`` after restore.
+    Sidecar tattoos are write-only — no tattoo rebind in 0009.
+
+    Parameters:
+    - label: checkpoint label
+    - close_prior: if True, close the prior image after open success (default False)
+    - image_index: prior image index when close_prior is True
+    - verify_hash: soft integrity compare vs sidecar (mismatch → CHECKPOINT_CORRUPTED)
+
+    Returns: new handle, generation, hash_status, note.
+    """
+    try:
+        conn = get_gimp_connection()
+        params: dict[str, Any] = {
+            "label": label,
+            "close_prior": close_prior,
+            "verify_hash": verify_hash,
+        }
+        if image_index is not None:
+            params["image_index"] = image_index
+        result = conn.send_command("checkpoint_restore", params)
+        if result["status"] == "success":
+            return result["results"]
+        code = result.get("code")
+        err = result.get("error", "Unknown error")
+        if code:
+            raise Exception(f"{code}: {err}")
+        raise Exception(err)
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"checkpoint_restore failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

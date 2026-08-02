@@ -116,9 +116,10 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 
 **Structural mutators (bump):** `create_layer`, `duplicate_layer`, `delete_layer`,
 `reorder_layer`, `flatten_image`, `merge_visible_layers`, `add_text`, `apply_drop_shadow`,
-and live `flatten` paths inside `rotate_image` / `resize_canvas` when they flatten.
+`ensure_source_immutable` (single bump at end), and live `flatten` paths inside
+`rotate_image` / `resize_canvas` when they flatten.
 
-**Error codes (handle validation + select_*):**
+**Error codes (handle validation + select_* + policy 0009):**
 
 | Code | Recovery |
 |---|---|
@@ -127,6 +128,33 @@ and live `flatten` paths inside `rotate_image` / `resize_canvas` when they flatt
 | `HANDLE_NOT_FOUND` | Closed/invalid id or item not on claimed image |
 | `INVALID_HANDLE` | Bad shape, empty/>64 select list, mixed `image_id`s, non-layer id in `select_layers` |
 | `SELECTION_CONFLICT` | Floating selection blocks `set_selected_layers` — anchor or remove float first |
+| `POLICY_DENIED` | Target is Source_Immutable protected, or policy name collision / bad checkpoint label |
+| `CONFIRM_REQUIRED` | Live flatten/merge without `confirm_destructive=true` |
+| `CHECKPOINT_EXISTS` | Label dir/xcf exists and `overwrite=false` |
+| `CHECKPOINT_NOT_FOUND` | Restore label missing |
+| `CHECKPOINT_CORRUPTED` | Soft integrity hash mismatch on restore (optional) |
+
+#### Layer policy + checkpoints (track 0009)
+
+**Agent intake order (recommended):**
+1. `orient_workspace`
+2. `ensure_source_immutable` — protect source roots under parasite-marked `Source_Immutable`
+3. `checkpoint_create` before destructive work
+4. Live flatten/merge only with `confirm_destructive=true`
+
+| Tool | Notes |
+|---|---|
+| `ensure_source_immutable` | Locked order: copy working → insert → reorder original into group → hide+lock (content/position/**visibility**). Single gen bump at end. |
+| `checkpoint_create` | Jailed `{workspace}/.gimp-mcp-checkpoints/{label}/project.xcf` + `checkpoint.json` after successful XCF. Label: `[A-Za-z0-9._-]+`, max 64; reject `..`, Windows reserved (`CON`…). |
+| `checkpoint_restore` | Opens XCF as **new** image (alongside). Prior handles invalid if closed. **Must re-orient.** No tattoo rebind. Optional `close_prior`. |
+
+**Capabilities:** `source_immutable_policy: true`, `checkpoints: true`; `atomic_xcf_save` / `atomic_export` remain **false** until 0013.
+
+**Integrity hash:** `xcf_sha256` is integrity of **as-written** bytes — not XCF reproducibility. Soft compare on restore only; hard reopen verify → 0013.
+
+**Orient additive fields (layer nodes):** `tattoo` (when available), `protected` (session protected set).
+
+**Live flatten sites requiring `confirm_destructive`:** `flatten_image`, `merge_visible_layers`, free-angle `rotate_image` (flatten branch), `resize_canvas` when fill ≠ transparent. Snapshot/export temp-dup flatten is **not** gated.
 
 #### `select_image(handle)` / `select_layers(handles)`
 - **Handles only** (not name/index). Max **64** item handles (`MAX_SELECT_LAYERS` DoS guard).
