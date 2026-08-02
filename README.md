@@ -190,8 +190,10 @@ claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_se
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPServerStdio
 
-server = MCPServerStdio('uv', args=['run', '--directory', '/path/to/gimp-mcp', 'gimp_mcp_server.py'])
-agent = Agent('openai:gpt-4o', mcp_servers=[server])
+server = MCPServerStdio(
+    "uv", args=["run", "--directory", "/path/to/gimp-mcp", "gimp_mcp_server.py"]
+)
+agent = Agent("openai:gpt-4o", mcp_servers=[server])
 ```
 
 ---
@@ -218,9 +220,7 @@ snapshot = get_state_snapshot(max_size=512)
 
 # Zoom into a face region for detail inspection
 snapshot = get_state_snapshot(
-    region={"x": 140, "y": 80, "width": 240, "height": 300},
-    max_size=512,
-    label="face-check"
+    region={"x": 140, "y": 80, "width": 240, "height": 300}, max_size=512, label="face-check"
 )
 ```
 
