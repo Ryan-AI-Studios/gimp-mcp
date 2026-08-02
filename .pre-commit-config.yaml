@@ -1,6 +1,8 @@
+# Ruff rev must stay aligned with pyproject.toml / CI (ruff==0.16.1 as of 2026-08-02)
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.11
+    rev: v0.16.1
     hooks:
-      - id: ruff-check
+      - id: ruff
         args: [--fix]
+      - id: ruff-format

@@ -1,8 +1,18 @@
 /.idea/
 *.egg-info/
 /__pycache__/
+**/__pycache__/
 .venv/
 *.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+output/
+*.xcf
 
 # macOS
 .DS_Store
@@ -12,3 +22,19 @@
 
 # Generated test artifacts
 /tests/continuous_edit_test/output/
+
+# --- Local agent / governance (not committed; personal orchestration) ---
+.agents/
+AGENTS.md
+conductor/
+
+# Ledgerful + AI-Brains local state / secrets
+.ledgerful/
+.env
+.env.*
+!.env.example
+
+# Local Grok / IDE
+.grok/
+.vscode/
+.cursor/

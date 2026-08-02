@@ -2,20 +2,22 @@
 # GIMP MCP Server Script — improved fork
 # Adds: new_canvas, check_server, restart_server, no bitmap size restrictions
 
-from mcp.server.fastmcp import FastMCP, Context, Image
-import socket
+import base64
 import json
 import logging
-import base64
-import traceback
+import socket
 import time
+import traceback
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from mcp.server.fastmcp import Context, FastMCP, Image
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("GimpMCPServer")
 
-GIMP_HOST = 'localhost'
+GIMP_HOST = "localhost"
 GIMP_PORT = 9877
+
 
 class GimpConnection:
     def __init__(self, host=GIMP_HOST, port=GIMP_PORT):
@@ -34,7 +36,9 @@ class GimpConnection:
         except Exception as e:
             self.sock = None
             logger.error(f"Failed to connect: {e}")
-            raise ConnectionError(f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP Server plugin is running (Tools > Start MCP Server).")
+            raise ConnectionError(
+                f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
+            )
 
     def disconnect(self):
         if self.sock:
@@ -47,29 +51,37 @@ class GimpConnection:
     def send_command(self, command_type, params=None):
         if not self.sock:
             self.connect()
+        sock = self.sock
+        if sock is None:
+            raise Exception(
+                f"Could not connect to GIMP at {self.host}:{self.port}. "
+                "Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
+            )
         command = {"type": command_type, "params": params or {"args": []}}
         try:
-            self.sock.sendall(json.dumps(command).encode('utf-8') + b'\n')
-            response_data = b''
+            sock.sendall(json.dumps(command).encode("utf-8") + b"\n")
+            response_data = b""
             while True:
-                chunk = self.sock.recv(8192)
+                chunk = sock.recv(8192)
                 if not chunk:
                     break
                 response_data += chunk
                 try:
-                    json.loads(response_data.decode('utf-8'))
+                    json.loads(response_data.decode("utf-8"))
                     break
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
-            return json.loads(response_data.decode('utf-8'))
+            return json.loads(response_data.decode("utf-8"))
         except Exception as e:
             logger.error(f"Communication error: {e}")
             raise Exception(f"Error communicating with GIMP: {e}")
         finally:
             self.disconnect()
 
+
 # Global connection
 _gimp_connection = None
+
 
 def get_gimp_connection():
     global _gimp_connection
@@ -78,14 +90,20 @@ def get_gimp_connection():
         _gimp_connection.connect()
     return _gimp_connection
 
+
 def reset_gimp_connection():
     global _gimp_connection
     if _gimp_connection:
         _gimp_connection.disconnect()
     _gimp_connection = None
 
+
 # MCP server
-mcp = FastMCP("GimpMCP", description="GIMP integration through MCP — with new_canvas, check_server, restart_server")
+mcp = FastMCP(
+    "GimpMCP",
+    description="GIMP integration through MCP — with new_canvas, check_server, restart_server",
+)
+
 
 @mcp.tool()
 def check_server(ctx: Context) -> dict:
@@ -134,7 +152,7 @@ def new_canvas(
     name: str = "Untitled",
     color_mode: str = "RGB",
     fill: str = "white",
-    resolution: int = 72
+    resolution: int = 72,
 ) -> dict:
     """Create a new blank canvas in GIMP and open it in a display window.
 
@@ -161,14 +179,17 @@ def new_canvas(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("new_canvas", {
-            "width": width,
-            "height": height,
-            "name": name,
-            "color_mode": color_mode,
-            "fill": fill,
-            "resolution": resolution,
-        })
+        result = conn.send_command(
+            "new_canvas",
+            {
+                "width": width,
+                "height": height,
+                "name": name,
+                "color_mode": color_mode,
+                "fill": fill,
+                "resolution": resolution,
+            },
+        )
         if result["status"] != "success":
             raise Exception(result.get("error", "Unknown error"))
         return result["results"]
@@ -178,7 +199,12 @@ def new_canvas(
 
 
 @mcp.tool()
-def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int | None = None, region: dict | None = None) -> Image:
+def get_image_bitmap(
+    ctx: Context,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    region: dict | None = None,
+) -> Image:
     """Get the current open image in GIMP as an Image object with optional scaling and region selection.
 
     No size restrictions — pass any max_width/max_height you need.
@@ -212,11 +238,10 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
     - RuntimeError if no image is open, region is invalid, or export fails
     """
     try:
-
         print("Requesting current image bitmap from GIMP...")
 
         conn = get_gimp_connection()
-        
+
         # Build parameters for the bitmap request
         params = {}
         if max_width is not None:
@@ -225,10 +250,10 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
             params["max_height"] = max_height
         if region is not None:
             params["region"] = region
-            
+
         result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
-            # Extract the base64 image data 
+            # Extract the base64 image data
             image_info = result["results"]
             base64_data = image_info["image_data"]
 
@@ -246,24 +271,24 @@ def get_image_bitmap(ctx: Context, max_width: int | None = None, max_height: int
 @mcp.tool()
 def get_image_metadata(ctx: Context) -> dict:
     """Get metadata about the current open image in GIMP without the bitmap data.
-    
+
     Returns detailed information about the currently active image including:
     - Image dimensions (width, height)
     - Color mode and base type
     - Number of layers and channels
     - File information if available
     - Layer structure and properties
-    
+
     This is much faster than get_image_bitmap() since it doesn't export the actual image data.
     Perfect for when you only need to know image properties for decision making.
-    
+
     Returns:
     - Dictionary containing comprehensive image metadata
     - Raises exception if no images are open
     """
     try:
         print("Requesting current image metadata from GIMP...")
-        
+
         conn = get_gimp_connection()
         result = conn.send_command("get_image_metadata")
         if result["status"] == "success":
@@ -307,13 +332,14 @@ def get_gimp_info(ctx: Context) -> dict:
         traceback.print_exc()
         raise Exception(f"Failed to get GIMP info: {e}")
 
+
 @mcp.tool()
 def get_state_snapshot(
     ctx: Context,
     image_index: int = 0,
     max_size: int = 512,
     region: dict | None = None,
-    label: str = ""
+    label: str = "",
 ) -> Image:
     """Return a live visual snapshot of the current image state — no file save needed.
 
@@ -344,19 +370,19 @@ def get_state_snapshot(
         conn = get_gimp_connection()
         params: dict = {"image_index": image_index}
         if max_size:
-            params["max_width"]  = max_size
+            params["max_width"] = max_size
             params["max_height"] = max_size
         if region:
             params["region"] = {
                 "origin_x": int(region.get("x", 0)),
                 "origin_y": int(region.get("y", 0)),
-                "width":    int(region.get("width",  max_size)),
-                "height":   int(region.get("height", max_size)),
+                "width": int(region.get("width", max_size)),
+                "height": int(region.get("height", max_size)),
             }
         result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
-            img_info  = result["results"]
-            b64_data  = img_info["image_data"]
+            img_info = result["results"]
+            b64_data = img_info["image_data"]
             raw_bytes = base64.b64decode(b64_data)
             return Image(data=raw_bytes, format="png")
         raise Exception(result.get("error", "Unknown error"))
@@ -403,7 +429,12 @@ def get_context_state(ctx: Context) -> dict:
 
 
 @mcp.tool()
-def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) -> str:
+def call_api(
+    ctx: Context,
+    api_path: str,
+    args: list | None = None,
+    kwargs: dict | None = None,
+) -> str:
     """Call GIMP 3.2 API methods through PyGObject console.
 
     GIMP MCP Protocol:
@@ -426,14 +457,14 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
 
     Common Operations:
     - Draw line: ["Gimp.pencil(drawable1, [0, 0, 200, 200])", "Gimp.displays_flush()"]
-    - Set color: ["from gi.repository import Gegl", "red_color = Gegl.Color.new('red')", 
+    - Set color: ["from gi.repository import Gegl", "red_color = Gegl.Color.new('red')",
                   "Gimp.context_set_foreground(red_color)"]
     - Draw ellipse: ["Gimp.Image.select_ellipse(image1, Gimp.ChannelOps.REPLACE, 100, 100, 30, 20)",
                      "Gimp.Drawable.edit_fill(drawable1, Gimp.FillType.FOREGROUND)",
                      "Gimp.Selection.none(image1)", "Gimp.displays_flush()"]
-    - Paint curve: ["Gimp.paintbrush_default(drawable1, [50.0, 50.0, 150.0, 200.0, 250.0, 50.0, 350.0, 200.0])", 
+    - Paint curve: ["Gimp.paintbrush_default(drawable1, [50.0, 50.0, 150.0, 200.0, 250.0, 50.0, 350.0, 200.0])",
                     "Gimp.displays_flush()"]
-    - Draw bezier curve: ["path = Gimp.Path.new(image1, 'my_bezier_path')", 
+    - Draw bezier curve: ["path = Gimp.Path.new(image1, 'my_bezier_path')",
                           "image1.insert_path(path, None, 0)",
                           "stroke_id = path.bezier_stroke_new_moveto(100, 100)",
                           "path.bezier_stroke_cubicto(stroke_id, 150, 50, 250, 150, 300, 100)",
@@ -452,7 +483,7 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
                   "image1.insert_layer(layer1, None, 0)", "drawable1 = layer1",
                   "white_color = Gegl.Color.new('white')", "Gimp.context_set_background(white_color)",
                   "Gimp.Drawable.edit_fill(drawable1, Gimp.FillType.BACKGROUND)", "Gimp.Display.new(image1)"]
-    
+
     Important Tips:
     - When filling layers with color, ensure layer has alpha channel using Gimp.Layer.add_alpha()
     - Use Gimp.Drawable.fill() for reliable full-layer fills
@@ -475,15 +506,22 @@ def call_api(ctx: Context, api_path: str, args: list = [], kwargs: dict = {}) ->
     Returns:
     - JSON string of the result or error message
     """
+    if args is None:
+        args = []
+    if kwargs is None:
+        kwargs = {}
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("call_api", {"api_path": api_path, "args": args, "kwargs": kwargs})
+        result = conn.send_command(
+            "call_api", {"api_path": api_path, "args": args, "kwargs": kwargs}
+        )
         if result["status"] == "success":
             return json.dumps(result["results"])
         else:
             return f"Error: {json.dumps(result['error'])}"
     except Exception as e:
         return f"Error: {e}"
+
 
 @mcp.prompt(
     description="GIMP MCP best practices for common operations - filling shapes, bezier paths, and variable persistence"
@@ -496,6 +534,7 @@ def gimp_best_practices() -> str:
     """
     docs_path = Path(__file__).parent / "docs" / "best_practices.md"
     return docs_path.read_text()
+
 
 @mcp.prompt(
     description="Iterative workflow guidance for building complex images with proper validation and layer management"
@@ -513,9 +552,11 @@ def gimp_iterative_workflow() -> str:
     docs_path = Path(__file__).parent / "docs" / "iterative_workflow.md"
     return docs_path.read_text()
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY 1 — File Operations
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 def open_image(ctx: Context, file_path: str) -> dict:
@@ -572,7 +613,7 @@ def export_image(
     format: str = "png",
     quality: int = 90,
     flatten: bool = True,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Export the current image to a raster file (PNG, JPEG, WEBP, TIFF).
 
@@ -588,13 +629,16 @@ def export_image(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("export_image", {
-            "file_path": file_path,
-            "format": format,
-            "quality": quality,
-            "flatten": flatten,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "export_image",
+            {
+                "file_path": file_path,
+                "format": format,
+                "quality": quality,
+                "flatten": flatten,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -610,7 +654,7 @@ def batch_export(
     format: str = "png",
     quality: int = 90,
     name_pattern: str = "{name}",
-    image_index: int | None = None
+    image_index: int | None = None,
 ) -> dict:
     """Export all open images (or a specific one) to a directory.
 
@@ -649,6 +693,7 @@ def batch_export(
 # CATEGORY 2 — Image Adjustments
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = None) -> dict:
     """Automatically stretch the tonal range of an image (auto levels / auto stretch contrast).
@@ -661,7 +706,9 @@ def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = Non
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("auto_levels", {"image_index": image_index, "layer_name": layer_name})
+        result = conn.send_command(
+            "auto_levels", {"image_index": image_index, "layer_name": layer_name}
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -677,7 +724,7 @@ def adjust_curves(
     points: list | None = None,
     channel: str = "value",
     image_index: int = 0,
-    layer_name: str | None = None
+    layer_name: str | None = None,
 ) -> dict:
     """Adjust tonal curves for a layer.
 
@@ -692,13 +739,16 @@ def adjust_curves(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("adjust_curves", {
-            "preset": preset,
-            "points": points,
-            "channel": channel,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "adjust_curves",
+            {
+                "preset": preset,
+                "points": points,
+                "channel": channel,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -713,7 +763,7 @@ def adjust_brightness_contrast(
     brightness: int = 0,
     contrast: int = 0,
     image_index: int = 0,
-    layer_name: str | None = None
+    layer_name: str | None = None,
 ) -> dict:
     """Adjust brightness and contrast of a layer.
 
@@ -727,12 +777,15 @@ def adjust_brightness_contrast(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("adjust_brightness_contrast", {
-            "brightness": brightness,
-            "contrast": contrast,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "adjust_brightness_contrast",
+            {
+                "brightness": brightness,
+                "contrast": contrast,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -749,7 +802,7 @@ def adjust_hue_saturation(
     lightness: float = 0,
     color_range: str = "all",
     image_index: int = 0,
-    layer_name: str | None = None
+    layer_name: str | None = None,
 ) -> dict:
     """Adjust hue, saturation, and lightness of a layer.
 
@@ -765,14 +818,17 @@ def adjust_hue_saturation(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("adjust_hue_saturation", {
-            "hue": hue,
-            "saturation": saturation,
-            "lightness": lightness,
-            "color_range": color_range,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "adjust_hue_saturation",
+            {
+                "hue": hue,
+                "saturation": saturation,
+                "lightness": lightness,
+                "color_range": color_range,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -789,7 +845,7 @@ def adjust_color_balance(
     yellow_blue: float = 0,
     range: str = "midtones",
     image_index: int = 0,
-    layer_name: str | None = None
+    layer_name: str | None = None,
 ) -> dict:
     """Adjust color balance (shadows / midtones / highlights) of a layer.
 
@@ -805,14 +861,17 @@ def adjust_color_balance(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("adjust_color_balance", {
-            "cyan_red": cyan_red,
-            "magenta_green": magenta_green,
-            "yellow_blue": yellow_blue,
-            "range": range,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "adjust_color_balance",
+            {
+                "cyan_red": cyan_red,
+                "magenta_green": magenta_green,
+                "yellow_blue": yellow_blue,
+                "range": range,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -828,7 +887,7 @@ def sharpen(
     radius: float = 3.0,
     threshold: int = 0,
     image_index: int = 0,
-    layer_name: str | None = None
+    layer_name: str | None = None,
 ) -> dict:
     """Sharpen a layer using unsharp mask.
 
@@ -843,13 +902,16 @@ def sharpen(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("sharpen", {
-            "amount": amount,
-            "radius": radius,
-            "threshold": threshold,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "sharpen",
+            {
+                "amount": amount,
+                "radius": radius,
+                "threshold": threshold,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -864,7 +926,7 @@ def blur(
     radius_x: float = 5.0,
     radius_y: float = 5.0,
     image_index: int = 0,
-    layer_name: str | None = None
+    layer_name: str | None = None,
 ) -> dict:
     """Apply Gaussian blur to a layer.
 
@@ -878,12 +940,15 @@ def blur(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("blur", {
-            "radius_x": radius_x,
-            "radius_y": radius_y,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "blur",
+            {
+                "radius_x": radius_x,
+                "radius_y": radius_y,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -894,10 +959,7 @@ def blur(
 
 @mcp.tool()
 def denoise(
-    ctx: Context,
-    strength: int = 50,
-    image_index: int = 0,
-    layer_name: str | None = None
+    ctx: Context, strength: int = 50, image_index: int = 0, layer_name: str | None = None
 ) -> dict:
     """Reduce noise in a layer using GEGL noise-reduction.
 
@@ -910,11 +972,14 @@ def denoise(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("denoise", {
-            "strength": strength,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "denoise",
+            {
+                "strength": strength,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -925,10 +990,7 @@ def denoise(
 
 @mcp.tool()
 def desaturate(
-    ctx: Context,
-    mode: str = "luminosity",
-    image_index: int = 0,
-    layer_name: str | None = None
+    ctx: Context, mode: str = "luminosity", image_index: int = 0, layer_name: str | None = None
 ) -> dict:
     """Convert a layer to grayscale (desaturate).
 
@@ -941,11 +1003,14 @@ def desaturate(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("desaturate", {
-            "mode": mode,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "desaturate",
+            {
+                "mode": mode,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -955,11 +1020,7 @@ def desaturate(
 
 
 @mcp.tool()
-def invert_colors(
-    ctx: Context,
-    image_index: int = 0,
-    layer_name: str | None = None
-) -> dict:
+def invert_colors(ctx: Context, image_index: int = 0, layer_name: str | None = None) -> dict:
     """Invert all colors in a layer (create a negative).
 
     Parameters:
@@ -970,10 +1031,13 @@ def invert_colors(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("invert_colors", {
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "invert_colors",
+            {
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -986,13 +1050,10 @@ def invert_colors(
 # CATEGORY 3 — Resize & Transform
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def scale_image(
-    ctx: Context,
-    width: int,
-    height: int,
-    interpolation: str = "cubic",
-    image_index: int = 0
+    ctx: Context, width: int, height: int, interpolation: str = "cubic", image_index: int = 0
 ) -> dict:
     """Scale an image to exact pixel dimensions.
 
@@ -1006,12 +1067,15 @@ def scale_image(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("scale_image", {
-            "width": width,
-            "height": height,
-            "interpolation": interpolation,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "scale_image",
+            {
+                "width": width,
+                "height": height,
+                "interpolation": interpolation,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1026,7 +1090,7 @@ def scale_to_fit(
     max_width: int,
     max_height: int,
     interpolation: str = "cubic",
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Scale an image to fit within a bounding box, preserving aspect ratio.
 
@@ -1040,12 +1104,15 @@ def scale_to_fit(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("scale_to_fit", {
-            "max_width": max_width,
-            "max_height": max_height,
-            "interpolation": interpolation,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "scale_to_fit",
+            {
+                "max_width": max_width,
+                "max_height": max_height,
+                "interpolation": interpolation,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1055,11 +1122,7 @@ def scale_to_fit(
 
 
 @mcp.tool()
-def crop_to_selection(
-    ctx: Context,
-    autocrop: bool = False,
-    image_index: int = 0
-) -> dict:
+def crop_to_selection(ctx: Context, autocrop: bool = False, image_index: int = 0) -> dict:
     """Crop the image canvas to the current selection bounds.
 
     Parameters:
@@ -1070,10 +1133,13 @@ def crop_to_selection(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("crop_to_selection", {
-            "autocrop": autocrop,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "crop_to_selection",
+            {
+                "autocrop": autocrop,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1084,12 +1150,7 @@ def crop_to_selection(
 
 @mcp.tool()
 def crop_to_rect(
-    ctx: Context,
-    x: int,
-    y: int,
-    width: int,
-    height: int,
-    image_index: int = 0
+    ctx: Context, x: int, y: int, width: int, height: int, image_index: int = 0
 ) -> dict:
     """Crop the image canvas to an explicit rectangle.
 
@@ -1102,13 +1163,16 @@ def crop_to_rect(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("crop_to_rect", {
-            "x": x,
-            "y": y,
-            "width": width,
-            "height": height,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "crop_to_rect",
+            {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1118,11 +1182,7 @@ def crop_to_rect(
 
 
 @mcp.tool()
-def rotate_image(
-    ctx: Context,
-    angle: float,
-    image_index: int = 0
-) -> dict:
+def rotate_image(ctx: Context, angle: float, image_index: int = 0) -> dict:
     """Rotate the entire image.
 
     Parameters:
@@ -1134,10 +1194,13 @@ def rotate_image(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("rotate_image", {
-            "angle": angle,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "rotate_image",
+            {
+                "angle": angle,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1147,11 +1210,7 @@ def rotate_image(
 
 
 @mcp.tool()
-def flip_image(
-    ctx: Context,
-    direction: str = "horizontal",
-    image_index: int = 0
-) -> dict:
+def flip_image(ctx: Context, direction: str = "horizontal", image_index: int = 0) -> dict:
     """Flip the entire image horizontally or vertically.
 
     Parameters:
@@ -1162,10 +1221,13 @@ def flip_image(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("flip_image", {
-            "direction": direction,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "flip_image",
+            {
+                "direction": direction,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1181,7 +1243,7 @@ def resize_canvas(
     height: int,
     anchor: str = "center",
     fill: str = "transparent",
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Resize the image canvas without scaling the content.
 
@@ -1196,13 +1258,16 @@ def resize_canvas(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("resize_canvas", {
-            "width": width,
-            "height": height,
-            "anchor": anchor,
-            "fill": fill,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "resize_canvas",
+            {
+                "width": width,
+                "height": height,
+                "anchor": anchor,
+                "fill": fill,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1215,6 +1280,7 @@ def resize_canvas(
 # CATEGORY 4 — Selections
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def select_rectangle(
     ctx: Context,
@@ -1224,7 +1290,7 @@ def select_rectangle(
     height: int,
     operation: str = "replace",
     feather: float = 0,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Create a rectangular selection.
 
@@ -1239,10 +1305,18 @@ def select_rectangle(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("select_rectangle", {
-            "x": x, "y": y, "width": width, "height": height,
-            "operation": operation, "feather": feather, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "select_rectangle",
+            {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "operation": operation,
+                "feather": feather,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1260,7 +1334,7 @@ def select_ellipse(
     height: int,
     operation: str = "replace",
     feather: float = 0,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Create an elliptical selection.
 
@@ -1275,10 +1349,18 @@ def select_ellipse(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("select_ellipse", {
-            "x": x, "y": y, "width": width, "height": height,
-            "operation": operation, "feather": feather, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "select_ellipse",
+            {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "operation": operation,
+                "feather": feather,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1294,7 +1376,7 @@ def select_by_color(
     threshold: int = 15,
     operation: str = "replace",
     image_index: int = 0,
-    layer_name: str | None = None
+    layer_name: str | None = None,
 ) -> dict:
     """Select regions by color similarity.
 
@@ -1309,13 +1391,16 @@ def select_by_color(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("select_by_color", {
-            "color": color,
-            "threshold": threshold,
-            "operation": operation,
-            "image_index": image_index,
-            "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "select_by_color",
+            {
+                "color": color,
+                "threshold": threshold,
+                "operation": operation,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1385,12 +1470,7 @@ def invert_selection(ctx: Context, image_index: int = 0) -> dict:
 
 
 @mcp.tool()
-def modify_selection(
-    ctx: Context,
-    operation: str,
-    amount: float,
-    image_index: int = 0
-) -> dict:
+def modify_selection(ctx: Context, operation: str, amount: float, image_index: int = 0) -> dict:
     """Grow, shrink, feather, border, or sharpen the current selection.
 
     Parameters:
@@ -1402,11 +1482,14 @@ def modify_selection(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("modify_selection", {
-            "operation": operation,
-            "amount": amount,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "modify_selection",
+            {
+                "operation": operation,
+                "amount": amount,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1419,6 +1502,7 @@ def modify_selection(
 # CATEGORY 5 — Layer Operations
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def create_layer(
     ctx: Context,
@@ -1429,7 +1513,7 @@ def create_layer(
     opacity: float = 100,
     blend_mode: str = "NORMAL",
     position: int = -1,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Create and insert a new layer into an image.
 
@@ -1446,11 +1530,19 @@ def create_layer(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("create_layer", {
-            "name": name, "width": width, "height": height,
-            "fill": fill, "opacity": opacity, "blend_mode": blend_mode,
-            "position": position, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "create_layer",
+            {
+                "name": name,
+                "width": width,
+                "height": height,
+                "fill": fill,
+                "opacity": opacity,
+                "blend_mode": blend_mode,
+                "position": position,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1460,11 +1552,7 @@ def create_layer(
 
 
 @mcp.tool()
-def duplicate_layer(
-    ctx: Context,
-    layer_name: str | None = None,
-    image_index: int = 0
-) -> dict:
+def duplicate_layer(ctx: Context, layer_name: str | None = None, image_index: int = 0) -> dict:
     """Duplicate a layer and insert the copy above it.
 
     Parameters:
@@ -1475,10 +1563,13 @@ def duplicate_layer(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("duplicate_layer", {
-            "layer_name": layer_name,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "duplicate_layer",
+            {
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1492,7 +1583,7 @@ def delete_layer(
     ctx: Context,
     layer_name: str | None = None,
     layer_index: int | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Delete a layer from an image.
 
@@ -1507,11 +1598,14 @@ def delete_layer(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("delete_layer", {
-            "layer_name": layer_name,
-            "layer_index": layer_index,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "delete_layer",
+            {
+                "layer_name": layer_name,
+                "layer_index": layer_index,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1526,7 +1620,7 @@ def rename_layer(
     new_name: str,
     old_name: str | None = None,
     layer_index: int | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Rename a layer.
 
@@ -1540,12 +1634,15 @@ def rename_layer(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("rename_layer", {
-            "old_name": old_name,
-            "layer_index": layer_index,
-            "new_name": new_name,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "rename_layer",
+            {
+                "old_name": old_name,
+                "layer_index": layer_index,
+                "new_name": new_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1562,7 +1659,7 @@ def set_layer_properties(
     opacity: float | None = None,
     blend_mode: str | None = None,
     visible: bool | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Set properties on an existing layer.
 
@@ -1577,11 +1674,17 @@ def set_layer_properties(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("set_layer_properties", {
-            "layer_name": layer_name, "layer_index": layer_index,
-            "opacity": opacity, "blend_mode": blend_mode,
-            "visible": visible, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "set_layer_properties",
+            {
+                "layer_name": layer_name,
+                "layer_index": layer_index,
+                "opacity": opacity,
+                "blend_mode": blend_mode,
+                "visible": visible,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1596,7 +1699,7 @@ def reorder_layer(
     new_position: int,
     layer_name: str | None = None,
     layer_index: int | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Move a layer to a new stack position.
 
@@ -1609,10 +1712,15 @@ def reorder_layer(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("reorder_layer", {
-            "layer_name": layer_name, "layer_index": layer_index,
-            "new_position": new_position, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "reorder_layer",
+            {
+                "layer_name": layer_name,
+                "layer_index": layer_index,
+                "new_position": new_position,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1685,12 +1793,10 @@ def list_layers(ctx: Context, image_index: int = 0) -> dict:
 # CATEGORY 6 — Color & Paint
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def fill_layer(
-    ctx: Context,
-    color: str,
-    layer_name: str | None = None,
-    image_index: int = 0
+    ctx: Context, color: str, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
     """Fill an entire layer with a solid color.
 
@@ -1703,9 +1809,14 @@ def fill_layer(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("fill_layer", {
-            "color": color, "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "fill_layer",
+            {
+                "color": color,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1720,7 +1831,7 @@ def fill_selection(
     color: str | None = None,
     fill_type: str | None = None,
     image_index: int = 0,
-    layer_name: str | None = None
+    layer_name: str | None = None,
 ) -> dict:
     """Fill the current selection with a color or fill type.
 
@@ -1734,10 +1845,15 @@ def fill_selection(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("fill_selection", {
-            "color": color, "fill_type": fill_type,
-            "image_index": image_index, "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "fill_selection",
+            {
+                "color": color,
+                "fill_type": fill_type,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1747,11 +1863,7 @@ def fill_selection(
 
 
 @mcp.tool()
-def set_colors(
-    ctx: Context,
-    foreground: str | None = None,
-    background: str | None = None
-) -> dict:
+def set_colors(ctx: Context, foreground: str | None = None, background: str | None = None) -> dict:
     """Set the GIMP foreground and/or background color.
 
     Parameters:
@@ -1762,9 +1874,13 @@ def set_colors(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("set_colors", {
-            "foreground": foreground, "background": background,
-        })
+        result = conn.send_command(
+            "set_colors",
+            {
+                "foreground": foreground,
+                "background": background,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1784,7 +1900,7 @@ def draw_line(
     width: float = 2.0,
     tool: str = "pencil",
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Draw a straight line on a layer.
 
@@ -1801,11 +1917,20 @@ def draw_line(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("draw_line", {
-            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "color": color, "width": width, "tool": tool,
-            "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "draw_line",
+            {
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "color": color,
+                "width": width,
+                "tool": tool,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1824,7 +1949,7 @@ def draw_rectangle(
     color: str | None = None,
     line_width: float = 2.0,
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Draw a rectangle outline (stroke only) on a layer.
 
@@ -1840,11 +1965,19 @@ def draw_rectangle(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("draw_rectangle", {
-            "x": x, "y": y, "width": width, "height": height,
-            "color": color, "line_width": line_width,
-            "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "draw_rectangle",
+            {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "color": color,
+                "line_width": line_width,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1863,7 +1996,7 @@ def draw_ellipse(
     color: str | None = None,
     line_width: float = 2.0,
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Draw an ellipse outline (stroke only) on a layer.
 
@@ -1879,11 +2012,19 @@ def draw_ellipse(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("draw_ellipse", {
-            "x": x, "y": y, "width": width, "height": height,
-            "color": color, "line_width": line_width,
-            "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "draw_ellipse",
+            {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "color": color,
+                "line_width": line_width,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1901,7 +2042,7 @@ def fill_rectangle(
     height: int,
     color: str,
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Fill a rectangular region with a solid color.
 
@@ -1916,10 +2057,18 @@ def fill_rectangle(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("fill_rectangle", {
-            "x": x, "y": y, "width": width, "height": height,
-            "color": color, "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "fill_rectangle",
+            {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "color": color,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1937,7 +2086,7 @@ def fill_ellipse(
     height: int,
     color: str,
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Fill an elliptical region with a solid color.
 
@@ -1952,10 +2101,18 @@ def fill_ellipse(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("fill_ellipse", {
-            "x": x, "y": y, "width": width, "height": height,
-            "color": color, "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "fill_ellipse",
+            {
+                "x": x,
+                "y": y,
+                "width": width,
+                "height": height,
+                "color": color,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1975,7 +2132,7 @@ def gradient_fill(
     y2: float | None = None,
     gradient_type: str = "linear",
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Fill a layer or selection with a gradient.
 
@@ -1992,12 +2149,20 @@ def gradient_fill(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("gradient_fill", {
-            "color1": color1, "color2": color2,
-            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "gradient_type": gradient_type,
-            "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "gradient_fill",
+            {
+                "color1": color1,
+                "color2": color2,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "gradient_type": gradient_type,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2010,6 +2175,7 @@ def gradient_fill(
 # CATEGORY 7 — Text
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def add_text(
     ctx: Context,
@@ -2019,7 +2185,7 @@ def add_text(
     font: str = "Sans",
     size: int = 24,
     color: str = "black",
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Add a text layer to an image.
 
@@ -2035,11 +2201,18 @@ def add_text(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("add_text", {
-            "text": text, "x": x, "y": y,
-            "font": font, "size": size, "color": color,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "add_text",
+            {
+                "text": text,
+                "x": x,
+                "y": y,
+                "font": font,
+                "size": size,
+                "color": color,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2056,7 +2229,7 @@ def edit_text(
     font: str | None = None,
     size: float | None = None,
     color: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Edit an existing text layer's content or formatting.
 
@@ -2072,11 +2245,17 @@ def edit_text(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("edit_text", {
-            "layer_name": layer_name, "text": text,
-            "font": font, "size": size, "color": color,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "edit_text",
+            {
+                "layer_name": layer_name,
+                "text": text,
+                "font": font,
+                "size": size,
+                "color": color,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2109,6 +2288,7 @@ def list_fonts(ctx: Context, filter: str | None = None) -> dict:
 # CATEGORY 8 — Filters & Effects
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def apply_drop_shadow(
     ctx: Context,
@@ -2118,7 +2298,7 @@ def apply_drop_shadow(
     color: str = "black",
     opacity: float = 60,
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Apply a drop shadow effect to a layer.
 
@@ -2134,11 +2314,18 @@ def apply_drop_shadow(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("apply_drop_shadow", {
-            "offset_x": offset_x, "offset_y": offset_y,
-            "blur_radius": blur_radius, "color": color, "opacity": opacity,
-            "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "apply_drop_shadow",
+            {
+                "offset_x": offset_x,
+                "offset_y": offset_y,
+                "blur_radius": blur_radius,
+                "color": color,
+                "opacity": opacity,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2149,10 +2336,7 @@ def apply_drop_shadow(
 
 @mcp.tool()
 def apply_gaussian_blur(
-    ctx: Context,
-    radius: float = 5.0,
-    layer_name: str | None = None,
-    image_index: int = 0
+    ctx: Context, radius: float = 5.0, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
     """Apply Gaussian blur as a destructive filter operation.
 
@@ -2165,9 +2349,14 @@ def apply_gaussian_blur(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("apply_gaussian_blur", {
-            "radius": radius, "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "apply_gaussian_blur",
+            {
+                "radius": radius,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2178,10 +2367,7 @@ def apply_gaussian_blur(
 
 @mcp.tool()
 def apply_pixelate(
-    ctx: Context,
-    block_size: int = 10,
-    layer_name: str | None = None,
-    image_index: int = 0
+    ctx: Context, block_size: int = 10, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
     """Pixelate a layer using a mosaic/block effect.
 
@@ -2194,9 +2380,14 @@ def apply_pixelate(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("apply_pixelate", {
-            "block_size": block_size, "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "apply_pixelate",
+            {
+                "block_size": block_size,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2212,7 +2403,7 @@ def apply_emboss(
     elevation: float = 45,
     depth: float = 2,
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Apply an emboss (bas-relief) effect to a layer.
 
@@ -2227,10 +2418,16 @@ def apply_emboss(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("apply_emboss", {
-            "azimuth": azimuth, "elevation": elevation, "depth": depth,
-            "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "apply_emboss",
+            {
+                "azimuth": azimuth,
+                "elevation": elevation,
+                "depth": depth,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2245,7 +2442,7 @@ def apply_vignette(
     softness: float = 3.0,
     shape: float = 1.0,
     layer_name: str | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Apply a vignette darkening effect around the edges of a layer.
 
@@ -2259,10 +2456,15 @@ def apply_vignette(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("apply_vignette", {
-            "softness": softness, "shape": shape,
-            "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "apply_vignette",
+            {
+                "softness": softness,
+                "shape": shape,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2273,10 +2475,7 @@ def apply_vignette(
 
 @mcp.tool()
 def apply_noise(
-    ctx: Context,
-    amount: float = 0.2,
-    layer_name: str | None = None,
-    image_index: int = 0
+    ctx: Context, amount: float = 0.2, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
     """Add noise/grain to a layer.
 
@@ -2289,9 +2488,14 @@ def apply_noise(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("apply_noise", {
-            "amount": amount, "layer_name": layer_name, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "apply_noise",
+            {
+                "amount": amount,
+                "layer_name": layer_name,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2304,13 +2508,14 @@ def apply_noise(
 # CATEGORY 9 — Export Pipelines
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @mcp.tool()
 def export_icon_sizes(
     ctx: Context,
     output_dir: str,
     platform: str = "android",
     source_image_index: int = 0,
-    format: str = "png"
+    format: str = "png",
 ) -> dict:
     """Export an image as a complete icon set for Android or iOS.
 
@@ -2328,10 +2533,15 @@ def export_icon_sizes(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("export_icon_sizes", {
-            "output_dir": output_dir, "platform": platform,
-            "source_image_index": source_image_index, "format": format,
-        })
+        result = conn.send_command(
+            "export_icon_sizes",
+            {
+                "output_dir": output_dir,
+                "platform": platform,
+                "source_image_index": source_image_index,
+                "format": format,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2348,7 +2558,7 @@ def export_web_optimized(
     png_compression: int = 9,
     max_width: int | None = None,
     max_height: int | None = None,
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Export an image as both JPEG and PNG, choosing the smaller format.
 
@@ -2363,14 +2573,17 @@ def export_web_optimized(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("export_web_optimized", {
-            "output_dir": output_dir,
-            "jpeg_quality": jpeg_quality,
-            "png_compression": png_compression,
-            "max_width": max_width,
-            "max_height": max_height,
-            "image_index": image_index,
-        })
+        result = conn.send_command(
+            "export_web_optimized",
+            {
+                "output_dir": output_dir,
+                "jpeg_quality": jpeg_quality,
+                "png_compression": png_compression,
+                "max_width": max_width,
+                "max_height": max_height,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2397,7 +2610,7 @@ def warp_region(
         - x, y      : center of the warp influence (pixels)
         - dx, dy    : push direction — negative dy = push upward
         - radius    : influence radius in pixels (default: 40)
-        - amount    : deform strength 0–1 (default: 0.3)
+        - amount    : deform strength 0-1 (default: 0.3)
     - image_index: Which open image to edit (default: 0)
     - layer_name: Target layer; omit to use the active/top layer
 
@@ -2412,11 +2625,14 @@ def warp_region(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("warp_region", {
-            "image_index": image_index,
-            "layer_name":  layer_name,
-            "vectors":     vectors,
-        })
+        result = conn.send_command(
+            "warp_region",
+            {
+                "image_index": image_index,
+                "layer_name": layer_name,
+                "vectors": vectors,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2431,7 +2647,7 @@ def batch_resize(
     width: int | None = None,
     height: int | None = None,
     scale_factor: float | None = None,
-    maintain_aspect: bool = True
+    maintain_aspect: bool = True,
 ) -> dict:
     """Resize all open images to a common target size.
 
@@ -2444,10 +2660,15 @@ def batch_resize(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("batch_resize", {
-            "width": width, "height": height,
-            "scale_factor": scale_factor, "maintain_aspect": maintain_aspect,
-        })
+        result = conn.send_command(
+            "batch_resize",
+            {
+                "width": width,
+                "height": height,
+                "scale_factor": scale_factor,
+                "maintain_aspect": maintain_aspect,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2463,7 +2684,7 @@ def export_sprite_sheet(
     columns: int | None = None,
     padding: int = 0,
     source: str = "layers",
-    image_index: int = 0
+    image_index: int = 0,
 ) -> dict:
     """Combine multiple frames into a sprite sheet PNG.
 
@@ -2478,10 +2699,16 @@ def export_sprite_sheet(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("export_sprite_sheet", {
-            "output_path": output_path, "columns": columns,
-            "padding": padding, "source": source, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "export_sprite_sheet",
+            {
+                "output_path": output_path,
+                "columns": columns,
+                "padding": padding,
+                "source": source,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2492,10 +2719,7 @@ def export_sprite_sheet(
 
 @mcp.tool()
 def export_social_media_kit(
-    ctx: Context,
-    output_dir: str,
-    platforms: list | None = None,
-    image_index: int = 0
+    ctx: Context, output_dir: str, platforms: list | None = None, image_index: int = 0
 ) -> dict:
     """Export an image resized for multiple social media platforms.
 
@@ -2515,9 +2739,14 @@ def export_social_media_kit(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("export_social_media_kit", {
-            "output_dir": output_dir, "platforms": platforms, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "export_social_media_kit",
+            {
+                "output_dir": output_dir,
+                "platforms": platforms,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2529,6 +2758,7 @@ def export_social_media_kit(
 # ─────────────────────────────────────────────────────────────────────────────
 # CATEGORY 10 — Utility
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 @mcp.tool()
 def list_images(ctx: Context) -> dict:
@@ -2614,10 +2844,7 @@ def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
 
 @mcp.tool()
 def convert_color_mode(
-    ctx: Context,
-    mode: str,
-    num_colors: int = 256,
-    image_index: int = 0
+    ctx: Context, mode: str, num_colors: int = 256, image_index: int = 0
 ) -> dict:
     """Convert an image to a different color mode.
 
@@ -2630,9 +2857,14 @@ def convert_color_mode(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("convert_color_mode", {
-            "mode": mode, "num_colors": num_colors, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "convert_color_mode",
+            {
+                "mode": mode,
+                "num_colors": num_colors,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2642,11 +2874,7 @@ def convert_color_mode(
 
 
 @mcp.tool()
-def close_image(
-    ctx: Context,
-    image_index: int = 0,
-    save_first: bool = False
-) -> dict:
+def close_image(ctx: Context, image_index: int = 0, save_first: bool = False) -> dict:
     """Close an image, optionally saving as XCF first.
 
     Parameters:
@@ -2657,9 +2885,13 @@ def close_image(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("close_image", {
-            "image_index": image_index, "save_first": save_first,
-        })
+        result = conn.send_command(
+            "close_image",
+            {
+                "image_index": image_index,
+                "save_first": save_first,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2690,11 +2922,7 @@ def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
 
 @mcp.tool()
 def get_pixel_color(
-    ctx: Context,
-    x: int,
-    y: int,
-    image_index: int = 0,
-    layer_name: str | None = None
+    ctx: Context, x: int, y: int, image_index: int = 0, layer_name: str | None = None
 ) -> dict:
     """Get the color of a single pixel.
 
@@ -2707,9 +2935,15 @@ def get_pixel_color(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("get_pixel_color", {
-            "x": x, "y": y, "image_index": image_index, "layer_name": layer_name,
-        })
+        result = conn.send_command(
+            "get_pixel_color",
+            {
+                "x": x,
+                "y": y,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2719,11 +2953,7 @@ def get_pixel_color(
 
 
 @mcp.tool()
-def get_histogram(
-    ctx: Context,
-    channel: str = "value",
-    image_index: int = 0
-) -> dict:
+def get_histogram(ctx: Context, channel: str = "value", image_index: int = 0) -> dict:
     """Get histogram statistics for a channel of the active layer.
 
     Parameters:
@@ -2734,9 +2964,13 @@ def get_histogram(
     """
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("get_histogram", {
-            "channel": channel, "image_index": image_index,
-        })
+        result = conn.send_command(
+            "get_histogram",
+            {
+                "channel": channel,
+                "image_index": image_index,
+            },
+        )
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -2747,6 +2981,7 @@ def get_histogram(
 
 def main():
     mcp.run()
+
 
 if __name__ == "__main__":
     main()

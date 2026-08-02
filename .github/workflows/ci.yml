@@ -1,0 +1,51 @@
+# Quality gates: ruff lint/format, basedpyright, pytest
+# Node 20 is deprecated on Actions runners; prefer Node 24-native action major lines.
+# See: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Prefer Node 24 runtime for JS actions while ecosystem finishes migration
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  quality:
+    name: Lint · Format · Types · Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+
+      - name: Python toolchain
+        run: uv python install 3.13
+
+      - name: Sync project (incl. dev group)
+        run: uv sync --group dev
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Type check (basedpyright)
+        run: uv run basedpyright
+
+      - name: Pytest (unit / offline)
+        run: uv run pytest -m "not integration and not slow"

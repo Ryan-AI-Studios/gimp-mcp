@@ -21,10 +21,111 @@ gimp-mcp-server = "gimp_mcp_server:main"
 [tool.setuptools]
 py-modules = ["gimp_mcp_server"]
 
-[tool.ruff.lint.per-file-ignores]
-"gimp-mcp-plugin.py" = ["E402"]
-
 [dependency-groups]
 dev = [
-    "pre-commit>=4.5.1",
+    "basedpyright==1.39.9",
+    "pre-commit>=4.6.1",
+    "pytest==9.1.1",
+    "ruff==0.16.1",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff (lint + format) — pinned to match STL / current PyPI as of 2026-08-02
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = [".", "tests"]
+# Product quality bar focuses on the MCP server + unit tests.
+# Upstream demos, GIMP-embedded plugin, and live scripts are owned by later tracks.
+extend-exclude = [
+    ".venv",
+    ".git",
+    ".agents",
+    "conductor",
+    ".ledgerful",
+    "docs",
+    "*.md",
+    "gimp-mcp-plugin.py",
+    "agent_edit_demo.py",
+    "bg_remove.py",
+    "bg_remove_iterative.py",
+    "run_tests.py",
+    "tests/continuous_edit_test",
+    "tests/test_add_text_metadata.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific
+]
+ignore = [
+    # Pre-existing re-raise style across gimp_mcp_server; clean up in refactor track.
+    "B904",
+    # Long lines in generated-style tool wrappers; reformat in dedicated cleanup.
+    "E501",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gimp_mcp_server"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["T201"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# ---------------------------------------------------------------------------
+# basedpyright — type check MCP server + tests; GIMP plugin is runtime-only
+# ---------------------------------------------------------------------------
+[tool.basedpyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+# Server package is the typed surface; GIMP-embedded plugin and live demo scripts are out of band.
+# Live integration scripts under tests/continuous_edit_test are CLI tools, not typed library code.
+include = ["gimp_mcp_server.py", "tests"]
+exclude = [
+    "**/__pycache__",
+    ".venv",
+    "gimp-mcp-plugin.py",
+    "agent_edit_demo.py",
+    "bg_remove.py",
+    "bg_remove_iterative.py",
+    "run_tests.py",
+    "tests/continuous_edit_test",
+    "tests/test_add_text_metadata.py",
+    ".agents",
+    "conductor",
+    ".ledgerful",
+]
+reportMissingImports = true
+reportMissingTypeStubs = false
+# fastmcp/mcp stubs may lag; keep usable without drowning in third-party noise
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportAny = false
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+norecursedirs = [".git", ".venv", "continuous_edit_test", "files", "output"]
+addopts = ["-q", "--strict-markers", "--strict-config"]
+markers = [
+    "integration: requires live GIMP MCP plugin on localhost:9877",
+    "slow: long-running or heavy image fixtures",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
 ]
