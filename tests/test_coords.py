@@ -283,6 +283,35 @@ def test_wiring_server_has_map_and_normalize_tools() -> None:
     assert "def normalize_image_orientation(" in text
 
 
+def test_plan_normalize_assume_no_ops() -> None:
+    plan = coords.plan_normalize_ops(coords.MODE_ASSUME_PIXELS_UPRIGHT, 6)
+    assert plan["ops"] == []
+    assert plan["applied"] is False
+    assert plan["write_tags"] is True
+    assert plan["identity_before"] is False
+
+
+def test_plan_normalize_trust_tag_ops() -> None:
+    plan = coords.plan_normalize_ops(coords.MODE_TRUST_TAG, 5)
+    assert plan["ops"] == ["flip_h", "rot90"]
+    assert plan["applied"] is True
+    plan1 = coords.plan_normalize_ops(coords.MODE_TRUST_TAG, 1)
+    assert plan1["ops"] == []
+    assert plan1["applied"] is False
+    plan_n = coords.plan_normalize_ops(coords.MODE_TRUST_TAG, None)
+    assert plan_n["applied"] is False
+
+
+def test_orientation_for_manifest_clamps_invalid() -> None:
+    assert coords.orientation_for_manifest(6) == 6
+    assert coords.orientation_for_manifest(None) is None
+    assert coords.orientation_for_manifest(0) is None
+    assert coords.orientation_for_manifest(99) is None
+    # Invalid present is not identity (honesty)
+    assert coords.orientation_is_identity(0) is False
+    assert coords.orientation_is_identity(99) is False
+
+
 def test_wiring_plugin_normalize_dispatcher() -> None:
     text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
     assert "normalize_image_orientation" in text
@@ -304,3 +333,6 @@ def test_wiring_plugin_normalize_dispatcher() -> None:
     assert "ops_started" in body
     assert "image.undo()" in body
     assert "CODE_METADATA_WRITE_FAILED" in body
+    # gboolean fail-closed on rotate/flip (Codex P1)
+    assert "_gimp_bool_or_fail" in body or "_gimp_bool_or_fail" in text
+    assert "image.flip" in body or "_apply_orientation_ops" in body

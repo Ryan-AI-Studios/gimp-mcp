@@ -1050,8 +1050,9 @@ class MCPPlugin(Gimp.PlugIn):
                 image_id_for_map = int(original_image.get_id())
             except Exception:
                 image_id_for_map = None
-            exif_orig = self._orient_exif_orientation(original_image)
-            pixel_norm = self._pixel_orientation_normalized(image_id_for_map, exif_orig)
+            exif_raw = self._orient_exif_orientation(original_image)
+            pixel_norm = self._pixel_orientation_normalized(image_id_for_map, exif_raw)
+            exif_orig = _coords.orientation_for_manifest(exif_raw)
 
             mapping = _snap.build_mapping_metadata(
                 image_index=image_index,
@@ -1407,7 +1408,13 @@ class MCPPlugin(Gimp.PlugIn):
             return None
 
     def _orient_exif_orientation(self, image):
-        """Best-effort Exif.Image/Photo.Orientation → 1..8 or null."""
+        """Best-effort Exif orientation tag as int, or null if absent.
+
+        Valid tags are 1..8. Present-but-invalid ints (e.g. 0, 9) are returned
+        as-is so honesty can treat them as non-identity; callers that emit
+        state-manifest fields must pass through
+        ``_coords.orientation_for_manifest`` (invalid → null).
+        """
         try:
             if not hasattr(image, "get_metadata"):
                 return None
@@ -1434,11 +1441,9 @@ class MCPPlugin(Gimp.PlugIn):
                 if raw is None:
                     continue
                 try:
-                    val = int(raw)
+                    return int(raw)
                 except (TypeError, ValueError):
                     continue
-                if 1 <= val <= 8:
-                    return val
             return None
         except Exception as e:
             print(f"[MCP] orient EXIF orientation failed: {e}")
@@ -2566,7 +2571,8 @@ class MCPPlugin(Gimp.PlugIn):
         tag = self._orient_exif_orientation(image)
         normalized = self._pixel_orientation_normalized(image_id, tag)
         block = {
-            "exif_orientation_original": tag,
+            # Schema: 1..8 or null (invalid present tags → null)
+            "exif_orientation_original": _coords.orientation_for_manifest(tag),
             "pixel_orientation_normalized": bool(normalized),
         }
         basis = self._normalized_basis(image_id, tag)
@@ -2845,8 +2851,21 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    def _gimp_bool_or_fail(self, ok, action):
+        """Fail-closed on explicit gboolean False; None (GI void-like) is success.
+
+        Matches ``_selection_none_or_fail`` / GIMP 3.x gboolean docs: only
+        ``False`` is a hard failure. Raises ``RuntimeError`` on failure.
+        """
+        if ok is False:
+            raise RuntimeError(f"{action} returned False")
+
     def _apply_orientation_ops(self, image, ops):
-        """Apply ordered EXIF bake ops via direct image.rotate/flip (never policy_rotate)."""
+        """Apply ordered EXIF bake ops via direct image.rotate/flip (never policy_rotate).
+
+        Checks gboolean returns (explicit False → RuntimeError) so mid-sequence
+        failure does not continue to tag rewrite + gen bump.
+        """
         rot_map = {
             "rot90": Gimp.RotationType.DEGREES90,
             "rot180": Gimp.RotationType.DEGREES180,
@@ -2854,11 +2873,14 @@ class MCPPlugin(Gimp.PlugIn):
         }
         for op in ops:
             if op == "flip_h":
-                image.flip(Gimp.OrientationType.HORIZONTAL)
+                ok = image.flip(Gimp.OrientationType.HORIZONTAL)
+                self._gimp_bool_or_fail(ok, "image.flip(HORIZONTAL)")
             elif op == "flip_v":
-                image.flip(Gimp.OrientationType.VERTICAL)
+                ok = image.flip(Gimp.OrientationType.VERTICAL)
+                self._gimp_bool_or_fail(ok, "image.flip(VERTICAL)")
             elif op in rot_map:
-                image.rotate(rot_map[op])
+                ok = image.rotate(rot_map[op])
+                self._gimp_bool_or_fail(ok, f"image.rotate({op})")
             else:
                 raise RuntimeError(f"unknown orientation op: {op!r}")
 
@@ -2866,6 +2888,8 @@ class MCPPlugin(Gimp.PlugIn):
         """Ensure metadata exists; set both Orientation tags to 1; return set_metadata ok.
 
         Returns (ok: bool, error_message: str|None). Does not bump generation.
+        Explicit ``False`` from set_metadata fails; ``None`` treated as success
+        (GI void-like), consistent with Selection.none policy.
         """
         meta = None
         try:
@@ -2895,7 +2919,6 @@ class MCPPlugin(Gimp.PlugIn):
             if not hasattr(image, "set_metadata"):
                 return False, "image.set_metadata unavailable"
             ok = image.set_metadata(meta)
-            # GI may return True/False or None (treat None as success when no exception)
             if ok is False:
                 return False, "image.set_metadata returned false"
             return True, None
@@ -2939,14 +2962,9 @@ class MCPPlugin(Gimp.PlugIn):
                 image_id = int(image.get_id())
 
             original_orientation = self._orient_exif_orientation(image)
-            ops: list = []
-            applied = False
-            if mode == _coords.MODE_TRUST_TAG:
-                tag_for_ops = original_orientation
-                if tag_for_ops is not None and int(tag_for_ops) in range(2, 9):
-                    ops = list(_coords.ORIENTATION_OPS.get(int(tag_for_ops), []))
-                    applied = bool(ops)
-                # tag null/1: no-op success, applied=false, still normalize tags
+            plan = _coords.plan_normalize_ops(mode, original_orientation)
+            ops: list = list(plan["ops"])
+            applied = bool(plan["applied"])
 
             # Atomic group: pixel ops (if any) + metadata write (H4, BS5).
             # If pixel ops started, any failure (mid-op exception OR metadata
@@ -2956,14 +2974,19 @@ class MCPPlugin(Gimp.PlugIn):
             meta_ok = False
             meta_err = None
             try:
-                image.undo_group_start()
+                ug_ok = image.undo_group_start()
+                self._gimp_bool_or_fail(ug_ok, "image.undo_group_start")
                 try:
                     if applied and ops:
                         ops_started = True
                         self._apply_orientation_ops(image, ops)
                     meta_ok, meta_err = self._set_orientation_tags_to_1(image)
                 finally:
-                    image.undo_group_end()
+                    try:
+                        ug_end = image.undo_group_end()
+                        self._gimp_bool_or_fail(ug_end, "image.undo_group_end")
+                    except RuntimeError as ug_err:
+                        print(f"[MCP] normalize undo_group_end: {ug_err}")
 
                 if not meta_ok:
                     if ops_started:

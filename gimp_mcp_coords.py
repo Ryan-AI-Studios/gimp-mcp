@@ -112,13 +112,60 @@ def validate_declaration(decl: Any) -> dict[str, Any]:
 
 
 def orientation_is_identity(tag: int | None) -> bool:
-    """True when orientation tag is None (absent) or EXIF 1 (normal)."""
+    """True when orientation tag is None (absent) or EXIF 1 (normal).
+
+    Tags 2-8 are non-identity. Present-but-invalid ints (outside 1-8) are
+    also non-identity so malformed EXIF is not reported as normalized.
+    """
     if tag is None:
         return True
     try:
         return int(tag) == 1
     except (TypeError, ValueError):
         return False
+
+
+def orientation_for_manifest(tag: int | None) -> int | None:
+    """Clamp tag to schema 1..8 or null (invalid → null for state-manifest)."""
+    if tag is None:
+        return None
+    try:
+        v = int(tag)
+    except (TypeError, ValueError):
+        return None
+    if 1 <= v <= 8:
+        return v
+    return None
+
+
+def plan_normalize_ops(mode: str, original_orientation: int | None) -> dict[str, Any]:
+    """Pure plan for normalize_image_orientation (offline-testable).
+
+    Returns:
+      mode, ops (ordered list), applied (bool), write_tags (always True on
+      success path intent), identity_before (bool).
+    Raises ValueError for unknown mode.
+    """
+    if mode not in NORMALIZE_MODES:
+        raise ValueError(f"mode must be one of {sorted(NORMALIZE_MODES)}, got {mode!r}")
+    ops: list[str] = []
+    applied = False
+    if mode == MODE_TRUST_TAG:
+        if original_orientation is not None:
+            try:
+                t = int(original_orientation)
+            except (TypeError, ValueError):
+                t = None
+            if t is not None and 2 <= t <= 8:
+                ops = list(ORIENTATION_OPS.get(t, []))
+                applied = bool(ops)
+    return {
+        "mode": mode,
+        "ops": ops,
+        "applied": applied,
+        "write_tags": True,
+        "identity_before": orientation_is_identity(original_orientation),
+    }
 
 
 def _round_px(value: float) -> int:
