@@ -199,6 +199,7 @@
       "required": [
         "handle",
         "name",
+        "source_path",
         "width",
         "height",
         "base_type",
@@ -258,6 +259,7 @@
             "empty": { "type": "boolean" },
             "bounds": {
               "type": ["object", "null"],
+              "required": ["x", "y", "width", "height"],
               "properties": {
                 "x": { "type": "integer" },
                 "y": { "type": "integer" },

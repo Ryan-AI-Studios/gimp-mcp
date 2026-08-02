@@ -558,6 +558,9 @@ def test_preflight_has_alpha_walks_groups_recursively() -> None:
     assert "_iter_layers_recursive" in preflight
     walker = _method_body(text, "_iter_layers_recursive")
     assert "get_children" in walker or "_layer_children" in walker
+    # Cycle/depth guards (Codex P1): prevent unbounded walks on deep/cyclic graphs
+    assert "visited" in walker
+    assert "max_depth" in walker
     # visible_only path used for composite-relevant alpha
     assert "visible_only" in preflight
     # P2-1: selected-layer walk must use visible_only=True (not False)

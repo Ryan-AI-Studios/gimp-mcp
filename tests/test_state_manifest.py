@@ -358,6 +358,7 @@ def test_image_requires_orientation_fields() -> None:
         "active_layer_handles",
         "channels",
         "paths",
+        "source_path",
     ):
         missing = dict(img)
         del missing[key]
@@ -379,6 +380,69 @@ def test_image_requires_orientation_fields() -> None:
     del layer_bad["images"][0]["layers"][0]["parent_handle"]
     errors3 = state.validate_manifest(layer_bad)
     assert any("parent_handle" in e for e in errors3)
+
+
+def test_source_path_type_and_required() -> None:
+    """source_path must be present and string|null."""
+    doc = golden_multi_image()
+    img = dict(doc["images"][0])
+    img["source_path"] = 123
+    bad = golden_empty()
+    bad["images"] = [img]
+    errors = state.validate_manifest(bad)
+    assert any("source_path" in e for e in errors)
+
+    img2 = dict(doc["images"][0])
+    img2["source_path"] = None
+    ok = golden_empty()
+    ok["images"] = [img2]
+    assert state.validate_manifest(ok) == []
+
+
+def test_selection_bounds_require_integers() -> None:
+    """Non-null selection.bounds must carry integer x/y/width/height."""
+    doc = golden_multi_image()
+    img = dict(doc["images"][1])  # has non-empty selection with bounds
+    img["selection"] = {"empty": False, "bounds": {"x": 1, "y": 2}}  # missing w/h
+    bad = golden_empty()
+    bad["images"] = [img]
+    errors = state.validate_manifest(bad)
+    joined = "\n".join(errors)
+    assert "selection.bounds" in joined
+    assert "width" in joined or "height" in joined
+
+    img2 = dict(doc["images"][1])
+    img2["selection"] = {
+        "empty": False,
+        "bounds": {"x": 1, "y": 2, "width": "3", "height": 4},
+    }
+    bad2 = golden_empty()
+    bad2["images"] = [img2]
+    errors2 = state.validate_manifest(bad2)
+    assert any("width" in e for e in errors2)
+
+    img3 = dict(doc["images"][0])
+    img3["selection"] = {"empty": True, "bounds": None}
+    ok = golden_empty()
+    ok["images"] = [img3]
+    assert state.validate_manifest(ok) == []
+
+
+def test_captured_at_iso_ish() -> None:
+    """captured_at must be non-empty and lightly ISO-8601 shaped."""
+    doc = golden_empty()
+    doc["captured_at"] = ""
+    errors = state.validate_manifest(doc)
+    assert any("captured_at" in e for e in errors)
+
+    doc2 = golden_empty()
+    doc2["captured_at"] = "not-a-timestamp"
+    errors2 = state.validate_manifest(doc2)
+    assert any("captured_at" in e for e in errors2)
+
+    doc3 = golden_empty()
+    doc3["captured_at"] = "2026-08-02T12:00:00Z"
+    assert state.validate_manifest(doc3) == []
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +528,7 @@ def test_finalize_normalizes_grayscale() -> None:
             {
                 "handle": _image_handle(1),
                 "name": "g",
+                "source_path": None,
                 "width": 1,
                 "height": 1,
                 "base_type": "Grayscale",
@@ -602,3 +667,27 @@ def test_orient_workspace_wiring_when_present() -> None:
     assert "_get_image" in meta_body
     assert "image_index" in meta_body
     assert "images[0]" not in meta_body
+
+
+def test_recursive_walk_guards_in_source() -> None:
+    """summary_only count and _iter_layers_recursive must guard depth + visited ids."""
+    plugin = PLUGIN.read_text(encoding="utf-8")
+    orient_entry = _method_body(plugin, "_orient_image_entry")
+    # summary_only branch uses visited set + max depth (not bare unbounded stack)
+    assert "summary_only" in orient_entry
+    assert "visited_ids" in orient_entry or "visited" in orient_entry
+    assert "_ORIENT_MAX_LAYER_DEPTH" in orient_entry
+    # Ensure count path is not the old unguarded while-stack.extend pattern alone
+    summary_idx = orient_entry.find("if summary_only:")
+    assert summary_idx >= 0
+    summary_block = orient_entry[summary_idx : summary_idx + 1200]
+    assert "visited" in summary_block
+    assert "depth" in summary_block
+    assert "_ORIENT_MAX_LAYER_DEPTH" in summary_block
+
+    walker = _method_body(plugin, "_iter_layers_recursive")
+    assert "visited" in walker
+    assert "max_depth" in walker
+    assert "depth" in walker
+    # Default max_depth=32 in signature
+    assert "max_depth=32" in walker or "max_depth = 32" in walker

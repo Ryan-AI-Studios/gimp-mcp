@@ -354,6 +354,7 @@ def _validate_image(image: Any, path: str, errors: list[str]) -> None:
         "layers",
         "channels",
         "paths",
+        "source_path",
     )
     for key in required:
         if key not in image:
@@ -364,6 +365,11 @@ def _validate_image(image: Any, path: str, errors: list[str]) -> None:
 
     if "name" in image and not isinstance(image["name"], str):
         errors.append(_err(f"{path}.name", "must be a string"))
+
+    if "source_path" in image:
+        sp = image["source_path"]
+        if sp is not None and not isinstance(sp, str):
+            errors.append(_err(f"{path}.source_path", "must be a string or null"))
 
     for dim in ("width", "height"):
         if dim in image:
@@ -402,8 +408,32 @@ def _validate_image(image: Any, path: str, errors: list[str]) -> None:
             errors.append(_err(f"{path}.selection", "must be an object"))
         elif "empty" not in sel:
             errors.append(_err(f"{path}.selection", "missing required field 'empty'"))
-        elif not isinstance(sel["empty"], bool):
-            errors.append(_err(f"{path}.selection.empty", "must be a boolean"))
+        else:
+            if not isinstance(sel["empty"], bool):
+                errors.append(_err(f"{path}.selection.empty", "must be a boolean"))
+            # When bounds is present and non-null, require integer x/y/width/height
+            if "bounds" in sel and sel["bounds"] is not None:
+                bounds = sel["bounds"]
+                if not isinstance(bounds, dict):
+                    errors.append(_err(f"{path}.selection.bounds", "must be an object or null"))
+                else:
+                    for bkey in ("x", "y", "width", "height"):
+                        if bkey not in bounds:
+                            errors.append(
+                                _err(
+                                    f"{path}.selection.bounds",
+                                    f"missing required field '{bkey}'",
+                                )
+                            )
+                        else:
+                            bv = bounds[bkey]
+                            if not isinstance(bv, int) or isinstance(bv, bool):
+                                errors.append(
+                                    _err(
+                                        f"{path}.selection.bounds.{bkey}",
+                                        "must be an integer",
+                                    )
+                                )
 
     if "metadata" in image:
         meta = image["metadata"]
@@ -493,8 +523,18 @@ def validate_manifest(doc: Any) -> list[str]:
             )
         )
 
-    if "captured_at" in doc and not isinstance(doc["captured_at"], str):
-        errors.append(_err("captured_at", "must be a string"))
+    if "captured_at" in doc:
+        ca = doc["captured_at"]
+        if not isinstance(ca, str) or not ca.strip():
+            errors.append(_err("captured_at", "must be a non-empty string"))
+        elif "T" not in ca and not ca.endswith("Z"):
+            # Light ISO-8601-ish check (full parse not required offline)
+            errors.append(
+                _err(
+                    "captured_at",
+                    "must look like an ISO-8601 datetime (contain 'T' or end with 'Z')",
+                )
+            )
 
     session = doc.get("session")
     if "session" in doc:

@@ -1591,17 +1591,27 @@ class MCPPlugin(Gimp.PlugIn):
 
         if summary_only:
             try:
-                # Cheap count: roots only + note (full tree skipped)
+                # Cheap count via guarded walk (no full node tree); same depth/visited
+                # limits as _orient_layer_node so cyclic/deep graphs cannot hang.
                 roots = list(image.get_layers() or [])
                 count = 0
-                for root in roots:
+                visited_ids = set()
+                stack = [(root, 0) for root in roots]  # (layer, depth)
+                while stack:
+                    layer, depth = stack.pop()
+                    try:
+                        lid = int(layer.get_id())
+                    except Exception:
+                        continue
+                    if lid in visited_ids:
+                        continue
+                    if depth > self._ORIENT_MAX_LAYER_DEPTH:
+                        continue
+                    visited_ids.add(lid)
                     count += 1
-                    # Count descendants shallow via recursive walk without building nodes
-                    stack = list(self._layer_children(root))
-                    while stack:
-                        n = stack.pop()
-                        count += 1
-                        stack.extend(self._layer_children(n))
+                    if depth < self._ORIENT_MAX_LAYER_DEPTH:
+                        for child in self._layer_children(layer):
+                            stack.append((child, depth + 1))
                 entry["layer_count"] = count
             except Exception:
                 entry["layer_count"] = 0
@@ -2483,16 +2493,31 @@ class MCPPlugin(Gimp.PlugIn):
             pass
         return []
 
-    def _iter_layers_recursive(self, layers, *, visible_only=False):
+    def _iter_layers_recursive(self, layers, *, visible_only=False, max_depth=32):
         """Depth-first walk of layers including nested group children.
 
         Yields every node (leaf and group). When *visible_only* is True, skips
         invisible layers and does not descend into invisible groups (they do
         not contribute to the visible composite).
+
+        Guards: visited layer ids (cycle-safe) and *max_depth* (default 32,
+        matching orientation tree walk). Document order among siblings is
+        preserved as much as practical.
         """
-        stack = list(layers or [])
+        stack = [(layer, 0) for layer in (layers or [])]
+        visited = set()
         while stack:
-            layer = stack.pop(0)
+            layer, depth = stack.pop(0)
+            try:
+                lid = int(layer.get_id())
+            except Exception:
+                lid = None
+            if lid is not None:
+                if lid in visited:
+                    continue
+                visited.add(lid)
+            if depth > max_depth:
+                continue
             if visible_only:
                 try:
                     if not bool(layer.get_visible()):
@@ -2500,10 +2525,11 @@ class MCPPlugin(Gimp.PlugIn):
                 except (AttributeError, RuntimeError, TypeError):
                     pass
             yield layer
-            children = self._layer_children(layer)
-            if children:
-                # Preserve document order among siblings (depth-first).
-                stack[0:0] = children
+            if depth < max_depth:
+                children = self._layer_children(layer)
+                if children:
+                    # Preserve document order among siblings (depth-first).
+                    stack[0:0] = [(c, depth + 1) for c in children]
 
     def _preflight_has_alpha(self, image):
         """Read-only: True if any visible layer/drawable reports has_alpha().
