@@ -12,7 +12,7 @@ This is a GIMP MCP (Model Context Protocol) integration that enables external co
 ## Architecture
 
 The system uses a client-server architecture:
-- GIMP Plugin creates a socket server (localhost:9877) that accepts Python-Fu commands
+- GIMP Plugin creates a socket server (`127.0.0.1:9877`, session auth) — arbitrary Python-Fu/`cmds` disabled by default
 - MCP Server connects to this socket and exposes a `call_api` tool for MCP clients
 - Commands are executed in GIMP's Python-Fu environment with access to the full GIMP 3.2 API
 

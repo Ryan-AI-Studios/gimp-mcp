@@ -87,5 +87,5 @@ It does **not** disable GIMP’s built-in PDB procedures globally. Startup audit
 | `AUTH_FAILED` | Missing/wrong token or deprecated unauthenticated string command |
 | `EXEC_DISABLED` | Class A or Class B exec without `ALLOW_EXEC` |
 | `PATH_DENIED` | Workspace unset or path escapes root |
-| `BIND_DENIED` | Non-loopback / bare `localhost` without override |
+| `BIND_DENIED` | Non-loopback without `GIMP_MCP_ALLOW_NON_LOOPBACK=1`; bare `localhost` is **always** denied (use `127.0.0.1`) |
 | `INTERNAL_ERROR` | Unexpected failure (detail depends on DEBUG) |
