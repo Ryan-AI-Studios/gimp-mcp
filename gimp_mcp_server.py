@@ -859,7 +859,10 @@ def export_image(
     preflight_has_alpha, alpha_verified (true|false|"not_applicable"), export_method,
     pdb_procedure, optional png_color_type.
 
-    Errors: ALPHA_LOST (left_on_disk=true), ALPHA_UNSUPPORTED_FORMAT, POLICY_CONFLICT.
+    Structured errors (returned as a dict with ``status="error"``, not raised):
+    ALPHA_LOST (``left_on_disk=true``, optional ``png_color_type`` /
+    ``property_errors``), ALPHA_UNSUPPORTED_FORMAT, POLICY_CONFLICT, EXPORT_FAILED.
+    Agents should inspect ``code`` / ``left_on_disk`` on the return value.
     """
     try:
         file_path = _jail_path_or_raise(file_path, "file_path")
@@ -878,13 +881,19 @@ def export_image(
         )
         if result["status"] == "success":
             return result["results"]
-        # Surface structured export errors with code when present
-        code = result.get("code")
-        err = result.get("error", "Unknown error")
-        if code:
-            raise Exception(f"{code}: {err}")
+        # Structured export errors (ALPHA_LOST, POLICY_CONFLICT, …): return the
+        # full plugin payload so agents can machine-read left_on_disk,
+        # png_color_type, property_errors, code (DoD-5 / §2.7). Do not raise —
+        # raising would drop those fields and double-wrap the message.
+        if isinstance(result, dict) and result.get("status") == "error" and result.get("code"):
+            return result
+        # Generic / unknown errors: keep Exception path for host convention
+        err = result.get("error", "Unknown error") if isinstance(result, dict) else str(result)
         raise Exception(err)
     except Exception as e:
+        # Avoid double-wrapping if we re-raise a non-structured failure
+        if isinstance(e, Exception) and str(e).startswith("export_image failed:"):
+            raise
         traceback.print_exc()
         raise Exception(f"export_image failed: {e}")
 

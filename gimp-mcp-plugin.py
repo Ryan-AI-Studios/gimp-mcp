@@ -1850,31 +1850,76 @@ class MCPPlugin(Gimp.PlugIn):
             "none": Gimp.InterpolationType.NONE,
         }.get(interp.lower(), Gimp.InterpolationType.CUBIC)
 
+    def _layer_children(self, layer):
+        """Return child layers if *layer* is a group, else an empty list.
+
+        GIMP 3 group layers expose children via ``get_children()`` and/or
+        ``get_layers()``; prefer ``is_group()`` when available.
+        """
+        try:
+            if hasattr(layer, "is_group") and callable(layer.is_group):
+                try:
+                    if not layer.is_group():
+                        return []
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+            for attr in ("get_children", "get_layers"):
+                getter = getattr(layer, attr, None)
+                if not callable(getter):
+                    continue
+                try:
+                    kids = getter()
+                    if kids is not None:
+                        return list(kids)
+                except (AttributeError, RuntimeError, TypeError):
+                    continue
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        return []
+
+    def _iter_layers_recursive(self, layers, *, visible_only=False):
+        """Depth-first walk of layers including nested group children.
+
+        Yields every node (leaf and group). When *visible_only* is True, skips
+        invisible layers and does not descend into invisible groups (they do
+        not contribute to the visible composite).
+        """
+        stack = list(layers or [])
+        while stack:
+            layer = stack.pop(0)
+            if visible_only:
+                try:
+                    if not bool(layer.get_visible()):
+                        continue
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+            yield layer
+            children = self._layer_children(layer)
+            if children:
+                # Preserve document order among siblings (depth-first).
+                stack[0:0] = children
+
     def _preflight_has_alpha(self, image):
-        """Read-only: True if any visible layer/drawable reports has_alpha()."""
+        """Read-only: True if any visible layer/drawable reports has_alpha().
+
+        Walks nested layer groups recursively (spec §2.3: any visible drawable).
+        """
         try:
             layers = list(image.get_layers() or [])
         except (AttributeError, RuntimeError, TypeError):
             layers = []
-        for layer in layers:
+        for layer in self._iter_layers_recursive(layers, visible_only=True):
             try:
-                visible = True
-                try:
-                    visible = bool(layer.get_visible())
-                except (AttributeError, RuntimeError):
-                    visible = True
-                if not visible:
-                    continue
                 if layer.has_alpha():
                     return True
             except (AttributeError, RuntimeError, TypeError):
                 continue
-        # Also check selected drawables if layer walk missed groups
+        # Also check selected drawables (may include items outside top-level walk)
         try:
             selected = list(image.get_selected_layers() or [])
         except (AttributeError, RuntimeError, TypeError):
             selected = []
-        for layer in selected:
+        for layer in self._iter_layers_recursive(selected, visible_only=False):
             try:
                 if layer.has_alpha():
                     return True
@@ -2069,7 +2114,8 @@ class MCPPlugin(Gimp.PlugIn):
                     try:
                         cfg.set_property("drawable", drawable)
                         drawable_set = True
-                    except Exception:
+                    except Exception as drawable_err:
+                        print(f"[MCP] export drawable property failed: {drawable_err}")
                         try:
                             cfg.set_property("drawables", [drawable])
                             drawable_set = True
@@ -2077,9 +2123,28 @@ class MCPPlugin(Gimp.PlugIn):
                             property_errors.append(
                                 f"drawable/drawables property failed: {prop_err}"
                             )
-                if not drawable_set and policy.preserve_alpha:
-                    # Surface but still attempt export — some GIMP builds use image-only.
-                    property_errors.append("Could not set drawable/drawables on export config")
+                if not drawable_set:
+                    if drawable is None:
+                        property_errors.append("No drawable available for export config")
+                    else:
+                        property_errors.append("Could not set drawable/drawables on export config")
+                    # Fail-closed when preserve_alpha (align with snapshot: do not
+                    # run file-*-export without a drawable for alpha-critical path).
+                    if policy.preserve_alpha:
+                        return _exp.build_export_error(
+                            code=_exp.CODE_EXPORT_FAILED,
+                            error=(
+                                "Alpha-preserving export requires a drawable on the "
+                                "export config; drawable/drawables property was not set"
+                            ),
+                            file_path=file_path,
+                            property_errors=property_errors,
+                            preserve_alpha=True,
+                            preflight_has_alpha=preflight_has_alpha,
+                            format=policy.format,
+                            export_method=export_method,
+                            pdb_procedure=pdb_procedure,
+                        )
 
                 # PNG RGBA8 when preserving alpha and preflight saw alpha
                 if policy.format == "png" and policy.preserve_alpha and preflight_has_alpha:
@@ -2480,7 +2545,8 @@ class MCPPlugin(Gimp.PlugIn):
                 layers = list(image.get_layers() or [])
             except (AttributeError, RuntimeError, TypeError):
                 layers = []
-            for layer in layers:
+            # Recursive walk so nested group members appear in layers_with_alpha
+            for layer in self._iter_layers_recursive(layers, visible_only=False):
                 try:
                     if layer.has_alpha():
                         try:

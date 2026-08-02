@@ -283,6 +283,16 @@ def test_png_ihdr_rgba16() -> None:
     assert exp.file_has_alpha_channel(data) is True
 
 
+def test_png_ihdr_gray_alpha_type4() -> None:
+    """Color type 4 (gray+alpha) must count as has-alpha."""
+    data = build_minimal_png(color_type=4, bit_depth=8)
+    info = exp.png_ihdr_info(data)
+    assert info["color_type"] == 4
+    assert exp.file_has_alpha_channel(data) is True
+    data16 = build_minimal_png(color_type=4, bit_depth=16)
+    assert exp.file_has_alpha_channel(data16) is True
+
+
 def test_png_ihdr_from_path(tmp_path: Path) -> None:
     data = build_minimal_png(color_type=6, bit_depth=8)
     p = tmp_path / "a.png"
@@ -494,6 +504,24 @@ def test_verify_alpha_channel_handler_exists() -> None:
     body = _method_body(text, "_verify_alpha_channel")
     assert "has_alpha" in body
     assert "can_preserve_alpha" in body or "format_capability_matrix" in body
+    # Nested group members must be collected (IR1-01)
+    assert "_iter_layers_recursive" in body
+
+
+def test_preflight_has_alpha_walks_groups_recursively() -> None:
+    """IR1-01: preflight must recurse into layer groups, not only top-level layers."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    assert "_iter_layers_recursive" in text
+    assert "_layer_children" in text
+    preflight = _method_body(text, "_preflight_has_alpha")
+    assert "_iter_layers_recursive" in preflight
+    walker = _method_body(text, "_iter_layers_recursive")
+    assert "get_children" in walker or "_layer_children" in walker
+    # visible_only path used for composite-relevant alpha
+    assert "visible_only" in preflight
+    children = _method_body(text, "_layer_children")
+    assert "get_children" in children
+    assert "is_group" in children
 
 
 def test_server_export_defaults() -> None:
@@ -504,6 +532,27 @@ def test_server_export_defaults() -> None:
     assert "verify" in body
     # Only format in schema (not dual file_type tool param)
     assert "file_type" not in body
+
+
+def test_server_export_image_returns_structured_error_dict() -> None:
+    """IR1-02 / DoD-5: MCP export_image must return structured error fields, not drop them."""
+    text = SERVER.read_text(encoding="utf-8")
+    body = _function_body(text, "export_image")
+    # Must return the error payload (with code) rather than only raising Exception(code)
+    assert 'result.get("code")' in body or 'result.get("status")' in body
+    assert "return result" in body
+    # Must not be the old pattern that only raises with code in the message
+    assert not re.search(
+        r'raise Exception\(f"\{code\}: \{err\}"\)',
+        body,
+    ), "export_image must not raise only code:err (drops left_on_disk etc.)"
+    # left_on_disk / structured fields mentioned in contract path
+    assert "left_on_disk" in body or ("status" in body and "error" in body)
+    assert (
+        'status") == "error"' in body
+        or 'status"] == "error"' in body
+        or ('get("status")' in body and "error" in body)
+    )
 
 
 def test_server_batch_export_params() -> None:
@@ -543,6 +592,42 @@ def test_internal_caller_policy_documented() -> None:
         format="png",
     )
     assert v == "not_applicable"
+
+
+def test_internal_callers_pass_flatten_true() -> None:
+    """IR1-05: icons/web/sprite/social bake paths must pass flatten=True."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    # Count flatten=True keyword at _export_to_path call sites
+    flatten_true_calls = re.findall(
+        r"_export_to_path\([^;]*?flatten\s*=\s*True",
+        text,
+        re.DOTALL,
+    )
+    assert len(flatten_true_calls) >= 4, (
+        f"expected >=4 internal flatten=True export call sites, found {len(flatten_true_calls)}"
+    )
+    # preserve_alpha path must not call .flatten( unguarded when preserve_alpha
+    export_body = _method_body(text, "_export_to_path")
+    # Flatten only under policy.flatten / elif policy.flatten branch
+    assert "policy.flatten" in export_body or "elif policy.flatten" in export_body
+    # When preserve_alpha, merge — not flatten
+    assert "merge_visible_layers" in export_body
+    # No bare image.flatten() outside the policy branch intent:
+    # ensure preserve_alpha True path uses merge, not flatten
+    assert "policy.preserve_alpha" in export_body
+
+
+def test_export_drawable_fail_closed_when_preserve_alpha() -> None:
+    """IR1-04: alpha-preserving export must not run without drawable set."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_export_to_path")
+    assert "drawable_set" in body
+    assert "CODE_EXPORT_FAILED" in body or "EXPORT_FAILED" in body
+    assert "preserve_alpha" in body
+    # Fail closed rather than soft-continue into proc.run
+    assert "Alpha-preserving export requires a drawable" in body or (
+        "not drawable_set" in body and "build_export_error" in body
+    )
 
 
 def test_pyproject_wires_export_module() -> None:
