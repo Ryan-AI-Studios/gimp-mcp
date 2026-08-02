@@ -91,9 +91,9 @@ uv sync
 
 ### 2. Install the GIMP Plugin
 
-Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, and **`gimp_mcp_snapshot.py`**
-to GIMP's plug-ins directory (same folder) and restart GIMP. The security and snapshot
-modules are stdlib-only and must sit next to the plugin.
+Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, **`gimp_mcp_snapshot.py`**,
+and **`gimp_mcp_export.py`** to GIMP's plug-ins directory (same folder) and restart GIMP.
+The security, snapshot, and export modules are stdlib-only and must sit next to the plugin.
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
 > (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
@@ -117,7 +117,8 @@ if [ -z "$GIMP_DIR" ]; then
   exit 1
 fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
+cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py gimp_mcp_export.py \
+  "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 ```
@@ -127,8 +128,9 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_security.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_snapshot.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_export.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy all three files and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy all four files and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
@@ -310,7 +312,9 @@ Supports `image_index` (default 0). Returns PNG image content plus the same
 | Tool | Description |
 |---|---|
 | `open_image` | Open image file |
-| `export_image` | Export to PNG, JPEG, BMP, TIFF |
+| `export_image` | Export PNG/JPEG/WEBP/TIFF (default: preserve alpha; `flatten=False`) |
+| `verify_alpha_channel` | Read-only alpha preflight + format capability matrix |
+| `batch_export` | Batch export with same flatten/preserve_alpha/verify params |
 | `new_canvas` | Create blank canvas |
 | `close_image` | Close image |
 | `list_images` | List open images |
@@ -437,6 +441,23 @@ GIMP 3.2 (gi.repository.Gimp)
 - MCP server translates tool calls into JSON commands sent to the plugin over TCP
 - Plugin executes operations directly in the GIMP process via PyGObject
 - Two message formats: `{"type": "...", "params": {...}}` for named tools, `{"cmds": ["python..."]}` for arbitrary exec
+
+### Transparent PNG export (Issue 16)
+
+`export_image` defaults changed so transparent PNGs are trustworthy:
+
+| Param | Default | Notes |
+|---|---|---|
+| `flatten` | **`False`** (was True) | Flatten **strips alpha** — do not use for transparent PNG |
+| `preserve_alpha` | `None` (auto) | Auto-true for png/webp/tiff; false for jpeg |
+| `verify` | `True` | Fail-closed PNG IHDR check → `ALPHA_LOST` if alpha was present and lost |
+
+Export prep always runs on a **duplicate** (user document unchanged). Alpha path uses
+`merge_visible_layers(CLIP_TO_IMAGE)` + GIMP 3 `file-*-export` only (no `file-*-save`).
+Install must include **`gimp_mcp_export.py`** next to the plugin.
+
+For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).  
+Do **not** confuse with `flatten_image`, which mutates the open document.
 
 ### GIMP 3.2 Compatibility Notes
 

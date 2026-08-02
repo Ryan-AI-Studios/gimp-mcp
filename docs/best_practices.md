@@ -1,5 +1,34 @@
 # GIMP MCP Best Practices & Recipes
 
+## ✅ TRANSPARENT PNG EXPORT (Issue 16)
+
+**DO: Export with default alpha-preserving path**
+```python
+# flatten defaults to False; preserve_alpha auto-True for PNG
+export_image(file_path="/workspace/out.png", format="png")
+# Optional explicit:
+export_image(file_path="/workspace/out.png", format="png", preserve_alpha=True, verify=True)
+```
+
+**DO: Preflight when unsure**
+```python
+verify_alpha_channel(image_index=0)  # has_alpha + format matrix
+```
+
+**DON'T: Flatten transparent work for export**
+```python
+# ❌ flatten strips alpha (Gimp.Image.flatten)
+export_image(file_path="/workspace/out.png", format="png", flatten=True)
+flatten_image()  # ❌ mutates the open document and strips alpha
+```
+
+**WHY**: GIMP `flatten()` removes the alpha channel. Export prep uses
+`merge_visible_layers` on a **duplicate** when `preserve_alpha` is on. If the
+exported PNG loses alpha after a source that had it, the tool returns
+`ALPHA_LOST` (not success). Opaque bake: pass `flatten=True` intentionally.
+
+---
+
 ## ✅ FILLING SHAPES - The Right Way
 
 **DO: Use Polygon Selection for Filled Shapes**

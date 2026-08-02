@@ -55,7 +55,7 @@ Audit default:
 
 ## Start order
 
-1. Install **three** files into the GIMP plug-ins folder (same directory): `gimp-mcp-plugin.py`, `gimp_mcp_security.py`, and `gimp_mcp_snapshot.py`.
+1. Install **four** files into the GIMP plug-ins folder (same directory): `gimp-mcp-plugin.py`, `gimp_mcp_security.py`, `gimp_mcp_snapshot.py`, and `gimp_mcp_export.py`.
 2. Set `GIMP_WORKSPACE_ROOT` (and optional `GIMP_MCP_TOKEN`) for the GIMP process if needed.
 3. Start GIMP → **Tools → MCP → Start MCP Server** (writes/reads token file, binds `127.0.0.1`).
 4. Start MCP client / `gimp_mcp_server.py` (lazy token load with retry if file appears late).
