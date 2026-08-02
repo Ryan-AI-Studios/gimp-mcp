@@ -319,14 +319,106 @@ def test_plugin_param_file_io_uses_path_jail() -> None:
         )
 
     makedirs_sites = list(re.finditer(r"os\.makedirs\(([^,)]+)", text))
+    allowed_makedirs_args = (
+        "output_dir",  # reassigned from _jail_path in export kits
+        "safe_dir",
+        "jailed",
+        "tmp",
+        "temp",
+    )
     for m in makedirs_sites:
-        arg = m.group(1).strip()
-        # output_dir must be jailed before makedirs — handlers above assert _jail_path
-        assert "output_dir" in arg or "tmp" in arg.lower() or "temp" in arg.lower() or True
-        # The handler-level assert is the strong check; this is a presence scan.
-        del arg  # silence lint for intentional soft scan
+        arg = m.group(1).strip().lower()
+        assert any(token in arg for token in allowed_makedirs_args), (
+            f"os.makedirs arg must be a jailed/temp path variable, got: {m.group(1)!r}"
+        )
 
     # cmds / exec path must reference EXEC_DISABLED or exec_allowed
     assert "EXEC_DISABLED" in text or "exec_allowed" in text
     # Auth precheck present
     assert "AUTH_FAILED" in text or "verify_token" in text
+
+
+# ---------------------------------------------------------------------------
+# Dispatch / gate envelopes (no GIMP process) — prove reject paths
+# ---------------------------------------------------------------------------
+
+
+def test_auth_gate_table() -> None:
+    """Policy table used by plugin precheck: missing/wrong auth never passes."""
+    expected = "session-secret-value"
+    assert sec.verify_token(None, expected) is False
+    assert sec.verify_token("", expected) is False
+    assert sec.verify_token("wrong", expected) is False
+    assert sec.verify_token(expected, expected) is True
+    err = sec.make_error(sec.CODE_AUTH_FAILED, "Authentication failed")
+    assert err["code"] == sec.CODE_AUTH_FAILED
+    assert err["status"] == "error"
+
+
+def test_class_a_exec_disabled_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default posture for plugin cmds/eval: EXEC_DISABLED error shape."""
+    monkeypatch.delenv(sec.ENV_ALLOW_EXEC, raising=False)
+    assert sec.exec_allowed() is False
+    err = sec.make_error(
+        sec.CODE_EXEC_DISABLED,
+        "Plugin-internal arbitrary Python exec is disabled.",
+    )
+    assert err["code"] == sec.CODE_EXEC_DISABLED
+    assert "disabled" in err["error"].lower()
+
+
+def test_call_api_gate_without_gimp(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Class B: call_api hard-fails offline without ALLOW_EXEC (no GIMP connect)."""
+    monkeypatch.delenv(sec.ENV_ALLOW_EXEC, raising=False)
+    import gimp_mcp_server as server
+
+    # Avoid any socket work if gate regresses
+    monkeypatch.setattr(
+        server,
+        "get_gimp_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("call_api must not connect when exec off")),
+    )
+
+    class _Ctx:
+        pass
+
+    raw = server.call_api(_Ctx(), api_path="exec", args=["pyGObject-console", ["print(1)"]])
+    body = __import__("json").loads(raw)
+    assert body["status"] == "error"
+    assert body["code"] == sec.CODE_EXEC_DISABLED
+
+
+def test_call_api_allows_when_exec_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ALLOW_EXEC=1, call_api proceeds to connection (mocked)."""
+    monkeypatch.setenv(sec.ENV_ALLOW_EXEC, "1")
+    import gimp_mcp_server as server
+
+    class _Conn:
+        def send_command(self, command_type: str, params: object = None) -> dict:
+            assert command_type == "call_api"
+            return {"status": "success", "results": {"ok": True}}
+
+    monkeypatch.setattr(server, "get_gimp_connection", lambda: _Conn())
+
+    class _Ctx:
+        pass
+
+    raw = server.call_api(_Ctx(), api_path="exec", args=["pyGObject-console", ["1"]])
+    body = __import__("json").loads(raw)
+    assert body == {"ok": True}
+
+
+def test_plugin_source_auth_before_type_dispatch() -> None:
+    """Static ordering: AUTH PRECHECK comment/block appears before first type branch."""
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    auth_idx = text.find("AUTH PRECHECK")
+    assert auth_idx > 0, "auth precheck marker missing"
+    # First typed handler after auth should still be after the marker
+    type_idx = text.find('j["type"] == "get_image_bitmap"', auth_idx)
+    assert type_idx > auth_idx
+    cmds_gate = text.find('if "cmds" in j:', auth_idx)
+    assert cmds_gate > auth_idx
+    # cmds gate must check exec_allowed / EXEC_DISABLED near cmds
+    window = text[cmds_gate : cmds_gate + 400]
+    assert "exec_allowed" in window or "EXEC_DISABLED" in window

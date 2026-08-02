@@ -114,10 +114,11 @@ def assert_bind_host(host: str | None) -> str:
     h = str(host).strip()
     if h.lower() == "localhost":
         # Prefer literal; do not silently rebind to dual-stack name.
+        # ALLOW_NON_LOOPBACK does not enable "localhost" (IPv6 dual-stack risk remains).
         raise SecurityError(
             CODE_BIND_DENIED,
-            "Host 'localhost' is not allowed; use 127.0.0.1 (AF_INET) or set "
-            f"{ENV_ALLOW_NON_LOOPBACK}=1 only if you intentionally need a non-literal host",
+            "Host 'localhost' is not allowed; always use the literal 127.0.0.1 (AF_INET). "
+            f"{ENV_ALLOW_NON_LOOPBACK}=1 is only for non-loopback IP addresses, not hostname aliases",
         )
     if is_loopback_host(h):
         return h

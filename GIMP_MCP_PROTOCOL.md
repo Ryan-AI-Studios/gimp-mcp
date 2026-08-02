@@ -486,21 +486,23 @@ gimp_info = get_gimp_info()
 ## Plugin Architecture
 
 ### Connection Protocol
-- **Host**: localhost (default)
+- **Host**: `127.0.0.1` (default; AF_INET literal — bare `localhost` rejected)
 - **Port**: 9877 (default)
-- **Transport**: TCP socket
+- **Transport**: TCP socket with per-message `"auth"` session token
 - **Format**: JSON messages
-- **Auto-disconnect**: Configurable (default: true)
+- **Auto-disconnect**: Configurable (default: true); bare string
+  `disable_auto_disconnect` is **disabled** — use authenticated JSON
+  `{"type":"disable_auto_disconnect","auth":"..."}`
 
 ### Command Types
-1. **`"get_image_bitmap"`**: Direct bitmap export
-2. **`"disable_auto_disconnect"`**: Keep connection alive
-3. **JSON with `"cmds"`**: Execute command array  
-4. **JSON with `"params"`**: Structured API calls
+1. **Typed JSON** `{"type":"…","params":{…},"auth":"…"}`: named tools (preferred)
+2. **`"get_image_bitmap"` / metadata / list / export tools**: same envelope
+3. **JSON with `"cmds"`**: plugin-internal exec — **`EXEC_DISABLED` by default**
+4. **MCP `call_api`**: PDB-mediated exec — **gated** unless `GIMP_MCP_ALLOW_EXEC=1`
 
 ### Error Handling
-- Multiple export fallback methods
-- Robust error reporting with tracebacks
+- Structured `code` field (`AUTH_FAILED`, `EXEC_DISABLED`, `PATH_DENIED`, …)
+- Tracebacks stripped unless `GIMP_MCP_DEBUG=1` (DEBUG is not a policy bypass)
 - Graceful handling of missing procedures
 - Property name flexibility for different GIMP versions
 
