@@ -300,3 +300,7 @@ def test_wiring_plugin_normalize_dispatcher() -> None:
     assert "self._flip_image(" not in body
     assert "_bump_image_generation" in body
     assert "_apply_orientation_ops" in body
+    # Fail-closed: pixel ops tracked so mid-op exceptions also undo
+    assert "ops_started" in body
+    assert "image.undo()" in body
+    assert "CODE_METADATA_WRITE_FAILED" in body

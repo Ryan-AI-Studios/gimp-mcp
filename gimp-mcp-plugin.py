@@ -2949,50 +2949,73 @@ class MCPPlugin(Gimp.PlugIn):
                 # tag null/1: no-op success, applied=false, still normalize tags
 
             # Atomic group: pixel ops (if any) + metadata write (H4, BS5).
-            # On metadata failure after pixel ops, call image.undo() so the
-            # closed group does not leave the canvas rotated with a stale tag.
-            image.undo_group_start()
+            # If pixel ops started, any failure (mid-op exception OR metadata
+            # false) must image.undo() after undo_group_end so the canvas is
+            # not left partially transformed with a stale EXIF tag.
+            ops_started = False
             meta_ok = False
             meta_err = None
             try:
-                if applied and ops:
-                    self._apply_orientation_ops(image, ops)
-                meta_ok, meta_err = self._set_orientation_tags_to_1(image)
-            finally:
-                image.undo_group_end()
+                image.undo_group_start()
+                try:
+                    if applied and ops:
+                        ops_started = True
+                        self._apply_orientation_ops(image, ops)
+                    meta_ok, meta_err = self._set_orientation_tags_to_1(image)
+                finally:
+                    image.undo_group_end()
 
-            if not meta_ok:
-                if applied and ops:
+                if not meta_ok:
+                    if ops_started:
+                        try:
+                            image.undo()
+                        except Exception as undo_err:
+                            print(f"[MCP] normalize undo after metadata fail: {undo_err}")
+                    # Do not set session flag / gen bump
+                    return _sec.make_error(
+                        _sec.CODE_METADATA_WRITE_FAILED,
+                        meta_err or "failed to write orientation metadata",
+                    )
+
+                # Full success only:
+                self._orientation_normalized[int(image_id)] = True
+                gen = self._bump_image_generation(int(image_id))
+                try:
+                    Gimp.displays_flush()
+                except Exception:
+                    pass
+                return {
+                    "status": "success",
+                    "results": {
+                        "original_orientation": original_orientation,
+                        "mode_applied": mode,
+                        "applied": bool(applied),
+                        "pixel_orientation_normalized": True,
+                        "generation": gen,
+                        "handle": self._emit_image_handle(image),
+                        "image_id": int(image_id),
+                        "ops_applied": list(ops) if applied else [],
+                    },
+                }
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+            except RuntimeError as e:
+                if ops_started:
                     try:
                         image.undo()
                     except Exception as undo_err:
-                        print(f"[MCP] normalize undo after metadata fail: {undo_err}")
-                # Do not set session flag / gen bump
-                return _sec.make_error(
-                    _sec.CODE_METADATA_WRITE_FAILED,
-                    meta_err or "failed to write orientation metadata",
-                )
-
-            # Full success only:
-            self._orientation_normalized[int(image_id)] = True
-            gen = self._bump_image_generation(int(image_id))
-            try:
-                Gimp.displays_flush()
-            except Exception:
-                pass
-            return {
-                "status": "success",
-                "results": {
-                    "original_orientation": original_orientation,
-                    "mode_applied": mode,
-                    "applied": bool(applied),
-                    "pixel_orientation_normalized": True,
-                    "generation": gen,
-                    "handle": self._emit_image_handle(image),
-                    "image_id": int(image_id),
-                    "ops_applied": list(ops) if applied else [],
-                },
-            }
+                        print(f"[MCP] normalize undo after pixel-op error: {undo_err}")
+                msg = str(e)
+                if msg.startswith("HANDLE_NOT_FOUND"):
+                    return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+                return {"status": "error", "error": msg, "traceback": traceback.format_exc()}
+            except Exception as e:
+                if ops_started:
+                    try:
+                        image.undo()
+                    except Exception as undo_err:
+                        print(f"[MCP] normalize undo after pixel-op error: {undo_err}")
+                return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
         except _handles.HandleError as e:
             return self._handle_error_response(e)
         except RuntimeError as e:
