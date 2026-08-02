@@ -14,16 +14,46 @@ Usage:
 import argparse
 import base64
 import json
+import os
 import socket
 import sys
+from pathlib import Path
 
-# ── low-level transport ─────────────────────────────────────────────────────
+# ── low-level transport (127.0.0.1 + session auth) ───────────────────────────
+
+HOST = os.environ.get("GIMP_MCP_HOST", "127.0.0.1")
+PORT = int(os.environ.get("GIMP_MCP_PORT", "9877"))
+
+
+def _load_token() -> str | None:
+    tok = os.environ.get("GIMP_MCP_TOKEN")
+    if tok:
+        return tok.strip()
+    override = os.environ.get("GIMP_MCP_TOKEN_FILE")
+    if override:
+        p = Path(override)
+    elif sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+        p = Path(base) / "gimp-mcp" / "session.token" if base else None
+    else:
+        p = Path.home() / ".config" / "gimp-mcp" / "session.token"
+    if p and p.is_file():
+        return p.read_text(encoding="utf-8").strip() or None
+    return None
 
 
 def _send(msg, parse_truncate):
-    s = socket.socket()
+    token = _load_token()
+    if not token:
+        raise SystemExit(
+            "No session token — set GIMP_MCP_TOKEN or start the GIMP MCP plugin "
+            "first (refusing unauthenticated TCP)."
+        )
+    if "auth" not in msg:
+        msg = {**msg, "auth": token}
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(30)
-    s.connect(("127.0.0.1", 9877))
+    s.connect((HOST, PORT))
     s.send(json.dumps(msg).encode() + b"\n")
     r = b""
     while True:
@@ -51,8 +81,22 @@ def cmd(t, params=None):
 
 
 def exec_gimp(code):
-    """Run Python code inside GIMP via the cmds exec path."""
-    return _send({"cmds": [code]}, 200)
+    """Run Python code inside GIMP via the cmds exec path.
+
+    Requires GIMP_MCP_ALLOW_EXEC=1 on the plugin (advanced / footgun mode).
+    """
+    r = _send({"cmds": [code]}, 200)
+    if r.get("code") == "EXEC_DISABLED" or (
+        r.get("status") == "error" and "EXEC_DISABLED" in str(r.get("error", ""))
+    ):
+        print(
+            "ERROR: plugin exec is disabled (EXEC_DISABLED).\n"
+            "This demo needs Class A cmds. Restart GIMP with GIMP_MCP_ALLOW_EXEC=1\n"
+            "only for advanced local use. Prefer typed MCP tools when possible.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return r
 
 
 def snapshot(image_index=0, max_size=512, region=None, label=""):

@@ -3,6 +3,37 @@
 ## Overview
 This document describes how to execute PyGObject commands in GIMP using the MCP (Model Context Protocol) interface. The GIMP MCP server provides multiple tools for interacting with GIMP 3.0, including image export capabilities that return MCP-compliant Image objects.
 
+## Secure defaults (0003)
+
+| Topic | Default |
+|---|---|
+| TCP host | **`127.0.0.1`** (`AF_INET`) — not bare `localhost` |
+| Auth | Every JSON request must include `"auth": "<session token>"` |
+| `cmds` / plugin eval | **Disabled** unless `GIMP_MCP_ALLOW_EXEC=1` → `EXEC_DISABLED` |
+| MCP `call_api` | **Disabled** unless `GIMP_MCP_ALLOW_EXEC=1` (Class B / PDB-mediated) |
+| File paths | Must resolve under `GIMP_WORKSPACE_ROOT` or → `PATH_DENIED` |
+| String `disable_auto_disconnect` | **Deprecated / rejected** without auth; use authenticated JSON type |
+
+Example authenticated typed command:
+
+```json
+{"type": "list_images", "params": {}, "auth": "<token>"}
+```
+
+Deprecated bare string (rejected in secure mode):
+
+```text
+disable_auto_disconnect
+```
+
+Authenticated replacement:
+
+```json
+{"type": "disable_auto_disconnect", "auth": "<token>"}
+```
+
+See [SECURITY.md](SECURITY.md) for env vars, start order, and residuals.
+
 ## Available MCP Tools
 
 ### 1. Image Export Tools
@@ -47,6 +78,10 @@ Returns comprehensive information about the GIMP installation and runtime enviro
 #### `call_api(api_path, args=[], kwargs={})`
 
 Execute GIMP 3.0 API methods through PyGObject console.
+
+> **Security:** Disabled by default (`EXEC_DISABLED`). Requires `GIMP_MCP_ALLOW_EXEC=1`.
+> Prefer typed tools (`open_image`, adjustments, layers, etc.). This is **Class B**
+> (PDB-mediated) exec — distinct from plugin-internal `cmds` (Class A).
 
 **GIMP MCP Protocol:**
 - Use api_path="exec" to execute Python code in GIMP
@@ -451,21 +486,23 @@ gimp_info = get_gimp_info()
 ## Plugin Architecture
 
 ### Connection Protocol
-- **Host**: localhost (default)
+- **Host**: `127.0.0.1` (default; AF_INET literal — bare `localhost` rejected)
 - **Port**: 9877 (default)
-- **Transport**: TCP socket
+- **Transport**: TCP socket with per-message `"auth"` session token
 - **Format**: JSON messages
-- **Auto-disconnect**: Configurable (default: true)
+- **Auto-disconnect**: Configurable (default: true); bare string
+  `disable_auto_disconnect` is **disabled** — use authenticated JSON
+  `{"type":"disable_auto_disconnect","auth":"..."}`
 
 ### Command Types
-1. **`"get_image_bitmap"`**: Direct bitmap export
-2. **`"disable_auto_disconnect"`**: Keep connection alive
-3. **JSON with `"cmds"`**: Execute command array  
-4. **JSON with `"params"`**: Structured API calls
+1. **Typed JSON** `{"type":"…","params":{…},"auth":"…"}`: named tools (preferred)
+2. **`"get_image_bitmap"` / metadata / list / export tools**: same envelope
+3. **JSON with `"cmds"`**: plugin-internal exec — **`EXEC_DISABLED` by default**
+4. **MCP `call_api`**: PDB-mediated exec — **gated** unless `GIMP_MCP_ALLOW_EXEC=1`
 
 ### Error Handling
-- Multiple export fallback methods
-- Robust error reporting with tracebacks
+- Structured `code` field (`AUTH_FAILED`, `EXEC_DISABLED`, `PATH_DENIED`, …)
+- Tracebacks stripped unless `GIMP_MCP_DEBUG=1` (DEBUG is not a policy bypass)
 - Graceful handling of missing procedures
 - Property name flexibility for different GIMP versions
 

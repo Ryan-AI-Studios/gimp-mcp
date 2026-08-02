@@ -1,34 +1,95 @@
 #!/usr/bin/env python3
 # GIMP MCP Server Script — improved fork
 # Adds: new_canvas, check_server, restart_server, no bitmap size restrictions
+# Security (0003): loopback AF_INET, session auth, path jail, call_api gated
 
 import base64
 import json
 import logging
+import os
 import socket
 import time
 import traceback
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP, Image
+
+import gimp_mcp_security as sec
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("GimpMCPServer")
 
-GIMP_HOST = "localhost"
-GIMP_PORT = 9877
+# Env plumbing — never default to bare "localhost" (IPv6 dual-stack risk).
+try:
+    GIMP_HOST = sec.get_host()
+except sec.SecurityError as _bind_err:
+    logger.warning("%s; using 127.0.0.1", _bind_err)
+    GIMP_HOST = sec.DEFAULT_HOST
+GIMP_PORT = sec.get_port()
+
+# Lazy session token (plugin may write the file after MCP server process starts).
+# File-backed tokens rotate on plugin start — cache must be cleared on restart /
+# AUTH_FAILED so a long-lived MCP process reloads the new file token.
+_session_token: str | None = None
+_token_load_attempted = False
+
+
+def _clear_session_token() -> None:
+    """Invalidate cached session token (plugin restart / AUTH_FAILED recovery)."""
+    global _session_token, _token_load_attempted
+    _session_token = None
+    _token_load_attempted = False
+
+
+def _ensure_session_token(*, force_reload: bool = False) -> str | None:
+    """Prefer GIMP_MCP_TOKEN env; else retry-read token file on first use."""
+    global _session_token, _token_load_attempted
+    if force_reload:
+        _clear_session_token()
+    if _session_token:
+        return _session_token
+    env_tok = os.environ.get(sec.ENV_TOKEN)
+    if env_tok and str(env_tok).strip():
+        _session_token = str(env_tok).strip()
+        return _session_token
+    # Lazy retry/backoff — start order: GIMP plugin first → token file → MCP tools
+    tok = sec.load_token_with_retry()
+    _token_load_attempted = True
+    if tok:
+        _session_token = tok
+        logger.info("Loaded session token from %s", sec.default_token_path())
+    else:
+        logger.warning(
+            "No session token yet (set %s or start GIMP plugin to write %s)",
+            sec.ENV_TOKEN,
+            sec.default_token_path(),
+        )
+    return _session_token
+
+
+def _jail_path_or_raise(path: str, label: str = "path") -> str:
+    """Defense-in-depth path check before sending to the plug-in."""
+    try:
+        return str(sec.resolve_under_root(path))
+    except sec.SecurityError as e:
+        raise RuntimeError(f"{e.code}: {e.message} ({label})") from e
 
 
 class GimpConnection:
-    def __init__(self, host=GIMP_HOST, port=GIMP_PORT):
-        self.host = host
-        self.port = port
-        self.sock = None
+    def __init__(self, host: str | None = None, port: int | None = None):
+        try:
+            self.host = sec.assert_bind_host(host if host is not None else GIMP_HOST)
+        except sec.SecurityError:
+            self.host = sec.DEFAULT_HOST
+        self.port = int(port if port is not None else GIMP_PORT)
+        self.sock: socket.socket | None = None
 
     def connect(self):
         if self.sock:
             return
         try:
+            # AF_INET + literal 127.0.0.1 — no hostname resolution on default path
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(10)
             self.sock.connect((self.host, self.port))
@@ -37,7 +98,8 @@ class GimpConnection:
             self.sock = None
             logger.error(f"Failed to connect: {e}")
             raise ConnectionError(
-                f"Could not connect to GIMP at {self.host}:{self.port}. Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
+                f"Could not connect to GIMP at {self.host}:{self.port}. "
+                "Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
             )
 
     def disconnect(self):
@@ -48,7 +110,28 @@ class GimpConnection:
                 pass
             self.sock = None
 
-    def send_command(self, command_type, params=None):
+    def send_command(self, command_type: str, params: dict[str, Any] | None = None):
+        """Send authenticated JSON; reload token once on AUTH_FAILED (plugin rotated)."""
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                return self._send_command_once(
+                    command_type, params, force_reload_token=(attempt > 0)
+                )
+            except Exception as e:
+                last_error = e
+                raise
+        if last_error:
+            raise last_error
+        raise RuntimeError("send_command failed without error")
+
+    def _send_command_once(
+        self,
+        command_type: str,
+        params: dict[str, Any] | None,
+        *,
+        force_reload_token: bool,
+    ) -> Any:
         if not self.sock:
             self.connect()
         sock = self.sock
@@ -57,7 +140,18 @@ class GimpConnection:
                 f"Could not connect to GIMP at {self.host}:{self.port}. "
                 "Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
             )
-        command = {"type": command_type, "params": params or {"args": []}}
+        token = _ensure_session_token(force_reload=force_reload_token)
+        if not token:
+            raise ConnectionError(
+                "No session token available — refusing to send unauthenticated TCP "
+                f"JSON. Set {sec.ENV_TOKEN} or start the GIMP MCP plugin first so it "
+                f"writes {sec.default_token_path()}."
+            )
+        command: dict[str, Any] = {
+            "type": command_type,
+            "params": params if params is not None else {},
+            "auth": token,
+        }
         try:
             sock.sendall(json.dumps(command).encode("utf-8") + b"\n")
             response_data = b""
@@ -71,7 +165,19 @@ class GimpConnection:
                     break
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
-            return json.loads(response_data.decode("utf-8"))
+            result = json.loads(response_data.decode("utf-8"))
+            # Plugin may have rotated file token after GIMP restart
+            if (
+                isinstance(result, dict)
+                and result.get("code") == sec.CODE_AUTH_FAILED
+                and not force_reload_token
+                and not os.environ.get(sec.ENV_TOKEN)
+            ):
+                logger.info("AUTH_FAILED — reloading session token and retrying once")
+                _clear_session_token()
+                self.disconnect()
+                return self._send_command_once(command_type, params, force_reload_token=True)
+            return result
         except Exception as e:
             logger.error(f"Communication error: {e}")
             raise Exception(f"Error communicating with GIMP: {e}")
@@ -80,10 +186,10 @@ class GimpConnection:
 
 
 # Global connection
-_gimp_connection = None
+_gimp_connection: GimpConnection | None = None
 
 
-def get_gimp_connection():
+def get_gimp_connection() -> GimpConnection:
     global _gimp_connection
     if _gimp_connection is None:
         _gimp_connection = GimpConnection()
@@ -91,11 +197,13 @@ def get_gimp_connection():
     return _gimp_connection
 
 
-def reset_gimp_connection():
+def reset_gimp_connection() -> None:
     global _gimp_connection
     if _gimp_connection:
         _gimp_connection.disconnect()
     _gimp_connection = None
+    # Plugin may regenerate file token on restart; drop cached secret.
+    _clear_session_token()
 
 
 # MCP server
@@ -505,7 +613,18 @@ def call_api(
 
     Returns:
     - JSON string of the result or error message
+
+    Security: Class B (PDB-mediated) exec — disabled unless GIMP_MCP_ALLOW_EXEC=1.
     """
+    if not sec.exec_allowed():
+        return json.dumps(
+            sec.make_error(
+                sec.CODE_EXEC_DISABLED,
+                "call_api / PDB-mediated Python exec is disabled by default. "
+                "Set GIMP_MCP_ALLOW_EXEC=1 only for advanced local use "
+                "(Class B — cannot disable GIMP built-in python-fu-* PDB procedures globally).",
+            )
+        )
     if args is None:
         args = []
     if kwargs is None:
@@ -573,6 +692,7 @@ def open_image(ctx: Context, file_path: str) -> dict:
     - display_opened: whether a GIMP display window was created
     """
     try:
+        file_path = _jail_path_or_raise(file_path, "file_path")
         conn = get_gimp_connection()
         result = conn.send_command("open_image", {"file_path": file_path})
         if result["status"] == "success":
@@ -596,6 +716,7 @@ def save_xcf(ctx: Context, file_path: str, image_index: int = 0) -> dict:
     - file_path: confirmed output path
     """
     try:
+        file_path = _jail_path_or_raise(file_path, "file_path")
         conn = get_gimp_connection()
         result = conn.send_command("save_xcf", {"file_path": file_path, "image_index": image_index})
         if result["status"] == "success":
@@ -628,6 +749,7 @@ def export_image(
     - status, file_path, format, file_size_bytes
     """
     try:
+        file_path = _jail_path_or_raise(file_path, "file_path")
         conn = get_gimp_connection()
         result = conn.send_command(
             "export_image",
@@ -671,6 +793,7 @@ def batch_export(
     - errors: list of any export errors
     """
     try:
+        output_dir = _jail_path_or_raise(output_dir, "output_dir")
         params: dict = {
             "output_dir": output_dir,
             "format": format,
@@ -2532,6 +2655,7 @@ def export_icon_sizes(
     Returns: {exported: [{size, file_path}], count, platform}
     """
     try:
+        output_dir = _jail_path_or_raise(output_dir, "output_dir")
         conn = get_gimp_connection()
         result = conn.send_command(
             "export_icon_sizes",
@@ -2572,6 +2696,7 @@ def export_web_optimized(
     Returns: {jpeg_path, jpeg_size, png_path, png_size, recommendation}
     """
     try:
+        output_dir = _jail_path_or_raise(output_dir, "output_dir")
         conn = get_gimp_connection()
         result = conn.send_command(
             "export_web_optimized",
@@ -2698,6 +2823,7 @@ def export_sprite_sheet(
     Returns: {file_path, columns, rows, frame_width, frame_height, count}
     """
     try:
+        output_path = _jail_path_or_raise(output_path, "output_path")
         conn = get_gimp_connection()
         result = conn.send_command(
             "export_sprite_sheet",
@@ -2738,6 +2864,7 @@ def export_social_media_kit(
     Returns: {exported: [{platform, file_path, width, height}], count}
     """
     try:
+        output_dir = _jail_path_or_raise(output_dir, "output_dir")
         conn = get_gimp_connection()
         result = conn.send_command(
             "export_social_media_kit",

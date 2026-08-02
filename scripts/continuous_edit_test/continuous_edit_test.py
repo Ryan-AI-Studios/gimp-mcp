@@ -74,15 +74,42 @@ import json
 import os
 import socket
 import sys
+from pathlib import Path
 
-HOST, PORT = "127.0.0.1", 9877
+HOST = os.environ.get("GIMP_MCP_HOST", "127.0.0.1")
+PORT = int(os.environ.get("GIMP_MCP_PORT", "9877"))
 
 
-# ── transport ────────────────────────────────────────────────────────────────
+def _load_token() -> str | None:
+    tok = os.environ.get("GIMP_MCP_TOKEN")
+    if tok:
+        return tok.strip()
+    override = os.environ.get("GIMP_MCP_TOKEN_FILE")
+    if override:
+        p = Path(override)
+    elif sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+        p = Path(base) / "gimp-mcp" / "session.token" if base else None
+    else:
+        p = Path.home() / ".config" / "gimp-mcp" / "session.token"
+    if p and p.is_file():
+        return p.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+# ── transport (auth required by secure plugin defaults) ──────────────────────
 
 
 def _send(msg, timeout=60, recv_size=65536, parse_truncate=200):
-    s = socket.socket()
+    token = _load_token()
+    if not token:
+        raise SystemExit(
+            "No session token — set GIMP_MCP_TOKEN or start the GIMP MCP plugin "
+            "first (refusing unauthenticated TCP)."
+        )
+    if "auth" not in msg:
+        msg = {**msg, "auth": token}
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect((HOST, PORT))
     s.send(json.dumps(msg).encode() + b"\n")
@@ -112,7 +139,18 @@ def cmd(t, params=None):
 
 
 def exec_gimp(code):
-    return _send({"cmds": [code]})
+    """Requires GIMP_MCP_ALLOW_EXEC=1 (this live script uses cmds)."""
+    r = _send({"cmds": [code]})
+    if r.get("code") == "EXEC_DISABLED" or (
+        r.get("status") == "error" and "EXEC_DISABLED" in str(r.get("error", ""))
+    ):
+        print(
+            "ERROR: EXEC_DISABLED — continuous_edit_test needs plugin cmds.\n"
+            "Set GIMP_MCP_ALLOW_EXEC=1 for the GIMP process (advanced footgun).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return r
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

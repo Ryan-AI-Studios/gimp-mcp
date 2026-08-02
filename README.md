@@ -91,7 +91,8 @@ uv sync
 
 ### 2. Install the GIMP Plugin
 
-Copy `gimp-mcp-plugin.py` to GIMP's plug-ins directory and restart GIMP.
+Copy **both** `gimp-mcp-plugin.py` **and** `gimp_mcp_security.py` to GIMP's plug-ins directory
+(same folder) and restart GIMP. The security module is stdlib-only and must sit next to the plugin.
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
 > (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
@@ -115,7 +116,7 @@ if [ -z "$GIMP_DIR" ]; then
   exit 1
 fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
+cp gimp-mcp-plugin.py gimp_mcp_security.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 ```
@@ -123,16 +124,22 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 **Windows:**
 ```text
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp-mcp-plugin.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_security.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Just copy and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy both files and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
 ### 3. Start the MCP Server in GIMP
 
-1. Open any image in GIMP
-2. Go to **Tools > MCP > Start MCP Server**
-3. Server starts on `localhost:9877`
+1. Set `GIMP_WORKSPACE_ROOT` to a directory agents may read/write (required for file tools).
+2. Open any image in GIMP
+3. Go to **Tools > MCP > Start MCP Server**
+4. Server binds **`127.0.0.1:9877`** (`AF_INET`) and writes a session token file
+   (`%LOCALAPPDATA%\gimp-mcp\session.token` on Windows, `~/.config/gimp-mcp/session.token` elsewhere)
+
+**Start order:** GIMP plugin first (token available) → then MCP client / `gimp_mcp_server.py`
+(lazy token load with retry).
 
 ### 4. Configure Your MCP Client
 
@@ -355,11 +362,46 @@ See [`bg_remove_iterative.py`](bg_remove_iterative.py) for a complete example. T
 | [`bg_remove.py`](bg_remove.py) | Simple single-pass background removal |
 | [`agent_edit_demo.py`](agent_edit_demo.py) | Full pipeline: open → remove BG → edit expression → export |
 
+> **Note:** Demos that use plugin `cmds` require `GIMP_MCP_ALLOW_EXEC=1` and a valid session
+> token. They connect to `127.0.0.1` and read the token from env or the default token file.
+> Without advanced exec they exit with a friendly `EXEC_DISABLED` message.
+
 Run the test suite to verify your setup:
 ```bash
 python run_tests.py
 # Expected: 56/56 PASSED
 ```
+
+---
+
+## Security defaults
+
+See **[SECURITY.md](SECURITY.md)** for the full threat model and residuals.
+
+| Variable | Role | Default |
+|---|---|---|
+| `GIMP_MCP_HOST` | Bind/connect host | `127.0.0.1` |
+| `GIMP_MCP_PORT` | TCP port | `9877` |
+| `GIMP_MCP_TOKEN` | Shared session secret | env or auto-generated file |
+| `GIMP_WORKSPACE_ROOT` | Path jail for open/save/export | **required** for file ops |
+| `GIMP_MCP_ALLOW_EXEC` | Plugin `cmds` + MCP `call_api` | **off** |
+| `GIMP_MCP_ALLOW_NON_LOOPBACK` | Allow non-loopback bind | **off** |
+| `GIMP_MCP_DEBUG` | Tracebacks / verbose diagnostics only | **off** |
+| `GIMP_MCP_AUDIT_LOG` | JSONL audit path | platform app data |
+
+**Posture:** typed tools only; per-message auth; loopback `AF_INET`; workspace path confinement.
+`call_api` and plugin-internal arbitrary Python are **disabled by default**.
+
+### Advanced: enabling exec (footgun)
+
+```bash
+# Only for trusted local experimentation — never for untrusted agents
+set GIMP_MCP_ALLOW_EXEC=1   # Windows
+export GIMP_MCP_ALLOW_EXEC=1  # POSIX
+```
+
+This enables Class A (plugin `cmds`/eval) **and** Class B (MCP `call_api` / PDB-mediated exec).
+It does not globally disable GIMP’s built-in `python-fu-*` PDB procedures. Prefer typed tools.
 
 ---
 

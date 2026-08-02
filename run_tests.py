@@ -1,14 +1,42 @@
 #!/usr/bin/env python3
 import json
+import os
 import socket
 import sys
+from pathlib import Path
+
+HOST = os.environ.get("GIMP_MCP_HOST", "127.0.0.1")
+PORT = int(os.environ.get("GIMP_MCP_PORT", "9877"))
+
+
+def _load_token() -> str | None:
+    tok = os.environ.get("GIMP_MCP_TOKEN")
+    if tok:
+        return tok.strip()
+    override = os.environ.get("GIMP_MCP_TOKEN_FILE")
+    if override:
+        p = Path(override)
+    elif sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+        p = Path(base) / "gimp-mcp" / "session.token" if base else None
+    else:
+        p = Path.home() / ".config" / "gimp-mcp" / "session.token"
+    if p and p.is_file():
+        return p.read_text(encoding="utf-8").strip() or None
+    return None
 
 
 def cmd(t, params=None):
-    s = socket.socket()
+    token = _load_token()
+    if not token:
+        raise SystemExit(
+            "No session token — set GIMP_MCP_TOKEN or start the GIMP MCP plugin "
+            "first (refusing unauthenticated TCP)."
+        )
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(20)
-    s.connect(("127.0.0.1", 9877))
-    msg = {"type": t, "params": params if params is not None else {}}
+    s.connect((HOST, PORT))
+    msg = {"type": t, "params": params if params is not None else {}, "auth": token}
     s.send(json.dumps(msg).encode() + b"\n")
     r = b""
     while True:

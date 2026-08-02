@@ -25,6 +25,20 @@ import os
 import platform
 import signal
 
+# ---------------------------------------------------------------------------
+# Security policy (stdlib module — deploy gimp_mcp_security.py beside this file)
+# ---------------------------------------------------------------------------
+_plugin_dir = os.path.dirname(os.path.abspath(__file__))
+if _plugin_dir not in sys.path:
+    sys.path.insert(0, _plugin_dir)
+try:
+    import gimp_mcp_security as _sec
+except ImportError as _sec_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_security.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_sec_imp_err}"
+    ) from _sec_imp_err
+
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
@@ -50,14 +64,69 @@ def exec_and_get_results(command, context):
 
 
 class MCPPlugin(Gimp.PlugIn):
-    def __init__(self, host="localhost", port=9877):
+    def __init__(self, host=None, port=None):
         super().__init__()
-        self.host = host
-        self.port = port
+        # Env plumbing (net-new): defaults are loopback-only AF_INET literals.
+        raw_host = host if host is not None else os.environ.get(_sec.ENV_HOST, _sec.DEFAULT_HOST)
+        try:
+            self.host = _sec.assert_bind_host(raw_host)
+        except _sec.SecurityError as e:
+            print(f"[MCP] SECURITY bind rejected ({e}); using 127.0.0.1")
+            self.host = _sec.DEFAULT_HOST
+        if port is not None:
+            self.port = int(port)
+        else:
+            self.port = _sec.get_port()
+
+        # Rotate file-backed tokens on every plugin start (stale-token mitigation).
+        token, token_path, generated = _sec.resolve_expected_token(
+            generate_if_missing=True,
+            rotate_file_token=True,
+        )
+        self.expected_token = token
+        self.token_path = token_path
+        self.workspace_root = _sec.workspace_root()
+        self.audit_path = _sec.audit_log_path()
+        self._last_peer = None
+
+        print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
+        if not _sec.is_loopback_host(self.host):
+            print(
+                f"[MCP] WARNING: non-loopback bind host {self.host!r} "
+                f"( {_sec.ENV_ALLOW_NON_LOOPBACK}=1 ) — not recommended for agent use"
+            )
+        if token_path:
+            print(
+                f"[MCP] Session token file: {token_path}"
+                + (" (rotated/generated)" if generated else "")
+            )
+        elif os.environ.get(_sec.ENV_TOKEN):
+            print("[MCP] Session token: from GIMP_MCP_TOKEN env")
+        if self.workspace_root:
+            print(f"[MCP] Workspace root: {self.workspace_root}")
+        else:
+            print(
+                f"[MCP] WARNING: {_sec.ENV_WORKSPACE} unset — filesystem tools fail closed (PATH_DENIED)"
+            )
+        if _sec.exec_allowed():
+            print("[MCP] WARNING: GIMP_MCP_ALLOW_EXEC=1 — Class A exec ENABLED (mode: elevated)")
+            _sec.write_audit_event(
+                {
+                    "event": "exec_mode_enabled",
+                    "mode": "elevated",
+                    "host": self.host,
+                    "port": self.port,
+                },
+                self.audit_path,
+            )
+        if _sec.debug_enabled():
+            print("[MCP] DEBUG diagnostics on (policy flags unchanged)")
+
         self.running = False
         self.socket = None
         self.server_thread = None
         self.context = {}
+        # Bootstrap only — not agent-reachable Class A exec
         exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
 
@@ -164,13 +233,28 @@ class MCPPlugin(Gimp.PlugIn):
         """Core server loop — runs in a background thread."""
         self.running = True
         try:
-            print("Creating socket...")
+            # Re-assert bind host (covers restart / late env changes)
+            try:
+                self.host = _sec.assert_bind_host(self.host)
+            except _sec.SecurityError as e:
+                print(f"[MCP] SECURITY: {e}; forcing 127.0.0.1")
+                self.host = _sec.DEFAULT_HOST
+            print("Creating socket (AF_INET)...")
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.socket.settimeout(1.0)
             self.socket.bind((self.host, self.port))
             self.socket.listen(1)
             print(f"GimpMCP server started on {self.host}:{self.port}")
+            _sec.write_audit_event(
+                {
+                    "event": "server_start",
+                    "host": self.host,
+                    "port": self.port,
+                    "exec_allowed": _sec.exec_allowed(),
+                },
+                self.audit_path,
+            )
 
             while self.running:
                 try:
@@ -180,7 +264,7 @@ class MCPPlugin(Gimp.PlugIn):
                     continue
                 except OSError:
                     break
-                client_thread = threading.Thread(target=self._handle_client, args=(client,))
+                client_thread = threading.Thread(target=self._handle_client, args=(client, address))
                 client_thread.daemon = True
                 client_thread.start()
 
@@ -216,10 +300,11 @@ class MCPPlugin(Gimp.PlugIn):
 
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
 
-    def _handle_client(self, client):
+    def _handle_client(self, client, address=None):
         """Handle connected client"""
         # print("Client handler started")
         buffer = b""
+        peer = address
 
         # Receive data in chunks to handle larger payloads
         while True:
@@ -255,10 +340,23 @@ class MCPPlugin(Gimp.PlugIn):
             request = str(buffer)
 
         # print(f"Parsed request: {request}")
-        response = self.execute_command(request)
+        response = self.execute_command(request, peer=peer)
         print(f"response type: {type(response)}")
 
         if isinstance(response, dict):
+            response = _sec.strip_traceback_unless_debug(response)
+            # Completion audit for typed tools (auth/path/exec already audited).
+            try:
+                status = response.get("status")
+                code = response.get("code")
+                self._audit(
+                    event="command_complete",
+                    success=(status == "success"),
+                    status=status,
+                    code=code,
+                )
+            except Exception:
+                pass
             response_str = json.dumps(response)
         else:
             response_str = str(response)
@@ -275,13 +373,104 @@ class MCPPlugin(Gimp.PlugIn):
             client.close()
         return
 
-    def execute_command(self, request):
-        """Execute commands in GIMP's main thread."""
+    def _audit(self, **fields):
+        """Append audit JSONL (no tokens / file contents)."""
+        event = {"peer": str(self._last_peer) if self._last_peer else None}
+        event.update(fields)
+        _sec.write_audit_event(event, self.audit_path)
+
+    def _jail_path(self, path):
+        """Resolve path under workspace root. Returns (Path|None, error_dict|None)."""
         try:
-            if request == "disable_auto_disconnect":
-                self.auto_disconnect_client = False
-                return {"status": "success", "results": "OK"}
+            safe = _sec.resolve_under_root(path, self.workspace_root)
+            self._audit(
+                event="path_decision",
+                decision="allow",
+                path_kind="workspace_relative",
+            )
+            return safe, None
+        except _sec.SecurityError as e:
+            self._audit(
+                event="path_decision",
+                decision="deny",
+                code=e.code,
+                message=e.message,
+            )
+            return None, e.as_error()
+
+    def execute_command(self, request, peer=None):
+        """Execute commands in GIMP's main thread.
+
+        Auth is a **single precheck** after JSON parse and before any type/cmds routing.
+        """
+        self._last_peer = peer
+        try:
+            # Bare string command: deprecated in secure mode (no auth possible).
+            if isinstance(request, str) and request.strip() == "disable_auto_disconnect":
+                self._audit(
+                    event="auth",
+                    auth_ok=False,
+                    type="disable_auto_disconnect_string",
+                    success=False,
+                )
+                return _sec.make_error(
+                    _sec.CODE_AUTH_FAILED,
+                    "Bare string 'disable_auto_disconnect' is disabled; "
+                    'send authenticated JSON: {"type":"disable_auto_disconnect","auth":"..."}',
+                )
+
             j = json.loads(request)
+
+            # ── AUTH PRECHECK (before any type / cmds / side effects) ─────────
+            provided_auth = j.get("auth")
+            auth_ok = _sec.verify_token(provided_auth, self.expected_token)
+            cmd_type = j.get("type")
+            if not auth_ok:
+                self._audit(
+                    event="auth",
+                    auth_ok=False,
+                    type=cmd_type or ("cmds" if "cmds" in j else "unknown"),
+                    success=False,
+                )
+                return _sec.make_error(
+                    _sec.CODE_AUTH_FAILED,
+                    "Authentication failed (missing or invalid auth token)",
+                )
+            self._audit(
+                event="auth",
+                auth_ok=True,
+                success=True,
+                type=cmd_type or ("cmds" if "cmds" in j else "unknown"),
+            )
+
+            # Authenticated JSON equivalent of deprecated string command
+            if cmd_type == "disable_auto_disconnect":
+                self.auto_disconnect_client = False
+                self._audit(event="command", type=cmd_type, success=True)
+                return {"status": "success", "results": "OK"}
+
+            # ── Class A exec gate (plugin-internal cmds / eval) ───────────────
+            if "cmds" in j:
+                if not _sec.exec_allowed():
+                    self._audit(
+                        event="exec",
+                        type="cmds",
+                        success=False,
+                        code=_sec.CODE_EXEC_DISABLED,
+                    )
+                    return _sec.make_error(
+                        _sec.CODE_EXEC_DISABLED,
+                        "Plugin-internal arbitrary Python exec is disabled. "
+                        "Set GIMP_MCP_ALLOW_EXEC=1 only for advanced use.",
+                    )
+                self._audit(event="exec", type="cmds", mode="elevated", success=True)
+                a = ["python-fu-exec", j["cmds"]]
+                outputs = ["OK"]
+                if len(a) > 1 and a[1]:
+                    print(f"Executing commands (elevated): {a[1]}")
+                    outputs = [exec_and_get_results(c, self.context) for c in a[1]]
+                return {"status": "success", "results": outputs}
+
             if "type" in j and j["type"] == "get_image_bitmap":
                 params = j.get("params", {})
                 return self._get_current_image_bitmap(params)
@@ -448,41 +637,47 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._get_histogram(j.get("params", {}))
             elif "type" in j and j["type"] == "warp_region":
                 return self._warp_region(j.get("params", {}))
-            elif "cmds" in j:
-                a = ["python-fu-exec", j["cmds"]]
             else:
-                p = j["params"]
-                a = p["args"]
-
-            # Protect against empty args list
-            if len(a) == 0:
-                return {"status": "error", "error": "No command arguments provided"}
-
-            if a[0] == "python-fu-eval":
-                if len(a) > 0:
-                    print(f"evaluating exprs: {a[1]}")
+                # Legacy params.args exec path (python-fu-eval / python-fu-exec)
+                p = j.get("params") or {}
+                a = p.get("args") if isinstance(p, dict) else None
+                if not a:
+                    return _sec.make_error(
+                        "UNKNOWN_COMMAND",
+                        "Unknown command (no type / cmds / params.args)",
+                    )
+                if not _sec.exec_allowed():
+                    self._audit(
+                        event="exec",
+                        type=str(a[0]) if a else "params.args",
+                        success=False,
+                        code=_sec.CODE_EXEC_DISABLED,
+                    )
+                    return _sec.make_error(
+                        _sec.CODE_EXEC_DISABLED,
+                        "Plugin-internal arbitrary Python exec/eval is disabled. "
+                        "Set GIMP_MCP_ALLOW_EXEC=1 only for advanced use.",
+                    )
+                self._audit(
+                    event="exec",
+                    type=str(a[0]),
+                    mode="elevated",
+                    success=True,
+                )
+                if a[0] == "python-fu-eval":
+                    print(f"evaluating exprs (elevated): {a[1]}")
                     vals = [str(eval(e)) for e in a[1]]
-                    results = {"status": "success", "results": vals}
-                else:
-                    results = {"status": "success", "results": "[NULL]"}
-                print(f"expression result: {results}")
-                return results
-            else:
-                outputs = ["OK"]
-                if len(a) > 0:
-                    print(f"Executing commands: {a[1]}")
-                    outputs = [exec_and_get_results(c, self.context) for c in a[1]]
-                else:
-                    print("no command to execute")
-                result = {"status": "success", "results": outputs}
-
-                print(f"Command result: {result}")
-                return result
+                    return {"status": "success", "results": vals}
+                print(f"Executing commands (elevated): {a[1]}")
+                outputs = [exec_and_get_results(c, self.context) for c in a[1]]
+                return {"status": "success", "results": outputs}
 
         except Exception as e:
-            error_msg = f"Error executing command: {e!s}\n{traceback.format_exc()}"
+            error_msg = f"Error executing command: {e!s}"
             print(error_msg)
-            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+            if _sec.debug_enabled():
+                print(traceback.format_exc())
+            return _sec.redact_error(e, code=_sec.CODE_INTERNAL, message=str(e))
 
     def _get_current_image_bitmap(self, params=None):
         """Get the current image as a base64-encoded bitmap with optional scaling and region selection."""
@@ -996,9 +1191,8 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": metadata}
 
         except Exception as e:
-            error_msg = f"Error getting image metadata: {e!s}\n{traceback.format_exc()}"
-            print(error_msg)
-            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+            print(f"Error getting image metadata: {e!s}")
+            return _sec.redact_error(e, message=f"Error getting image metadata: {e!s}")
 
     def _base_type_to_string(self, base_type):
         """Convert GIMP base type enum to string."""
@@ -1352,8 +1546,8 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": gimp_info}
 
         except Exception as e:
-            error_msg = f"Error getting GIMP info: {e!s}\n{traceback.format_exc()}"
-            return {"status": "error", "error": error_msg, "traceback": traceback.format_exc()}
+            print(f"Error getting GIMP info: {e!s}")
+            return _sec.redact_error(e, message=f"Error getting GIMP info: {e!s}")
 
     def _get_context_state(self):
         """Get current GIMP context state (colors, brush, tool settings)."""
@@ -1451,8 +1645,8 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": context_state}
 
         except Exception as e:
-            error_msg = f"Error getting context state: {e!s}\n{traceback.format_exc()}"
-            return {"status": "error", "error": error_msg, "traceback": traceback.format_exc()}
+            print(f"Error getting context state: {e!s}")
+            return _sec.redact_error(e, message=f"Error getting context state: {e!s}")
 
     def _restart_server(self):
         """Gracefully restart the MCP socket server in-place."""
@@ -1466,8 +1660,14 @@ class MCPPlugin(Gimp.PlugIn):
                     pass
                 self.socket = None
 
-            # Re-bind a fresh socket
+            # Re-bind a fresh socket (AF_INET + validated host)
             import time
+
+            try:
+                self.host = _sec.assert_bind_host(self.host)
+            except _sec.SecurityError as e:
+                print(f"[MCP] SECURITY: {e}; forcing 127.0.0.1")
+                self.host = _sec.DEFAULT_HOST
 
             time.sleep(0.3)
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1476,16 +1676,20 @@ class MCPPlugin(Gimp.PlugIn):
             self.socket.bind((self.host, self.port))
             self.socket.listen(1)
             print(f"MCP server restarted on {self.host}:{self.port}")
+            _sec.write_audit_event(
+                {
+                    "event": "server_restart",
+                    "host": self.host,
+                    "port": self.port,
+                },
+                self.audit_path,
+            )
             return {
                 "status": "success",
                 "results": {"restarted": True, "host": self.host, "port": self.port},
             }
         except Exception as e:
-            return {
-                "status": "error",
-                "error": f"Restart failed: {e!s}",
-                "traceback": traceback.format_exc(),
-            }
+            return _sec.redact_error(e, message=f"Restart failed: {e!s}")
 
     def _new_canvas(self, params):
         """Create a new blank canvas and open it in a GIMP display window."""
@@ -1607,8 +1811,16 @@ class MCPPlugin(Gimp.PlugIn):
         }.get(interp.lower(), Gimp.InterpolationType.CUBIC)
 
     def _export_to_path(self, image, file_path, fmt, quality, flatten):
-        """Export image to file_path in the given format. Returns file size in bytes."""
+        """Export image to file_path in the given format. Returns file size in bytes.
+
+        Defense-in-depth: re-check path jail even if callers already jailed.
+        """
         from gi.repository import Gio
+
+        safe, err = self._jail_path(file_path)
+        if err is not None:
+            raise _sec.SecurityError(_sec.CODE_PATH_DENIED, err.get("error", "PATH_DENIED"))
+        file_path = str(safe)
 
         if flatten:
             image = image.duplicate()
@@ -1695,7 +1907,20 @@ class MCPPlugin(Gimp.PlugIn):
             except Exception:
                 pass
         else:
-            # Fallback: execute via exec context
+            # Fallback: execute via exec context — gated (not agent cmds, but still exec).
+            if not _sec.exec_allowed():
+                print(
+                    f"[MCP] GEGL filter fallback exec skipped for {op_name} "
+                    "(GIMP_MCP_ALLOW_EXEC off; use PDB path or enable advanced mode)"
+                )
+                return
+            self._audit(
+                event="exec",
+                type="gegl_filter_fallback",
+                mode="elevated",
+                op_name=op_name,
+                success=True,
+            )
             props_code = ", ".join(f'"{k}", {v!r}' for k, v in props.items())
             cmds = [
                 "from gi.repository import Gimp, Gegl",
@@ -1717,6 +1942,10 @@ class MCPPlugin(Gimp.PlugIn):
             from gi.repository import Gio
 
             file_path = params.get("file_path", "")
+            safe, err = self._jail_path(file_path)
+            if err is not None:
+                return err
+            file_path = str(safe)
             gio_file = Gio.File.new_for_path(file_path)
             image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gio_file)
             if image is None:
@@ -1741,7 +1970,7 @@ class MCPPlugin(Gimp.PlugIn):
                 },
             }
         except Exception as e:
-            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+            return _sec.redact_error(e)
 
     def _save_xcf(self, params):
         """Save image as XCF."""
@@ -1750,6 +1979,10 @@ class MCPPlugin(Gimp.PlugIn):
 
             image_index = int(params.get("image_index", 0))
             file_path = params.get("file_path", "")
+            safe, err = self._jail_path(file_path)
+            if err is not None:
+                return err
+            file_path = str(safe)
             image = self._get_image(image_index)
             gio_file = Gio.File.new_for_path(file_path)
             pdb = Gimp.get_pdb()
@@ -1763,13 +1996,17 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
             return {"status": "success", "results": {"status": "success", "file_path": file_path}}
         except Exception as e:
-            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+            return _sec.redact_error(e)
 
     def _export_image(self, params):
         """Export image to raster format."""
         try:
             image_index = int(params.get("image_index", 0))
             file_path = params.get("file_path", "")
+            safe, err = self._jail_path(file_path)
+            if err is not None:
+                return err
+            file_path = str(safe)
             fmt = params.get("format", "png")
             quality = int(params.get("quality", 90))
             flatten = bool(params.get("flatten", True))
@@ -1785,13 +2022,19 @@ class MCPPlugin(Gimp.PlugIn):
                     "file_size_bytes": file_size,
                 },
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
-            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+            return _sec.redact_error(e)
 
     def _batch_export(self, params):
         """Export all (or one) open images to output_dir."""
         try:
             output_dir = params.get("output_dir", "")
+            safe_dir, err = self._jail_path(output_dir)
+            if err is not None:
+                return err
+            output_dir = str(safe_dir)
             fmt = params.get("format", "png")
             quality = int(params.get("quality", 90))
             name_pattern = params.get("name_pattern", "{name}")
@@ -3665,6 +3908,10 @@ class MCPPlugin(Gimp.PlugIn):
         """Export icon size sets for Android or iOS."""
         try:
             output_dir = params.get("output_dir", "")
+            safe_dir, err = self._jail_path(output_dir)
+            if err is not None:
+                return err
+            output_dir = str(safe_dir)
             platform_str = params.get("platform", "android").lower()
             src_index = int(params.get("source_image_index", 0))
             fmt = params.get("format", "png")
@@ -3738,6 +3985,10 @@ class MCPPlugin(Gimp.PlugIn):
         """Export as both JPEG and PNG, return comparison."""
         try:
             output_dir = params.get("output_dir", "")
+            safe_dir, err = self._jail_path(output_dir)
+            if err is not None:
+                return err
+            output_dir = str(safe_dir)
             jpeg_quality = int(params.get("jpeg_quality", 85))
             image_index = int(params.get("image_index", 0))
             max_width = params.get("max_width", None)
@@ -3838,6 +4089,10 @@ class MCPPlugin(Gimp.PlugIn):
             from gi.repository import Gegl
 
             output_path = params.get("output_path", "")
+            safe_out, err = self._jail_path(output_path)
+            if err is not None:
+                return err
+            output_path = str(safe_out)
             columns = params.get("columns", None)
             padding = int(params.get("padding", 0))
             source = params.get("source", "layers").lower()
@@ -3920,6 +4175,10 @@ class MCPPlugin(Gimp.PlugIn):
         """Export for multiple social media platforms."""
         try:
             output_dir = params.get("output_dir", "")
+            safe_dir, err = self._jail_path(output_dir)
+            if err is not None:
+                return err
+            output_dir = str(safe_dir)
             platforms = params.get("platforms", None)
             image_index = int(params.get("image_index", 0))
 
@@ -4107,7 +4366,7 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _close_image(self, params):
-        """Close an image, optionally saving first."""
+        """Close an image, optionally saving first (path-jailed when saving)."""
         try:
             from gi.repository import Gio
 
@@ -4116,15 +4375,22 @@ class MCPPlugin(Gimp.PlugIn):
             image = self._get_image(image_index)
             if save_first:
                 img_file = image.get_file()
-                if img_file:
+                if img_file and img_file.get_path():
                     xcf_path = img_file.get_path().rsplit(".", 1)[0] + ".xcf"
                 else:
-                    import tempfile
-
-                    xcf_path = os.path.join(
-                        tempfile.gettempdir(), f"gimp_backup_{image.get_id()}.xcf"
-                    )
-                gio_file = Gio.File.new_for_path(xcf_path)
+                    # Untitled images must save under workspace (fail-closed).
+                    root = self.workspace_root
+                    if root is None:
+                        return _sec.make_error(
+                            _sec.CODE_PATH_DENIED,
+                            "close_image save_first requires GIMP_WORKSPACE_ROOT "
+                            "for untitled images",
+                        )
+                    xcf_path = os.path.join(str(root), f"gimp_backup_{image.get_id()}.xcf")
+                safe_path, err = self._jail_path(xcf_path)
+                if err is not None:
+                    return err
+                gio_file = Gio.File.new_for_path(os.fspath(safe_path))
                 pdb = Gimp.get_pdb()
                 proc = pdb.lookup_procedure("gimp-xcf-save")
                 if proc:
