@@ -90,15 +90,14 @@ minting. Track IDs are creation order, not execution order.
 ### Current product sequence (summary)
 
 ```
-0001 Quality gates (in progress / scaffolding done)
-  → 0002 Security hardening
-  → 0003 Visible composite snapshot | 0004 Alpha export
-  → 0005 State manifest → 0006 Stable handles → 0007 High-level MCP surface
-  → 0008 CLI sidecar → 0009 Pixel verification → 0010 Recipes → 0011 NDE tools
-  → 0012 Skill packaging → 0015 Adapters → 0013 E2E/CI → 0014 Perf budgets
+0001 Quality gates bootstrap — Completed (87bc111)
+  → 0002 Quality surface stabilization — NEXT (full clean lint/format/types/tests)
+  → 0003 Security … through 0028 Final product polish (v1)
 ```
 
-See `conductor/conductor.md` for the authoritative table.
+**28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
+recipes → packaging → golden path → v1 polish. Most are **Proposed placeholders** until a full
+planning pass. **0002 is Ready.** Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -240,7 +239,8 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | synced from upstream at bootstrap; origin = Ryan-AI-Studios |
 | Quality gates | ruff / format / basedpyright / pytest / ledgerful verify green offline |
-| Active focus | Finish finalize of 0001; next **0002-SecurityHardening** |
+| Active focus | **0002-QualitySurfaceStabilization** (then 0003 security → … → 0028 v1 polish) |
+| Track count | 0001–0028 (see conductor.md) |
 
 ---
 
@@ -249,3 +249,4 @@ If indexes are empty: `ledgerful index --incremental`.
 | Date | Change |
 |---|---|
 | 2026-08-02 | Initial planner handoff for gimp-mcp full-product program |
+| 2026-08-02 | Expanded conductor to 28 placeholder tracks; 0001 Completed; 0002 stabilization Ready |
