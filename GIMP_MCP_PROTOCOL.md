@@ -76,11 +76,32 @@ Agent-oriented live preview of the **visible composite** (same capture path as
 shorthand. Returns ToolResult with ImageContent + structuredContent mapping
 (same schema as `get_image_bitmap`).
 
-#### `get_image_metadata()` 
-Returns comprehensive metadata about the current open image without transferring bitmap data.
+#### `orient_workspace(image_index=None, summary_only=False)` — **orientation SoT**
+Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_version`
+`1.0.0`). Prefer this **before any mutation** and re-run after structural ops
+(create/delete/reorder/merge/rasterize layers, open/close images).
+
+- **Read-only:** no selection/display changes, no undo groups, no `displays_flush`, no export
+- **Default:** full recursive layer trees for **all** open images
+- **image_index:** optional filter to a single document (large workspaces)
+- **summary_only:** lightweight per-image summary without deep layer trees
+- **Handles:** provisional (`generation=1`, `session_epoch`) until stable-handle registry
+- **selected:** true only for the front display image (`Gimp.get_displays()[0]`); if no
+  displays, all `selected: false` (never defaults index 0 to true)
+- **Layer kinds:** `raster` | `group` | `text` | `link` | `vector` (nested `children[]`)
+- **Capabilities:** honest matrix (composite snapshot true; atomic save/export false; …)
+- **Transport:** agent-facing `stdio-proxy` (plugin TCP is internal)
+- **Contract file:** `schemas/state-manifest.v1.json`
+
+`list_layers` remains a flat compatibility helper — prefer `orient_workspace` for tree/kinds.
+
+#### `get_image_metadata(image_index=0)`
+Returns comprehensive metadata about an open image without transferring bitmap data.
+Not schema-versioned orientation SoT — prefer `orient_workspace` for agents.
+- **image_index:** which open document (default `0`)
 - **Returns**: Dictionary containing detailed image information
 - **Performance**: Much faster than `get_image_bitmap()` - no image export required
-- **Use case**: Perfect for analysis, decision making, and information gathering
+- **Use case**: Quick property checks; orientation → `orient_workspace`
 
 **Returned metadata includes:**
 - **Basic properties**: width, height, color mode, precision, resolution, unsaved changes status
@@ -122,7 +143,9 @@ Execute GIMP 3.0 API methods through PyGObject console.
 - Commands execute in persistent context - imports and variables persist
 - Always call Gimp.displays_flush() after drawing operations
 
-For image operations, use `get_image_bitmap()` for full image export, `get_image_metadata()` for fast information gathering, or `get_gimp_info()` for environment discovery.
+For orientation, use **`orient_workspace()`** (schema-versioned SoT). For pixels, use
+`get_image_bitmap()` / `get_state_snapshot()`. `get_image_metadata()` is a thin
+compat metadata dump; `get_gimp_info()` covers environment discovery.
 All tools return MCP-compliant data that AI assistants can process directly.
 
 ## Basic Method

@@ -32,8 +32,9 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 | | |
 |---|---|
 | 👁️ **Live Visual Feedback** | `get_state_snapshot` returns a PNG preview mid-workflow so the AI verifies each step |
-| 🎨 **56 GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
-| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested (56/56 passing) |
+| 🧭 **Workspace Orientation** | `orient_workspace` returns a schema-versioned state manifest (layers tree, kinds, handles, capabilities) |
+| 🎨 **56+ GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
+| 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested |
 | 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
 | 🖼️ **Region Snapshots** | Zoom into any area for detail verification (face, mouth, corner, etc.) |
 | 🔌 **Universal MCP** | Works with Claude Desktop, Claude Code, Gemini CLI, PydanticAI, and more |
@@ -429,10 +430,10 @@ It does not globally disable GIMP’s built-in `python-fu-*` PDB procedures. Pre
 AI Client (Claude, etc.)
       │  MCP (stdio)
       ▼
-gimp_mcp_server.py          ← MCP tool definitions
+gimp_mcp_server.py          ← MCP tool definitions (+ gimp_mcp_state finalize)
       │  TCP JSON  :9877
       ▼
-gimp-mcp-plugin.py          ← Runs inside GIMP process
+gimp-mcp-plugin.py          ← Runs inside GIMP process (raw dump only for orient)
       │  PyGObject
       ▼
 GIMP 3.2 (gi.repository.Gimp)
@@ -440,6 +441,9 @@ GIMP 3.2 (gi.repository.Gimp)
 
 - MCP server translates tool calls into JSON commands sent to the plugin over TCP
 - Plugin executes operations directly in the GIMP process via PyGObject
+- **`orient_workspace`:** plugin returns a raw dump; host `gimp_mcp_state.finalize_manifest`
+  injects capabilities + `session.transport=stdio-proxy` and validates (schema
+  `schemas/state-manifest.v1.json`). Prefer this over flat `list_layers` for orientation.
 - Two message formats: `{"type": "...", "params": {...}}` for named tools, `{"cmds": ["python..."]}` for arbitrary exec
 
 ### Transparent PNG export (Issue 16)

@@ -1229,7 +1229,7 @@ class MCPPlugin(Gimp.PlugIn):
     _ORIENT_MAX_LAYER_DEPTH = 32
 
     def _orient_classify_kind(self, layer):
-        """Classify layer kind via isinstance / gtype — never _get_layer_type_string."""
+        """Classify layer kind via isinstance / gtype (not pixel-type strings)."""
         try:
             for cls_name, kind in (
                 ("GroupLayer", "group"),

@@ -465,24 +465,39 @@ def test_state_module_exports() -> None:
 
 
 def test_orient_workspace_wiring_when_present() -> None:
-    """After Phase 2/3, orient_workspace is registered on plugin + server.
-
-    Until those land, skip — Phase 1 only guarantees host module + schema.
-    """
-    plugin = PLUGIN.read_text(encoding="utf-8") if PLUGIN.is_file() else ""
-    server = SERVER.read_text(encoding="utf-8") if SERVER.is_file() else ""
-    if "orient_workspace" not in plugin or "orient_workspace" not in server:
-        pytest.skip("orient_workspace not wired yet (Phase 2/3)")
+    """orient_workspace registered on plugin + server; read-only greps hold."""
+    plugin = PLUGIN.read_text(encoding="utf-8")
+    server = SERVER.read_text(encoding="utf-8")
+    assert "orient_workspace" in plugin and "orient_workspace" in server
     assert 'j["type"] == "orient_workspace"' in plugin or '"orient_workspace"' in plugin
     assert "def orient_workspace" in server
     assert "finalize_manifest" in server
+    assert 'transport="stdio-proxy"' in server or "transport='stdio-proxy'" in server
+
     body = _method_body(plugin, "_orient_workspace")
-    assert "displays_flush" not in body
-    assert "undo_group" not in body
-    assert "_layer_children" in body
-    assert "_get_layer_type_string" not in body
-    assert "self.session_id" in body or "session_id" in body
-    # Session attrs set in __init__
+    # Ban mutation call sites (docstrings may mention the names)
+    assert "displays_flush(" not in body
+    assert "Gimp.displays_flush" not in body
+    assert "undo_group_start" not in body
+    assert "undo_group_end" not in body
+    assert "self.session_id" in body
+
+    # Tree walk uses _layer_children (not flat _iter_layers_recursive) in orient helpers
+    layer_node = _method_body(plugin, "_orient_layer_node")
+    assert "self._layer_children" in layer_node
+    assert "_iter_layers_recursive" not in layer_node
+    assert "self._get_layer_type_string" not in layer_node
+    classify = _method_body(plugin, "_orient_classify_kind")
+    assert "self._get_layer_type_string" not in classify
+    assert "isinstance" in classify
+
     init_body = _method_body(plugin, "__init__")
     assert "self.session_id" in init_body
     assert "self.session_epoch" in init_body
+    assert "self.session_started_at" in init_body
+
+    # get_image_metadata three-edit hygiene
+    assert "image_index" in _function_body(server, "get_image_metadata")
+    meta_body = _method_body(plugin, "_get_current_image_metadata")
+    assert "_get_image" in meta_body
+    assert "images[0]" not in meta_body
