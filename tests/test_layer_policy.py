@@ -306,6 +306,10 @@ def test_wiring_plugin_imports_policy() -> None:
     # Checkpoint XCF: partial + replace so failed overwrite cannot keep stale XCF
     assert ".partial" in text
     assert "os.replace" in text
+    # Durable protection across restore/restart (Codex final P1)
+    assert "_hydrate_protected_from_group" in text
+    assert "_item_under_source_immutable_policy" in text
+    assert "_find_source_immutable_group" in text
 
 
 def test_wiring_server_tools() -> None:

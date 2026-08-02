@@ -1543,6 +1543,11 @@ class MCPPlugin(Gimp.PlugIn):
             protected_flag = lid in (self._protected_item_ids.get(int(image_id)) or set())
         except Exception:
             protected_flag = False
+        if not protected_flag:
+            try:
+                protected_flag = self._item_under_source_immutable_policy(layer)
+            except Exception:
+                protected_flag = False
 
         mask_info = {"present": False}
         try:
@@ -1840,6 +1845,12 @@ class MCPPlugin(Gimp.PlugIn):
 
             # F1: drop closed-image generation keys; never reseed them here
             self._sync_image_generations(all_images)
+            # Durable Source_Immutable hydrate for orient protected flags
+            for _img in all_images:
+                try:
+                    self._hydrate_protected_from_group(_img)
+                except Exception:
+                    pass
 
             explicit_index = image_index is not None
             if explicit_index:
@@ -2849,8 +2860,78 @@ class MCPPlugin(Gimp.PlugIn):
             return layers[0]
         return layer
 
+    def _find_source_immutable_group(self, image):
+        """Return parasite-marked Source_Immutable group or None (no create)."""
+        group_name = _policy.SOURCE_IMMUTABLE_GROUP_NAME
+        for layer in image.get_layers() or []:
+            try:
+                if layer.get_name() != group_name:
+                    continue
+            except Exception:
+                continue
+            if not self._item_is_group(layer):
+                continue
+            if self._item_has_policy_parasite(layer):
+                return layer
+        return None
+
+    def _hydrate_protected_from_group(self, image, image_id=None):
+        """Populate session protected set from marked-group descendants.
+
+        Durable across plugin restart / checkpoint_restore (Codex final P1).
+        Returns the set of hydrated item_ids (may be empty).
+        """
+        try:
+            iid = int(image_id if image_id is not None else image.get_id())
+        except Exception:
+            return set()
+        group = self._find_source_immutable_group(image)
+        if group is None:
+            return set()
+        found: set[int] = set()
+
+        def walk(layer, depth, visited):
+            if depth > 32:
+                return
+            try:
+                lid = int(layer.get_id())
+            except Exception:
+                return
+            if lid in visited:
+                return
+            visited.add(lid)
+            if not self._item_is_group(layer):
+                found.add(lid)
+            for child in self._layer_children(layer):
+                walk(child, depth + 1, visited)
+
+        visited: set = set()
+        for child in self._layer_children(group):
+            walk(child, 0, visited)
+        if found:
+            self._protected_item_ids.setdefault(iid, set()).update(found)
+        return found
+
+    def _item_under_source_immutable_policy(self, item):
+        """True if item is a descendant of a parasite-marked Source_Immutable group."""
+        try:
+            img = item.get_image()
+        except Exception:
+            return False
+        if img is None:
+            return False
+        group = self._find_source_immutable_group(img)
+        if group is None:
+            return False
+        return self._layer_under_policy_group(item, group)
+
     def _assert_mutable(self, item, *, allow_source_mutation=False):
         """Raise POLICY_DENIED if item is Source_Immutable protected.
+
+        Checks:
+        1. Session ``_protected_item_ids`` (fast path after ensure)
+        2. Durable ancestry under parasite-marked Source_Immutable group
+           (survives restart / checkpoint_restore — Codex final P1)
 
         Stale pre-protect layer handles still hit this assert by **item_id**.
         """
@@ -2865,6 +2946,7 @@ class MCPPlugin(Gimp.PlugIn):
             image_id = int(img.get_id()) if img is not None else None
         except Exception:
             image_id = None
+            img = None
         if image_id is None:
             return
         protected = self._protected_item_ids.get(int(image_id)) or set()
@@ -2872,6 +2954,16 @@ class MCPPlugin(Gimp.PlugIn):
             raise _sec.SecurityError(
                 _sec.CODE_POLICY_DENIED,
                 f"item_id {item_id} is Source_Immutable protected; "
+                "mutate the working copy or pass allow_source_mutation=true",
+            )
+        # Durable path when session set empty (restore/restart)
+        if self._item_under_source_immutable_policy(item):
+            # Hydrate session set so subsequent checks are O(1)
+            if img is not None:
+                self._hydrate_protected_from_group(img, image_id)
+            raise _sec.SecurityError(
+                _sec.CODE_POLICY_DENIED,
+                f"item_id {item_id} is under Source_Immutable (durable policy); "
                 "mutate the working copy or pass allow_source_mutation=true",
             )
 
@@ -3934,6 +4026,8 @@ class MCPPlugin(Gimp.PlugIn):
             }
             image_id = int(image.get_id())
             gen = self._seed_image_generation(image_id, 1)
+            # If XCF already had Source_Immutable group, hydrate session deny set
+            self._hydrate_protected_from_group(image, image_id)
             return {
                 "status": "success",
                 "results": {
@@ -5548,6 +5642,8 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 group = self._create_source_immutable_group(image)
+                # Hydrate session set from any prior XCF/session group members
+                self._hydrate_protected_from_group(image, image_id)
 
                 # Snapshot root candidates (root stack changes as we process)
                 roots = list(image.get_layers() or [])
@@ -6020,6 +6116,8 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.displays_flush()
             new_id = int(image.get_id())
             gen = self._seed_image_generation(new_id, 1)
+            # Rebuild durable Source_Immutable session set from parasite group
+            hydrated = self._hydrate_protected_from_group(image, new_id)
 
             closed_prior = None
             if close_prior:
@@ -6055,10 +6153,11 @@ class MCPPlugin(Gimp.PlugIn):
                             "display_opened": display is not None,
                             "hash_status": hash_status,
                             "close_prior_error": str(e),
+                            "protected_hydrated": sorted(hydrated),
                             "note": (
                                 "Restored as NEW image. Prior handles for any closed "
                                 "image are invalid. Call orient_workspace; tattoos are "
-                                "not rebound in 0009."
+                                "not rebound in 0009. Source_Immutable re-hydrated."
                             ),
                         },
                     }
@@ -6074,10 +6173,12 @@ class MCPPlugin(Gimp.PlugIn):
                     "display_opened": display is not None,
                     "hash_status": hash_status,
                     "closed_prior_image_id": closed_prior,
+                    "protected_hydrated": sorted(hydrated),
                     "note": (
                         "Restored as NEW image handle. Prior handles for the previous "
                         "document are invalid if closed. Agent must call "
-                        "orient_workspace. Sidecar tattoos are write-only (no rebind)."
+                        "orient_workspace. Sidecar tattoos are write-only (no rebind). "
+                        "Source_Immutable descendants re-hydrated into session deny set."
                     ),
                 },
             }
