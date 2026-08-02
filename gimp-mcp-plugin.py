@@ -78,7 +78,11 @@ class MCPPlugin(Gimp.PlugIn):
         else:
             self.port = _sec.get_port()
 
-        token, token_path, generated = _sec.resolve_expected_token(generate_if_missing=True)
+        # Rotate file-backed tokens on every plugin start (stale-token mitigation).
+        token, token_path, generated = _sec.resolve_expected_token(
+            generate_if_missing=True,
+            rotate_file_token=True,
+        )
         self.expected_token = token
         self.token_path = token_path
         self.workspace_root = _sec.workspace_root()
@@ -86,8 +90,16 @@ class MCPPlugin(Gimp.PlugIn):
         self._last_peer = None
 
         print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
+        if not _sec.is_loopback_host(self.host):
+            print(
+                f"[MCP] WARNING: non-loopback bind host {self.host!r} "
+                f"( {_sec.ENV_ALLOW_NON_LOOPBACK}=1 ) — not recommended for agent use"
+            )
         if token_path:
-            print(f"[MCP] Session token file: {token_path}" + (" (generated)" if generated else ""))
+            print(
+                f"[MCP] Session token file: {token_path}"
+                + (" (rotated/generated)" if generated else "")
+            )
         elif os.environ.get(_sec.ENV_TOKEN):
             print("[MCP] Session token: from GIMP_MCP_TOKEN env")
         if self.workspace_root:
@@ -333,6 +345,18 @@ class MCPPlugin(Gimp.PlugIn):
 
         if isinstance(response, dict):
             response = _sec.strip_traceback_unless_debug(response)
+            # Completion audit for typed tools (auth/path/exec already audited).
+            try:
+                status = response.get("status")
+                code = response.get("code")
+                self._audit(
+                    event="command_complete",
+                    success=(status == "success"),
+                    status=status,
+                    code=code,
+                )
+            except Exception:
+                pass
             response_str = json.dumps(response)
         else:
             response_str = str(response)
@@ -415,6 +439,7 @@ class MCPPlugin(Gimp.PlugIn):
             self._audit(
                 event="auth",
                 auth_ok=True,
+                success=True,
                 type=cmd_type or ("cmds" if "cmds" in j else "unknown"),
             )
 
@@ -1890,6 +1915,13 @@ class MCPPlugin(Gimp.PlugIn):
                     "(GIMP_MCP_ALLOW_EXEC off; use PDB path or enable advanced mode)"
                 )
                 return
+            self._audit(
+                event="exec",
+                type="gegl_filter_fallback",
+                mode="elevated",
+                op_name=op_name,
+                success=True,
+            )
             props_code = ", ".join(f'"{k}", {v!r}' for k, v in props.items())
             cmds = [
                 "from gi.repository import Gimp, Gegl",
@@ -4335,7 +4367,7 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _close_image(self, params):
-        """Close an image, optionally saving first."""
+        """Close an image, optionally saving first (path-jailed when saving)."""
         try:
             from gi.repository import Gio
 
@@ -4344,15 +4376,22 @@ class MCPPlugin(Gimp.PlugIn):
             image = self._get_image(image_index)
             if save_first:
                 img_file = image.get_file()
-                if img_file:
+                if img_file and img_file.get_path():
                     xcf_path = img_file.get_path().rsplit(".", 1)[0] + ".xcf"
                 else:
-                    import tempfile
-
-                    xcf_path = os.path.join(
-                        tempfile.gettempdir(), f"gimp_backup_{image.get_id()}.xcf"
-                    )
-                gio_file = Gio.File.new_for_path(xcf_path)
+                    # Untitled images must save under workspace (fail-closed).
+                    root = self.workspace_root
+                    if root is None:
+                        return _sec.make_error(
+                            _sec.CODE_PATH_DENIED,
+                            "close_image save_first requires GIMP_WORKSPACE_ROOT "
+                            "for untitled images",
+                        )
+                    xcf_path = os.path.join(str(root), f"gimp_backup_{image.get_id()}.xcf")
+                safe_path, err = self._jail_path(xcf_path)
+                if err is not None:
+                    return err
+                gio_file = Gio.File.new_for_path(safe_path)
                 pdb = Gimp.get_pdb()
                 proc = pdb.lookup_procedure("gimp-xcf-save")
                 if proc:

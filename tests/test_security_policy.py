@@ -422,3 +422,79 @@ def test_plugin_source_auth_before_type_dispatch() -> None:
     # cmds gate must check exec_allowed / EXEC_DISABLED near cmds
     window = text[cmds_gate : cmds_gate + 400]
     assert "exec_allowed" in window or "EXEC_DISABLED" in window
+
+
+def test_close_image_source_jails_save_path() -> None:
+    """close_image(save_first) must jail xcf write path (Codex P1)."""
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    m = re.search(
+        r"(    def _close_image\(self.*?)(?=\n    def |\nclass |\Z)",
+        text,
+        re.DOTALL,
+    )
+    assert m is not None
+    body = m.group(1)
+    assert "_jail_path" in body
+    assert "save_first" in body
+
+
+def test_token_rotate_on_plugin_start_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """File token is rotated when rotate_file_token=True (plugin startup)."""
+    monkeypatch.delenv(sec.ENV_TOKEN, raising=False)
+    path = tmp_path / "session.token"
+    monkeypatch.setenv(sec.ENV_TOKEN_FILE, str(path))
+    first = sec.generate_token()
+    sec.write_token_file(path, first)
+    tok2, p2, gen = sec.resolve_expected_token(generate_if_missing=True, rotate_file_token=True)
+    assert gen is True
+    assert tok2 != first
+    assert p2 is not None
+    assert sec.read_token_file(path) == tok2
+
+
+def test_token_reuse_without_rotate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(sec.ENV_TOKEN, raising=False)
+    path = tmp_path / "session.token"
+    monkeypatch.setenv(sec.ENV_TOKEN_FILE, str(path))
+    first = sec.generate_token()
+    sec.write_token_file(path, first)
+    tok, _, gen = sec.resolve_expected_token(generate_if_missing=False, rotate_file_token=False)
+    assert gen is False
+    assert tok == first
+
+
+def test_send_command_refuses_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MCP server must not emit unauthenticated TCP JSON (Codex P2)."""
+    monkeypatch.delenv(sec.ENV_TOKEN, raising=False)
+    import gimp_mcp_server as server
+
+    monkeypatch.setattr(server, "_ensure_session_token", lambda: None)
+    conn = server.GimpConnection(host="127.0.0.1", port=9877)
+
+    class _FakeSock:
+        pass
+
+    conn.sock = _FakeSock()  # type: ignore[assignment]
+    with pytest.raises(ConnectionError, match="No session token"):
+        conn.send_command("list_images", {})
+
+
+def test_strip_adds_internal_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(sec.ENV_DEBUG, raising=False)
+    cleaned = sec.strip_traceback_unless_debug(
+        {"status": "error", "error": "boom", "traceback": "stack"}
+    )
+    assert "traceback" not in cleaned
+    assert cleaned["code"] == sec.CODE_INTERNAL
+
+
+def test_non_loopback_warns(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(sec.ENV_ALLOW_NON_LOOPBACK, "1")
+    assert sec.assert_bind_host("0.0.0.0") == "0.0.0.0"
+    err = capsys.readouterr().err
+    assert "non-loopback" in err.lower() or "WARNING" in err

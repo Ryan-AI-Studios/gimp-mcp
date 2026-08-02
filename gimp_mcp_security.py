@@ -101,13 +101,14 @@ def is_loopback_host(host: str | None) -> bool:
     return h in ("127.0.0.1", "::1", "0:0:0:0:0:0:0:1")
 
 
-def assert_bind_host(host: str | None) -> str:
+def assert_bind_host(host: str | None, *, warn: bool = True) -> str:
     """Validate bind/connect host.
 
     Default posture: only ``127.0.0.1`` (and ``::1`` if explicitly chosen).
-    Non-loopback requires ``GIMP_MCP_ALLOW_NON_LOOPBACK=1``.
+    Non-loopback requires ``GIMP_MCP_ALLOW_NON_LOOPBACK=1`` **and** emits a loud
+    warning when ``warn`` is True (stderr + optional audit caller).
 
-    Bare ``localhost`` is rejected for the default path (IPv6 dual-stack risk).
+    Bare ``localhost`` is always rejected (IPv6 dual-stack risk).
     """
     if host is None or str(host).strip() == "":
         return DEFAULT_HOST
@@ -123,6 +124,12 @@ def assert_bind_host(host: str | None) -> str:
     if is_loopback_host(h):
         return h
     if non_loopback_allowed():
+        if warn:
+            msg = (
+                f"[MCP] WARNING: non-loopback host '{h}' allowed via "
+                f"{ENV_ALLOW_NON_LOOPBACK}=1 — bind/connect is NOT loopback-restricted"
+            )
+            print(msg, file=sys.stderr)
         return h
     raise SecurityError(
         CODE_BIND_DENIED,
@@ -243,24 +250,31 @@ def resolve_expected_token(
     *,
     generate_if_missing: bool = False,
     write_if_generated: bool = True,
+    rotate_file_token: bool = False,
 ) -> tuple[str, Path | None, bool]:
     """Resolve session token.
 
     Returns ``(token, token_file_path_or_None, generated)``.
 
     Preference: ``GIMP_MCP_TOKEN`` env → token file → optional generate.
+
+    When ``rotate_file_token=True`` (plugin startup), ignore any existing file
+    token and mint a new one so a stale/compromised file token does not survive
+    restarts. Env tokens are never rotated here.
     """
     env_tok = os.environ.get(ENV_TOKEN)
     if env_tok and str(env_tok).strip():
         return str(env_tok).strip(), None, False
 
     path = default_token_path()
-    existing = read_token_file(path)
-    if existing:
-        return existing, path, False
-
-    if not generate_if_missing:
-        return "", path, False
+    if not rotate_file_token:
+        existing = read_token_file(path)
+        if existing:
+            return existing, path, False
+        if not generate_if_missing:
+            return "", path, False
+    # rotate_file_token=True (plugin start) always mints a new file token;
+    # generate_if_missing=True mints when no file exists.
 
     token = generate_token()
     written: Path | None = None
@@ -423,10 +437,16 @@ def redact_error(
 
 
 def strip_traceback_unless_debug(response: Mapping[str, Any]) -> dict[str, Any]:
-    """Copy response and drop traceback keys unless debug is enabled."""
+    """Copy response, drop traceback unless debug, ensure error ``code`` present.
+
+    Legacy handlers that only set ``status``/``error`` get ``code=INTERNAL_ERROR``
+    so the wire envelope always carries a structured code (DoD-6).
+    """
     out = dict(response)
     if not debug_enabled():
         out.pop("traceback", None)
+    if out.get("status") == "error" and "code" not in out:
+        out["code"] = CODE_INTERNAL
     return out
 
 

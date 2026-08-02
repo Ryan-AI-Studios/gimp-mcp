@@ -109,14 +109,17 @@ class GimpConnection:
                 "Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
             )
         token = _ensure_session_token()
+        if not token:
+            raise ConnectionError(
+                "No session token available — refusing to send unauthenticated TCP "
+                f"JSON. Set {sec.ENV_TOKEN} or start the GIMP MCP plugin first so it "
+                f"writes {sec.default_token_path()}."
+            )
         command: dict[str, Any] = {
             "type": command_type,
             "params": params if params is not None else {},
+            "auth": token,
         }
-        if token:
-            command["auth"] = token
-        else:
-            logger.warning("Sending command without auth token — plugin will reject")
         try:
             sock.sendall(json.dumps(command).encode("utf-8") + b"\n")
             response_data = b""
