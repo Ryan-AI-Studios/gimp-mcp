@@ -106,27 +106,26 @@ def test_bitmap_method_selection_none_fail_closed() -> None:
     """Codex P2-1: Selection.none failure must not only warn-and-continue.
 
     Inherited selection can silently clip merge/flatten; clear failures re-raise.
+    Also treat explicit boolean False return as failure (GIMP gboolean contract).
     """
     text = PLUGIN.read_text(encoding="utf-8")
     body = _method_body(text, "_get_current_image_bitmap")
-    assert "Selection.none" in body
-    # Primary clear: raise RuntimeError on failure (not warning-only)
+    full = text
+    # Helper must exist and check explicit False + exceptions
+    assert "_selection_none_or_fail" in full
+    assert "ok is False" in full or "ok is False" in body
+    assert "Selection.none returned False" in full
+    # Bitmap path uses helper (not bare warn-and-continue)
+    assert "_selection_none_or_fail" in body
     assert "Selection.none on snapshot dup failed" in body
-    assert re.search(
-        r"Selection\.none\(dup\).*?raise RuntimeError",
-        body,
-        re.DOTALL,
-    ), "Selection.none failure must re-raise RuntimeError"
+    assert "Selection.none before flatten failed" in body
     # Must not swallow selection clear with bare pass (flatten retries)
-    # Ban the pre-fix pattern: except ...: pass after Selection.none
     assert not re.search(
         r"Gimp\.Selection\.none\(dup\)\s*\n"
         r"\s*except \(AttributeError, RuntimeError\).*?:\s*\n"
         r"\s*pass\b",
         body,
     ), "Selection.none must not be caught with bare pass"
-    # Flatten-path clear also fail-closed
-    assert "Selection.none before flatten failed" in body
 
 
 def test_bitmap_method_export_validates_png() -> None:

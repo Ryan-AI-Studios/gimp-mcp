@@ -768,14 +768,9 @@ class MCPPlugin(Gimp.PlugIn):
                 print(f"Warning: undo_disable on snapshot dup failed: {e}")
 
             # Clear inherited selection so merge is not clipped — fail closed.
-            # A failed clear must not proceed to merge (selection can silently clip).
-            try:
-                Gimp.Selection.none(dup)
-            except (AttributeError, RuntimeError) as e:
-                raise RuntimeError(
-                    f"Selection.none on snapshot dup failed "
-                    f"(cannot safely composite without clearing selection): {e}"
-                ) from e
+            # GIMP Selection.none returns gboolean; treat explicit False as failure.
+            # (Exceptions and False must not proceed; GI None is treated as ok.)
+            self._selection_none_or_fail(dup, "Selection.none on snapshot dup failed")
 
             # Capture merge/flatten return layer — do not guess layers[0]
             # (merge_visible_layers keeps invisible layers; layers[0] may be hidden).
@@ -785,12 +780,7 @@ class MCPPlugin(Gimp.PlugIn):
                 merged = dup.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
             except (AttributeError, RuntimeError) as merge_err:
                 print(f"merge_visible_layers failed, trying flatten: {merge_err}")
-                try:
-                    Gimp.Selection.none(dup)
-                except (AttributeError, RuntimeError) as e:
-                    raise RuntimeError(
-                        f"Selection.none before flatten failed (cannot safely composite): {e}"
-                    ) from e
+                self._selection_none_or_fail(dup, "Selection.none before flatten failed")
                 try:
                     merged = dup.flatten()
                     composite_method = _snap.COMPOSITE_METHOD_FLATTEN
@@ -802,12 +792,7 @@ class MCPPlugin(Gimp.PlugIn):
             else:
                 if merged is None:
                     print("merge_visible_layers returned None, trying flatten")
-                    try:
-                        Gimp.Selection.none(dup)
-                    except (AttributeError, RuntimeError) as e:
-                        raise RuntimeError(
-                            f"Selection.none before flatten failed (cannot safely composite): {e}"
-                        ) from e
+                    self._selection_none_or_fail(dup, "Selection.none before flatten failed")
                     try:
                         merged = dup.flatten()
                         composite_method = _snap.COMPOSITE_METHOD_FLATTEN
@@ -1715,6 +1700,25 @@ class MCPPlugin(Gimp.PlugIn):
             }
         except Exception as e:
             return _sec.redact_error(e, message=f"Restart failed: {e!s}")
+
+    def _selection_none_or_fail(self, image, context_msg):
+        """Clear selection on *image*; fail closed on exception or explicit False.
+
+        GIMP documents ``Selection.none`` as returning gboolean (TRUE on success).
+        Some GI bindings may return None for void-like wrappers — treat None as
+        success; only explicit False is a failure so merge is not selection-clipped.
+        """
+        try:
+            ok = Gimp.Selection.none(image)
+        except (AttributeError, RuntimeError) as e:
+            raise RuntimeError(
+                f"{context_msg} (cannot safely composite without clearing selection): {e}"
+            ) from e
+        if ok is False:
+            raise RuntimeError(
+                f"{context_msg} (Selection.none returned False; "
+                "cannot safely composite with inherited selection)"
+            )
 
     def _new_canvas(self, params):
         """Create a new blank canvas and open it in a GIMP display window."""
