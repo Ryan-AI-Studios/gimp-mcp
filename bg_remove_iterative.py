@@ -13,9 +13,9 @@ Usage:
 """
 
 import argparse
-import socket
-import json
 import base64
+import json
+import socket
 import sys
 
 # ── transport ───────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ def _send(msg, timeout, recv_size, parse_truncate):
                 break
             except json.JSONDecodeError:
                 continue
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     try:
@@ -395,7 +395,7 @@ try:
             print("SPECKLE_CAPPED:" + str(MAX_SPECKLES))
             green_pts = green_pts[:MAX_SPECKLES]
 
-        # Build selection from individual 1×1 rectangles — works on isolated pixels
+        # Build selection from individual 1x1 rectangles — works on isolated pixels
         # that contiguous-select cannot reach.
         sel_proc = pdb.lookup_procedure("gimp-image-select-rectangle")
         for i, (bx, by) in enumerate(green_pts):

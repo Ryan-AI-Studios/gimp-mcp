@@ -6,8 +6,8 @@ Usage:
 """
 
 import argparse
-import socket
 import json
+import socket
 import sys
 
 
@@ -28,7 +28,7 @@ def _send(msg, parse_truncate=120):
                 break
             except json.JSONDecodeError:
                 continue
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     try:

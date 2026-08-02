@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 
 """
 GIMP MCP Plugin - Model Context Protocol integration for GIMP
@@ -177,7 +176,7 @@ class MCPPlugin(Gimp.PlugIn):
                 try:
                     client, address = self.socket.accept()
                     print(f"Connected to client: {address}")
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 except OSError:
                     break
@@ -194,7 +193,7 @@ class MCPPlugin(Gimp.PlugIn):
                 self.socket = None
             print("MCP server stopped")
         except Exception as e:
-            print(f"Error in MCP server thread: {str(e)}")
+            print(f"Error in MCP server thread: {e!s}")
             self.running = False
 
     def run(self, procedure, config, run_data):
@@ -481,7 +480,7 @@ class MCPPlugin(Gimp.PlugIn):
                 return result
 
         except Exception as e:
-            error_msg = f"Error executing command: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"Error executing command: {e!s}\n{traceback.format_exc()}"
             print(error_msg)
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -850,7 +849,7 @@ class MCPPlugin(Gimp.PlugIn):
         except (RuntimeError, AttributeError, OSError, ValueError) as e:
             return {
                 "status": "error",
-                "error": f"Processing error: {str(e)}",
+                "error": f"Processing error: {e!s}",
                 "traceback": traceback.format_exc(),
             }
 
@@ -891,8 +890,7 @@ class MCPPlugin(Gimp.PlugIn):
                         "width": layer.get_width(),
                         "height": layer.get_height(),
                         "has_alpha": layer.has_alpha(),
-                        "is_group": hasattr(layer, "get_children")
-                        and callable(getattr(layer, "get_children")),
+                        "is_group": hasattr(layer, "get_children") and callable(layer.get_children),
                         "layer_type": self._get_layer_type_string(layer),
                     }
                     # Try to get layer mode if available
@@ -998,7 +996,7 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": metadata}
 
         except Exception as e:
-            error_msg = f"Error getting image metadata: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"Error getting image metadata: {e!s}\n{traceback.format_exc()}"
             print(error_msg)
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -1354,7 +1352,7 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": gimp_info}
 
         except Exception as e:
-            error_msg = f"Error getting GIMP info: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"Error getting GIMP info: {e!s}\n{traceback.format_exc()}"
             return {"status": "error", "error": error_msg, "traceback": traceback.format_exc()}
 
     def _get_context_state(self):
@@ -1453,7 +1451,7 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": context_state}
 
         except Exception as e:
-            error_msg = f"Error getting context state: {str(e)}\n{traceback.format_exc()}"
+            error_msg = f"Error getting context state: {e!s}\n{traceback.format_exc()}"
             return {"status": "error", "error": error_msg, "traceback": traceback.format_exc()}
 
     def _restart_server(self):
@@ -1485,7 +1483,7 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {
                 "status": "error",
-                "error": f"Restart failed: {str(e)}",
+                "error": f"Restart failed: {e!s}",
                 "traceback": traceback.format_exc(),
             }
 
@@ -1551,7 +1549,7 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {
                 "status": "error",
-                "error": f"new_canvas failed: {str(e)}",
+                "error": f"new_canvas failed: {e!s}",
                 "traceback": traceback.format_exc(),
             }
 
@@ -1698,7 +1696,7 @@ class MCPPlugin(Gimp.PlugIn):
                 pass
         else:
             # Fallback: execute via exec context
-            props_code = ", ".join(f'"{k}", {repr(v)}' for k, v in props.items())
+            props_code = ", ".join(f'"{k}", {v!r}' for k, v in props.items())
             cmds = [
                 "from gi.repository import Gimp, Gegl",
                 "_img = Gimp.get_images()[0]",
@@ -2872,9 +2870,7 @@ class MCPPlugin(Gimp.PlugIn):
                     Gimp.Drawable.edit_fill(drawable, Gimp.FillType.PATTERN)
                 else:
                     # foreground (default) or explicit color
-                    fg = Gegl.Color.new(
-                        color_str if fill_type not in ("foreground",) else color_str
-                    )
+                    fg = Gegl.Color.new(color_str)
                     Gimp.context_set_foreground(fg)
                     Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
             finally:
@@ -3858,14 +3854,8 @@ class MCPPlugin(Gimp.PlugIn):
                 return {"status": "error", "error": "No frames found"}
 
             # Use first frame dimensions as the cell size
-            frame_w = (
-                frames[0].get_width() if hasattr(frames[0], "get_width") else frames[0].get_width()
-            )
-            frame_h = (
-                frames[0].get_height()
-                if hasattr(frames[0], "get_height")
-                else frames[0].get_height()
-            )
+            frame_w = frames[0].get_width()
+            frame_h = frames[0].get_height()
             n = len(frames)
             cols = int(columns) if columns else max(1, math.ceil(math.sqrt(n)))
             rows = math.ceil(n / cols)

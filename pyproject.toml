@@ -38,10 +38,13 @@ line-length = 100
 src = [".", "tests"]
 # Full product Python surface is in scope. Governance / local agent dirs stay out.
 # .venv/.git/__pycache__ are covered by Ruff defaults; list governance dirs only.
+# Markdown: ruff format rewrites fenced code blocks; we do not format docs via ruff.
 extend-exclude = [
     ".agents",
     "conductor",
     ".ledgerful",
+    "docs",
+    "*.md",
 ]
 
 [tool.ruff.lint]
@@ -55,9 +58,11 @@ select = [
     "RUF", # ruff-specific
 ]
 ignore = [
-    # Pre-existing re-raise style across gimp_mcp_server; clean up in refactor track.
+    # Retained global: ~79 raise-without-from in gimp_mcp_server tool wrappers.
+    # Tried remove in 0002 → flood; defer exception-chaining cleanup (see deferred.md).
     "B904",
-    # Long lines in generated-style tool wrappers; reformat in dedicated cleanup.
+    # Retained global: long lines in tool docstrings / generated-style wrappers.
+    # Tried remove in 0002 → flood; defer dedicated line-wrap pass (see deferred.md).
     "E501",
 ]
 
@@ -65,7 +70,10 @@ ignore = [
 known-first-party = ["gimp_mcp_server"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["T201"]
+# GIMP plug-in bootstrap: gi.require_version must precede gi.repository imports.
+# Do not reorder imports to silence E402; ignore I so isort cannot reshuffle bootstrap.
+# RUF001/RUF002: keep box-drawing / typographic unicode in UI and comments (no ASCII-ization).
+"gimp-mcp-plugin.py" = ["E402", "I", "RUF001", "RUF002"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -78,26 +86,27 @@ line-ending = "lf"
 [tool.basedpyright]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
-# Server package is the typed surface; GIMP-embedded plugin and live demo scripts are out of band.
-# Live integration scripts under tests/continuous_edit_test are CLI tools, not typed library code.
+# Typed surface: MCP server + unit tests only.
+# Permanent exclude: gimp-mcp-plugin.py (GIMP-embedded gi.repository — no host stubs).
+# Demos / scripts / live GIMP CLIs are runtime-only, not library-typed.
 include = ["gimp_mcp_server.py", "tests"]
 exclude = [
     "**/__pycache__",
     ".venv",
     "gimp-mcp-plugin.py",
+    "scripts/**",
     "agent_edit_demo.py",
     "bg_remove.py",
     "bg_remove_iterative.py",
     "run_tests.py",
-    "tests/continuous_edit_test",
-    "tests/test_add_text_metadata.py",
     ".agents",
     "conductor",
     ".ledgerful",
 ]
 reportMissingImports = true
 reportMissingTypeStubs = false
-# fastmcp/mcp stubs may lag; keep usable without drowning in third-party noise
+# Load-bearing dials for usable standard mode with mcp/fastmcp stubs.
+# Candidate for a later type-hardening track — not 0002.
 reportUnknownMemberType = false
 reportUnknownArgumentType = false
 reportUnknownVariableType = false

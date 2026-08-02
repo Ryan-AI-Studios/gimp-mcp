@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-import socket
 import json
+import socket
 import sys
 
 
@@ -22,7 +22,7 @@ def cmd(t, params=None):
                 break
             except json.JSONDecodeError:
                 continue
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     try:

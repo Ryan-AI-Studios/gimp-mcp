@@ -16,11 +16,11 @@ only THEN is the new background image set and the composite built.
      image — B&W darkness, blue-hue dominance, low saturation, low
      local gradient, near-border spatial prior, etc. — and each filter
      contributes up to 50 NESTED closed regions ("paths") at rising
-     strictness into a combined pool (9 × 50 = up to 450 paths total).
+     strictness into a combined pool (9 x 50 = up to 450 paths total).
      A pixel gets +1 vote for every path it falls inside; deeply-bg
      pixels land inside many paths per filter, subject pixels land
      inside few. Phase 1: pixels with ≥ 1100 votes (out of a pool
-     of 9 filters × 200 paths = 1800 paths total) have their alpha
+     of 9 filters x 200 paths = 1800 paths total) have their alpha
      rewritten to 0 (genuinely transparent — the alpha channel is
      added to the layer if absent). Phase 2 computes a cumulative
      4-direction sqrt-damped score per pixel and then runs strict
@@ -45,7 +45,7 @@ only THEN is the new background image set and the composite built.
        - Select by color seeded on a golden-yellow hair tone. Since
          the bg is already transparent, the selection can only touch
          hair pixels (alpha-zero pixels are skipped by the tool).
-       - Rotate the YELLOW hue range by −60° (yellow → red) preserving
+       - Rotate the YELLOW hue range by -60° (yellow → red) preserving
          per-pixel luminance, then deepen the resulting RED range so
          shadow strands go deep crimson.
        - Push extra red into highlights and shadows via color-balance
@@ -419,7 +419,7 @@ try:
             votes[i] += c
             fc[9] += c
 
-    print("  path pool size: %d (9 filters × %d paths)" % (TOTAL_PATHS, PATHS_PER_FILTER))
+    print("  path pool size: %d (9 filters x %d paths)" % (TOTAL_PATHS, PATHS_PER_FILTER))
     print("  total path-hits per filter (summed across all pixels):")
     for k in range(1, 10):
         print("    f%d: %d" % (k, fc[k]))
@@ -751,7 +751,7 @@ except Exception as e:
     print(_tb.format_exc())
 """
 run_gimp(
-    "bg removal (9×200 paths, threshold=1100, biggest-CC + score>p1, fuzzy border r=2)", bg_removal
+    "bg removal (9x200 paths, threshold=1100, biggest-CC + score>p1, fuzzy border r=2)", bg_removal
 )
 snapshot(f"{out_dir}/02_character_nobg.png")
 

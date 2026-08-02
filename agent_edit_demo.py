@@ -12,9 +12,9 @@ Usage:
 """
 
 import argparse
-import socket
-import json
 import base64
+import json
+import socket
 import sys
 
 # ── low-level transport ─────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ def _send(msg, parse_truncate):
                 break
             except json.JSONDecodeError:
                 continue
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     try:
