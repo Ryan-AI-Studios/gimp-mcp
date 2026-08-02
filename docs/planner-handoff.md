@@ -268,7 +268,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0004-VisibleCompositeSnapshot** (Issue 17 composite + structuredContent) → next **0005** |
+| Active focus | **0005-AlphaExportCorrectness** (Issue 16) — next after 0004 Completed |
 | Track count | 0001–0028 (see conductor.md) |
 
 ---
@@ -277,6 +277,7 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-02 | 0004 Completed: Issue 17 composite + ToolResult mapping; PR #3 squash-merged; Codex PASS WITH DEFERRED P3; next=0005 |
 | 2026-08-02 | 0004 Issue 17: visible composite via dup+merge; ToolResult structuredContent mapping; install gimp_mcp_snapshot.py |
 | 2026-08-02 | Initial planner handoff for gimp-mcp full-product program |
 | 2026-08-02 | Expanded conductor to 28 placeholder tracks; 0001 Completed; 0002 stabilization Ready |
