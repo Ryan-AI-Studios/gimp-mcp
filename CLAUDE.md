@@ -86,7 +86,7 @@ images = Gimp.get_images()
 image = images[0]  # or image1 = images[0]
 layers = image.get_layers()
 layer = layers[0]  # or layer1 = layers[0]
-drawable = layer   # or drawable1 = layer
+drawable = layer  # or drawable1 = layer
 ```
 
 ### Common Operations
