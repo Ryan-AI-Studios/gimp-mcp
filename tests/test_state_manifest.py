@@ -457,7 +457,7 @@ def test_capabilities_honesty() -> None:
     assert caps["atomic_export"] is False
     assert caps["alpha_preserving_export"] is True
     assert caps["state_manifest_orientation"] is True
-    assert caps["stable_handle_registry"] is False
+    assert caps["stable_handle_registry"] is True
     assert caps["coordinate_exif_normalized"] is False
     assert caps["isolated_layer_snapshot"] is False
     assert caps["alpha_snapshot"] is False

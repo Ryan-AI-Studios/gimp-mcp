@@ -50,15 +50,20 @@ def provisional_image_handle(
     generation: int = 1,
     fingerprint: str | None = None,
 ) -> dict[str, Any]:
-    """Build a provisional image handle (generation always 1 until track 0007)."""
-    handle: dict[str, Any] = {
-        "image_id": int(image_id),
-        "generation": int(generation),
-        "session_epoch": int(session_epoch),
-    }
-    if fingerprint is not None:
-        handle["fingerprint"] = fingerprint
-    return handle
+    """Thin alias of :func:`gimp_mcp_handles.image_handle`.
+
+    Keeps ``generation`` default ``1`` for backward compatibility on provisional_*
+    only. Prefer :func:`gimp_mcp_handles.image_handle` (generation required) for
+    new code paths.
+    """
+    import gimp_mcp_handles as _handles
+
+    return _handles.image_handle(
+        image_id,
+        session_epoch=session_epoch,
+        generation=generation,
+        fingerprint=fingerprint,
+    )
 
 
 def provisional_item_handle(
@@ -69,16 +74,16 @@ def provisional_item_handle(
     generation: int = 1,
     fingerprint: str | None = None,
 ) -> dict[str, Any]:
-    """Build a provisional item (layer/channel/path) handle."""
-    handle: dict[str, Any] = {
-        "item_id": int(item_id),
-        "generation": int(generation),
-        "image_id": int(image_id),
-        "session_epoch": int(session_epoch),
-    }
-    if fingerprint is not None:
-        handle["fingerprint"] = fingerprint
-    return handle
+    """Thin alias of :func:`gimp_mcp_handles.item_handle` (generation default 1)."""
+    import gimp_mcp_handles as _handles
+
+    return _handles.item_handle(
+        item_id,
+        image_id=image_id,
+        session_epoch=session_epoch,
+        generation=generation,
+        fingerprint=fingerprint,
+    )
 
 
 def normalize_base_type(value: Any) -> str:
@@ -199,7 +204,7 @@ def default_capabilities() -> dict[str, bool]:
         "batch_interpreter": False,  # 0019
         "alpha_preserving_export": True,  # 0005
         "state_manifest_orientation": True,  # 0006
-        "stable_handle_registry": False,  # 0007
+        "stable_handle_registry": True,  # 0007
         "coordinate_exif_normalized": False,  # 0008
     }
 
