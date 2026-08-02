@@ -91,13 +91,14 @@ minting. Track IDs are creation order, not execution order.
 
 ```
 0001 Quality gates bootstrap — Completed (87bc111)
-  → 0002 Quality surface stabilization — NEXT (full clean lint/format/types/tests)
-  → 0003 Security … through 0028 Final product polish (v1)
+  → 0002 Quality surface stabilization — Completed (full clean lint/format/types/tests)
+  → 0003 Security … through 0028 Final product polish (v1) — NEXT ready for full plan/impl
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. Most are **Proposed placeholders** until a full
-planning pass. **0002 is Ready.** Authoritative table: `conductor/conductor.md`.
+recipes → packaging → golden path → v1 polish. Most remaining tracks are **Proposed placeholders**
+until a full planning pass. **0002 is Completed** (awaiting formal conductor close if still open).
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
