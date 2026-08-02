@@ -101,9 +101,9 @@ minting. Track IDs are creation order, not execution order.
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. **0001–0007 Completed.** Orientation SoT is
+recipes → packaging → golden path → v1 polish. **0001–0008 Completed.** Orientation SoT is
 `orient_workspace` (state-manifest v1). Stable handles + STALE_HANDLE + `select_*` in **0007**.
-Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF normalize + coordinate math → **0008 Ready**.
+Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF normalize + coordinate math in **0008**.
 Authoritative table: `conductor/conductor.md`.
 
 ---
@@ -276,7 +276,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0008-CoordinateModelAndExif** — implemented on feature branch (offline gates green; live EXIF matrix waived); next track **0009** |
+| Active focus | **0009-LayerPolicyAndCheckpoints** (placeholder — needs full plan); prior **0008 Completed** PR #8 / main@8970ad2 |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep). PyPI has mcp 2.x / fastmcp 3.4+ — **do not major-bump** casually. No Pillow. |
 
@@ -310,19 +310,22 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Tools:** `select_image` / `select_layers` (handles only; MAX=64; no Display.new; float → SELECTION_CONFLICT).
 - **Mutators:** structural success returns `generation` + `handle`; never bump snapshot/export dups.
 - **Capability:** `stable_handle_registry: true`.
-- **OOS residuals:** full name ban (**0010**), error envelope (**0011**), CLI exit 5 (**0012**), tattoos (**0009/0013**). EXIF → **0008 Ready plan**.
+- **OOS residuals:** full name ban (**0010**), error envelope (**0011**), CLI exit 5 (**0012**), tattoos (**0009/0013**). EXIF → **0008 Completed**.
 - Codex final: **PASS WITH DEFERRED P3** (live matrix waiver).
 
 ### 0008 completion notes (planners / implementers)
 
-- **Status:** Implemented (feature branch); offline full gate green; live EXIF matrix **waived**.
-- **Core shipped:** pure **`gimp_mcp_coords.py` as 7th plug-in file**; ordered EXIF ops (5/7 flip then rotate); mapping enrichment on **three** paths; four host `map_*` tools; **`normalize_image_orientation`**.
-- **Default mode:** **`assume_pixels_upright`** (set tags to 1 only). Never `policy_rotate`. `trust_tag` opt-in.
-- **Normalize:** direct `image.rotate`/`flip` + own gen bump; undo group; both EXIF tags; `METADATA_WRITE_FAILED` on set_metadata false.
-- **Rounding:** `int(round(x))` half-even. **Padding:** 0. Capability `coordinate_exif_normalized: true`.
-- **Session:** `_orientation_normalized` synced with gen prune/close; honesty = session flag OR tag identity.
-- **Residuals:** legacy `_rotate_image`/`_flip_image` gen gaps; nested offset live proof; CLI ExifTool → **0012**.
-- **Next:** **0009-LayerPolicyAndCheckpoints**.
+- **Completed (PR #8 / main@8970ad2):** coordinate model + EXIF normalize.
+- **Ship:** `gimp_mcp_coords.py` as **7th** plug-in file (pure stdlib; host + plugin).
+- **Mapping three-path (H5):** `build_mapping_metadata` + plugin bitmap flatten + server pass-through additive keys (`coordinate_space`, padding=0, `view_rotation_ignored`, EXIF honesty).
+- **Tools:** four host `map_*` (both directions; optional declaration validate); **`normalize_image_orientation`**.
+- **Default mode:** **`assume_pixels_upright`** (tags→1, no pixel ops — safe after GIMP `policy_rotate` on load). Never call `policy_rotate` for normalize. `trust_tag` opt-in with ordered ops (5/7 flip then rotate).
+- **Normalize fail-closed:** direct `image.rotate`/`flip` + gboolean checks; `ops_started` undo; `undo_group_end` False fails closed; both EXIF tags; `METADATA_WRITE_FAILED`; gen bump only on full success.
+- **Honesty:** session flag OR tag identity (invalid present tags non-identity; manifest clamps 1..8|null).
+- **Capability:** `coordinate_exif_normalized: true`. Rounding half-even. No Pillow.
+- **Codex final:** **PASS WITH DEFERRED P3** (live EXIF matrix waived).
+- **Residuals:** live matrix + nested offset proof (ops); legacy rotate/flip gen gaps (refactor); CLI ExifTool **0012**; declaration hard gate **0010/0020**.
+- **Next:** **0009-LayerPolicyAndCheckpoints** (placeholder — needs full plan).
 
 ---
 
@@ -330,7 +333,7 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
-| 2026-08-02 | **0008 implemented:** gimp_mcp_coords, mapping three-path, normalize_image_orientation, map_* x4; offline gate green; live EXIF waived |
+| 2026-08-02 | **0008 Completed:** coords, mapping three-path, normalize, map_*; PR #8 / main@8970ad2; Codex PASS WITH DEFERRED P3; next=0009 |
 | 2026-08-02 | Folded AI-review into **0008**: default assume_pixels_upright; ordered 5/7; three mapping edits; ship coords; METADATA_WRITE_FAILED |
 | 2026-08-02 | Full plan **0008** CoordinateModelAndExif: coords math, EXIF normalize, mapping fields; Ready — not started |
 | 2026-08-02 | **0007 Completed:** stable handles, STALE_HANDLE, select_*; PR #6; Codex PASS WITH DEFERRED P3; next=0008 |
