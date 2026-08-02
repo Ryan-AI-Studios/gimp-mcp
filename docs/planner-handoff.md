@@ -280,7 +280,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0009-LayerPolicyAndCheckpoints** — **Ready — not started** (full plan 2026-08-02); prior **0008 Completed** PR #8 / main@8970ad2 |
+| Active focus | **0010-HighLevelMcpSurface** — Proposed (needs full plan); prior **0009 Completed** PR #10 / main@25e93ba |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep). PyPI has mcp 2.x / fastmcp 3.4+ — **do not major-bump** casually. No Pillow. |
 
@@ -329,18 +329,21 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Capability:** `coordinate_exif_normalized: true`. Rounding half-even. No Pillow.
 - **Codex final:** **PASS WITH DEFERRED P3** (live EXIF matrix waived).
 - **Residuals:** live matrix + nested offset proof (ops); legacy rotate/flip gen gaps (refactor); CLI ExifTool **0012**; declaration hard gate **0010/0020**.
-- **Next:** **0009 Ready plan** (Source_Immutable + checkpoints).
+- **Next:** **0009 Completed** — then **0010** high-level MCP surface (placeholder plan).
 
-### 0009 planning notes (planners / implementers)
+### 0009 completion notes (planners / implementers)
 
-- **Status:** Ready — not started. Spec/plan: `conductor/0009-LayerPolicyAndCheckpoints/`.
-- **AI-review folded** (`C:\dev\AI-review.md` AI1+AI2): H1–H5, M1–M8, L1–L6, AI2 BS1–5.
-- **Core:** `ensure_source_immutable` (reparent-then-lock incl. **`set_lock_visibility`**; parasite-marked group; **single gen bump at end**); central mutability guard; **all live flatten sites** gated (`flatten`, `merge_visible`, free-angle rotate, resize fill).
-- **Codes:** `POLICY_DENIED` (protected); **`CONFIRM_REQUIRED`** (missing confirm_destructive).
-- **Checkpoints:** create XCF then sidecar; integrity sha256 only; restore → new handles + re-orient; tattoos write-only; `close_prior` optional; `include_orient_snapshot` default false.
-- **Ship:** `gimp_mcp_policy.py` as **8th** plug-in file (locked).
-- **Atomic honesty:** `atomic_xcf_save` stays **false** until **0013**.
-- **Precondition:** 0003+0006+0007+0008 Completed (met). **Ledger:** FEATURE.
+- **Completed (PR #10 / main@25e93ba):** Source_Immutable + checkpoints + confirm_destructive.
+- **Ship:** `gimp_mcp_policy.py` as **8th** plug-in file (labels, sidecar, integrity sha256).
+- **ensure_source_immutable:** copy→insert working→reorder original into parasite-marked group→hide+lock content/position/**visibility**; single end gen-bump; idempotent (working skip + no-op no bump).
+- **Guard:** `_resolve_mutable_layer` on all resolve+mutate handlers; durable deny via group ancestry after restart/restore; hydrate on open/orient/restore/ensure.
+- **confirm_destructive:** live flatten, merge_visible, free-angle rotate, non-transparent resize fill; `coerce_bool` fail-closed (stringly false + non-scalars).
+- **Checkpoints:** XCF via `.partial`+`os.replace` then sidecar; restore new handles + re-orient; tattoos write-only; `close_prior` optional.
+- **Capabilities:** `source_immutable_policy` + `checkpoints` true; `atomic_xcf_save` **false** until **0013**.
+- **Codes:** POLICY_DENIED, CONFIRM_REQUIRED, CHECKPOINT_*.
+- **Codex final:** **PASS WITH DEFERRED P3** (live matrix waived).
+- **Residuals:** live matrix (ops); atomic XCF **0013**; tattoo rebind later; auto-ensure on open later.
+- **Next:** **0010-HighLevelMcpSurface** (placeholder — needs full plan).
 
 ---
 
@@ -348,6 +351,7 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-02 | **0009 Completed:** Source_Immutable, durable guard, confirm_destructive, checkpoints; PR #10 / main@25e93ba; Codex PASS WITH DEFERRED P3; next=0010 |
 | 2026-08-02 | Folded AI-review into **0009**: live flatten inventory, central guard, lock_visibility, CONFIRM_REQUIRED, integrity hash |
 | 2026-08-02 | Full plan **0009** LayerPolicyAndCheckpoints: Source_Immutable, checkpoints, confirm_destructive; Ready — not started |
 | 2026-08-02 | **0008 Completed:** coords, mapping three-path, normalize, map_*; PR #8 / main@8970ad2; Codex PASS WITH DEFERRED P3; next=0009 |
