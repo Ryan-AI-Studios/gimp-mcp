@@ -93,8 +93,9 @@ uv sync
 ### 2. Install the GIMP Plugin
 
 Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, **`gimp_mcp_snapshot.py`**,
-and **`gimp_mcp_export.py`** to GIMP's plug-ins directory (same folder) and restart GIMP.
-The security, snapshot, and export modules are stdlib-only and must sit next to the plugin.
+**`gimp_mcp_export.py`**, and **`gimp_mcp_handles.py`** to GIMP's plug-ins directory
+(same folder) and restart GIMP. The security, snapshot, export, and handles modules are
+stdlib-only and must sit next to the plugin. (`gimp_mcp_state.py` is host-side only.)
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
 > (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
@@ -119,6 +120,7 @@ if [ -z "$GIMP_DIR" ]; then
 fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
 cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py gimp_mcp_export.py \
+  gimp_mcp_handles.py \
   "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
@@ -130,8 +132,9 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_security.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_snapshot.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_export.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_handles.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy all four files and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy all five files and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
@@ -269,15 +272,21 @@ Supports `image_index` (default 0). Returns PNG image content plus the same
 ### 🗂️ Layers
 | Tool | Description |
 |---|---|
-| `create_layer` | New empty layer |
-| `duplicate_layer` | Duplicate active layer |
-| `delete_layer` | Delete named layer |
-| `rename_layer` | Rename layer |
+| `select_image` | Bind active document by **stable image handle** (no new display) |
+| `select_layers` | Select layers by **stable item handles** (max 64; floating → `SELECTION_CONFLICT`) |
+| `create_layer` | New empty layer (returns `generation` + `handle`) |
+| `duplicate_layer` | Duplicate layer (returns `generation` + item `handle`) |
+| `delete_layer` | Delete layer (returns `generation` + image `handle`) |
+| `rename_layer` | Rename layer (non-structural; generation unchanged) |
 | `set_layer_properties` | Opacity, blend mode, visibility |
-| `reorder_layer` | Move layer in stack |
-| `merge_visible_layers` | Flatten visible to one layer |
-| `flatten_image` | Flatten all layers |
+| `reorder_layer` | Move layer in stack (returns `generation` + item `handle`) |
+| `merge_visible_layers` | Flatten visible to one layer (returns `generation` + item `handle`) |
+| `flatten_image` | Flatten all layers (returns `generation` + image `handle`) |
 | `list_layers` | List all layers with properties |
+
+Structural layer tools (`create_layer`, `duplicate_layer`, `delete_layer`, `reorder_layer`,
+`merge_visible_layers`, `flatten_image`, plus `add_text` / `apply_drop_shadow`) return live
+`generation` and a stable `handle` on success so agents can refresh stale handles after mutations.
 
 ### 🖌️ Drawing & Fill
 | Tool | Description |
@@ -434,7 +443,8 @@ AI Client (Claude, etc.)
 gimp_mcp_server.py          ← MCP tool definitions (+ gimp_mcp_state finalize)
       │  TCP JSON  :9877
       ▼
-gimp-mcp-plugin.py          ← Runs inside GIMP process (raw dump only for orient)
+gimp-mcp-plugin.py          ← Runs inside GIMP process (generation registry + orient dump)
+  + gimp_mcp_handles.py     ← shared pure require_*/builders (host + plug-in install)
       │  PyGObject
       ▼
 GIMP 3.2 (gi.repository.Gimp)
@@ -445,6 +455,8 @@ GIMP 3.2 (gi.repository.Gimp)
 - **`orient_workspace`:** plugin returns a raw dump; host `gimp_mcp_state.finalize_manifest`
   injects capabilities + `session.transport=stdio-proxy` and validates (schema
   `schemas/state-manifest.v1.json`). Prefer this over flat `list_layers` for orientation.
+- **Stable handles:** plugin owns per-image generation; `select_image` / `select_layers`
+  validate via shipped `gimp_mcp_handles` (STALE_HANDLE / FOREIGN_SESSION / …).
 - Two message formats: `{"type": "...", "params": {...}}` for named tools, `{"cmds": ["python..."]}` for arbitrary exec
 
 ### Transparent PNG export (Issue 16)
@@ -459,7 +471,7 @@ GIMP 3.2 (gi.repository.Gimp)
 
 Export prep always runs on a **duplicate** (user document unchanged). Alpha path uses
 `merge_visible_layers(CLIP_TO_IMAGE)` + GIMP 3 `file-*-export` only (no `file-*-save`).
-Install must include **`gimp_mcp_export.py`** next to the plugin.
+Install must include **`gimp_mcp_export.py`** and **`gimp_mcp_handles.py`** next to the plugin.
 
 For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).
 Do **not** confuse with `flatten_image`, which mutates the open document.

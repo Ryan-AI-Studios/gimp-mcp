@@ -85,7 +85,8 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 - **Default:** full recursive layer trees for **all** open images
 - **image_index:** optional filter to a single document (large workspaces)
 - **summary_only:** lightweight per-image summary without deep layer trees
-- **Handles:** provisional (`generation=1`, `session_epoch`) until stable-handle registry
+- **Handles:** session-stable under **generation** rules (`session_epoch` + per-image
+  structural generation). Capability `stable_handle_registry: true`.
 - **selected:** true only for the front display image (`Gimp.get_displays()[0]`); if no
   displays, all `selected: false` (never defaults index 0 to true)
 - **Layer kinds:** `raster` | `group` | `text` | `link` | `vector` (nested `children[]`)
@@ -94,6 +95,39 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 - **Contract file:** `schemas/state-manifest.v1.json`
 
 `list_layers` remains a flat compatibility helper — prefer `orient_workspace` for tree/kinds.
+
+#### Stable handles (track 0007)
+
+- Image handle: `{image_id, generation, session_epoch, fingerprint?}`
+- Item handle: `{item_id, image_id, generation, session_epoch, fingerprint?}`
+
+| Event | Effect |
+|---|---|
+| Open / new canvas / first orient | seed `generation` (1, or retired floor + 1 on ID recycle) |
+| Structural success on **live** image | `generation += 1`; response includes `generation` + `handle` |
+| Rename / opacity / paint / export / orient | **no** bump |
+| Snapshot/export merge on **temp dup** | **no** bump of live image |
+| Close image | drop live entry; keep retired floor for ID recycle |
+
+**Structural mutators (bump):** `create_layer`, `duplicate_layer`, `delete_layer`,
+`reorder_layer`, `flatten_image`, `merge_visible_layers`, `add_text`, `apply_drop_shadow`,
+and live `flatten` paths inside `rotate_image` / `resize_canvas` when they flatten.
+
+**Error codes (handle validation + select_*):**
+
+| Code | Recovery |
+|---|---|
+| `STALE_HANDLE` | `orient_workspace` **or** use `generation`/`handle` from last structural mutator |
+| `FOREIGN_SESSION` | Plugin process restarted — restart MCP flow and re-orient (new epoch) |
+| `HANDLE_NOT_FOUND` | Closed/invalid id or item not on claimed image |
+| `INVALID_HANDLE` | Bad shape, empty/>64 select list, mixed `image_id`s, non-layer id in `select_layers` |
+| `SELECTION_CONFLICT` | Floating selection blocks `set_selected_layers` — anchor or remove float first |
+
+#### `select_image(handle)` / `select_layers(handles)`
+- **Handles only** (not name/index). Max **64** item handles (`MAX_SELECT_LAYERS` DoS guard).
+- `select_image`: resolve by id; **never** `Display.new`; `display: false` if no window.
+- `select_layers`: same-image handles → `set_selected_layers`; float → `SELECTION_CONFLICT`.
+- Nested layers: resolve by `layer_id`/`item_id`; name match stays **root-only**.
 
 #### `get_image_metadata(image_index=0)`
 Returns comprehensive metadata about an open image without transferring bitmap data.

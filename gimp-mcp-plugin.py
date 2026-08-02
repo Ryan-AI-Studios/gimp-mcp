@@ -53,11 +53,19 @@ except ImportError as _exp_imp_err:  # pragma: no cover - fail closed at runtime
         "gimp_mcp_export.py must sit next to gimp-mcp-plugin.py "
         f"(looked in {_plugin_dir}): {_exp_imp_err}"
     ) from _exp_imp_err
+try:
+    import gimp_mcp_handles as _handles
+except ImportError as _handles_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_handles.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_handles_imp_err}"
+    ) from _handles_imp_err
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
 MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
 DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
+MAX_SELECT_LAYERS = _handles.MAX_SELECT_LAYERS
 
 
 def N_(message):
@@ -104,13 +112,20 @@ class MCPPlugin(Gimp.PlugIn):
         self.audit_path = _sec.audit_log_path()
         self._last_peer = None
 
-        # Session identity for provisional handles / state-manifest (track 0006).
-        # Constant for process lifetime; new process → new session_id + epoch reset.
+        # Session identity for stable handles / state-manifest (tracks 0006/0007).
+        # session_epoch is process-bound (stable for this process lifetime, not
+        # always 1). Derived from session_id so each plugin restart gets a new
+        # epoch >= 1 and FOREIGN_SESSION fires for pre-restart handles.
         self.session_id = str(uuid.uuid4())
-        self.session_epoch = 1
+        self.session_epoch = (uuid.UUID(self.session_id).int % 2_000_000_000) + 1
         self.session_started_at = (
             datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         )
+        # Per-image structural generation counters (stable handle registry, 0007).
+        self._image_generations: dict = {}
+        # Last generation when closed/pruned — ID-recycle defense (never reseed at 1
+        # if this GIMP id was seen before in this process).
+        self._retired_generations: dict = {}
 
         print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
         if not _sec.is_loopback_host(self.host):
@@ -501,6 +516,10 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._get_current_image_metadata(j.get("params", {}))
             elif "type" in j and j["type"] == "orient_workspace":
                 return self._orient_workspace(j.get("params", {}))
+            elif "type" in j and j["type"] == "select_image":
+                return self._select_image(j.get("params", {}))
+            elif "type" in j and j["type"] == "select_layers":
+                return self._select_layers(j.get("params", {}))
             elif "type" in j and j["type"] == "get_gimp_info":
                 return self._get_gimp_info()
             elif "type" in j and j["type"] == "get_context_state":
@@ -1287,19 +1306,12 @@ class MCPPlugin(Gimp.PlugIn):
         return "raster"
 
     def _orient_item_handle(self, item_id, image_id):
-        return {
-            "item_id": int(item_id),
-            "generation": 1,
-            "image_id": int(image_id),
-            "session_epoch": int(self.session_epoch),
-        }
+        """Emit item handle using live registry generation (seed if missing)."""
+        return self._emit_item_handle_ids(int(item_id), int(image_id))
 
     def _orient_image_handle(self, image_id):
-        return {
-            "image_id": int(image_id),
-            "generation": 1,
-            "session_epoch": int(self.session_epoch),
-        }
+        """Emit image handle using live registry generation (seed if missing)."""
+        return self._emit_image_handle_id(int(image_id))
 
     def _orient_source_path(self, image):
         try:
@@ -1724,7 +1736,7 @@ class MCPPlugin(Gimp.PlugIn):
         """Read-only raw workspace dump for host finalize_manifest (track 0006).
 
         Zero mutation: no undo groups, no Selection mutators, no export/dup/flatten,
-        no displays_flush.
+        no displays_flush. Prunes generation map to open images only (no reseed).
         """
         try:
             params = params or {}
@@ -1755,6 +1767,9 @@ class MCPPlugin(Gimp.PlugIn):
                 all_images = list(Gimp.get_images() or [])
             except Exception:
                 all_images = []
+
+            # F1: drop closed-image generation keys; never reseed them here
+            self._sync_image_generations(all_images)
 
             explicit_index = image_index is not None
             if explicit_index:
@@ -2391,17 +2406,21 @@ class MCPPlugin(Gimp.PlugIn):
             Gimp.Display.new(image)
             Gimp.displays_flush()
 
+            image_id = int(image.get_id())
+            gen = self._seed_image_generation(image_id, 1)
             print(f"New canvas created: {width}x{height} {color_mode} fill={fill}")
             return {
                 "status": "success",
                 "results": {
-                    "image_id": image.get_id(),
+                    "image_id": image_id,
                     "width": width,
                     "height": height,
                     "color_mode": color_mode,
                     "fill": fill,
                     "resolution": resolution,
                     "display_opened": True,
+                    "generation": gen,
+                    "handle": self._emit_image_handle(image),
                 },
             }
         except Exception as e:
@@ -2414,6 +2433,195 @@ class MCPPlugin(Gimp.PlugIn):
     # =========================================================================
     # SHARED HELPERS
     # =========================================================================
+
+    # ── Stable handle registry (track 0007) ──────────────────────────────────
+
+    def _seed_floor(self, image_id):
+        """Minimum generation for first-seen image_id (respects retired tombstone)."""
+        return _handles.next_seed_generation(self._retired_generations.get(int(image_id)))
+
+    def _image_generation(self, image_id):
+        """Return live structural generation for image_id; seed via retired floor if new."""
+        iid = int(image_id)
+        if iid not in self._image_generations:
+            self._image_generations[iid] = self._seed_floor(iid)
+        return self._image_generations[iid]
+
+    def _seed_image_generation(self, image_id, gen=None):
+        """Register image_id at generation gen (default/max with retired floor)."""
+        iid = int(image_id)
+        floor = self._seed_floor(iid)
+        if gen is None:
+            gen = floor
+        else:
+            gen = max(int(gen), floor)
+        self._image_generations[iid] = int(gen)
+        return int(gen)
+
+    def _bump_image_generation(self, image_id):
+        """Increment structural generation after successful live mutation; return new."""
+        iid = int(image_id)
+        cur = self._image_generations.get(iid)
+        if cur is None:
+            cur = self._seed_floor(iid)
+        new = int(cur) + 1
+        self._image_generations[iid] = new
+        return new
+
+    def _drop_image_generation(self, image_id):
+        """Drop registry entry when image is closed; keep retired floor for recycle."""
+        iid = int(image_id)
+        if iid in self._image_generations:
+            prev = int(self._image_generations.pop(iid))
+            floor = int(self._retired_generations.get(iid, 0) or 0)
+            self._retired_generations[iid] = max(floor, prev)
+
+    def _sync_image_generations(self, open_images=None):
+        """Prune generation map to currently open images. Does not reseed closed ids.
+
+        Call at orient start (and anytime the open set is known). Keys for
+        closed/invalid image ids are tombstoned into ``_retired_generations`` then
+        dropped; open ids keep their counters.
+        """
+        if open_images is None:
+            try:
+                open_images = list(Gimp.get_images() or [])
+            except Exception:
+                open_images = []
+        open_ids = set()
+        for img in open_images:
+            try:
+                open_ids.add(int(img.get_id()))
+            except Exception:
+                continue
+        return _handles.prune_image_generations(
+            self._image_generations, open_ids, retired=self._retired_generations
+        )
+
+    def _emit_image_handle_id(self, image_id):
+        gen = self._image_generation(image_id)
+        return _handles.image_handle(
+            int(image_id),
+            session_epoch=int(self.session_epoch),
+            generation=int(gen),
+        )
+
+    def _emit_image_handle(self, image):
+        return self._emit_image_handle_id(int(image.get_id()))
+
+    def _emit_item_handle_ids(self, item_id, image_id):
+        gen = self._image_generation(image_id)
+        return _handles.item_handle(
+            int(item_id),
+            image_id=int(image_id),
+            session_epoch=int(self.session_epoch),
+            generation=int(gen),
+        )
+
+    def _emit_item_handle(self, item, image_id):
+        return self._emit_item_handle_ids(int(item.get_id()), int(image_id))
+
+    def _handle_error_response(self, exc):
+        """Map HandleError / SecurityError to structured make_error dict."""
+        if isinstance(exc, _handles.HandleError):
+            return _sec.make_error(exc.code, exc.message)
+        if isinstance(exc, _sec.SecurityError):
+            return _sec.make_error(exc.code, exc.message)
+        raise exc
+
+    def _validate_request_handle(self, handle, *, kind="image", expected_image_id=None):
+        """Validate handle against live GIMP ids + registry generation.
+
+        Returns validated dict or raises HandleError.
+        """
+        if kind == "image":
+            image_id = None
+            if isinstance(handle, dict) and "image_id" in handle:
+                try:
+                    image_id = int(handle["image_id"])
+                except (TypeError, ValueError):
+                    image_id = None
+            id_valid = False
+            if image_id is not None:
+                try:
+                    id_valid = bool(Gimp.Image.id_is_valid(image_id))
+                except Exception:
+                    id_valid = False
+            if image_id is None:
+                live_gen = 0
+            elif id_valid:
+                live_gen = self._image_generation(image_id)
+            else:
+                # Do not seed closed images; still respect retired floor for STALE checks
+                live_gen = self._image_generations.get(image_id)
+                if live_gen is None:
+                    live_gen = self._seed_floor(image_id)
+            return _handles.require_image_handle(
+                handle,
+                live_epoch=int(self.session_epoch),
+                live_generation=int(live_gen),
+                id_valid=id_valid,
+            )
+
+        # item
+        item_id = None
+        claimed_image_id = None
+        if isinstance(handle, dict):
+            try:
+                if "item_id" in handle:
+                    item_id = int(handle["item_id"])
+            except (TypeError, ValueError):
+                item_id = None
+            try:
+                if "image_id" in handle:
+                    claimed_image_id = int(handle["image_id"])
+            except (TypeError, ValueError):
+                claimed_image_id = None
+
+        id_valid = False
+        item = None
+        if item_id is not None:
+            try:
+                if hasattr(Gimp.Item, "id_is_valid"):
+                    id_valid = bool(Gimp.Item.id_is_valid(item_id))
+                else:
+                    id_valid = True  # fall through to get_by_id
+                if id_valid:
+                    item = Gimp.Item.get_by_id(item_id)
+                    if item is None:
+                        id_valid = False
+            except Exception:
+                id_valid = False
+                item = None
+
+        belongs = None
+        live_image_id = claimed_image_id
+        if expected_image_id is not None:
+            live_image_id = int(expected_image_id)
+        if id_valid and item is not None and live_image_id is not None:
+            try:
+                img = item.get_image()
+                belongs = img is not None and int(img.get_id()) == int(live_image_id)
+            except Exception:
+                belongs = False
+
+        live_gen = 0
+        if live_image_id is not None:
+            if id_valid:
+                live_gen = self._image_generation(live_image_id)
+            else:
+                live_gen = self._image_generations.get(live_image_id)
+                if live_gen is None:
+                    live_gen = self._seed_floor(live_image_id)
+
+        return _handles.require_item_handle(
+            handle,
+            live_epoch=int(self.session_epoch),
+            live_generation=int(live_gen),
+            id_valid=id_valid,
+            expected_image_id=int(expected_image_id) if expected_image_id is not None else None,
+            item_belongs_to_image=belongs,
+        )
 
     def _get_image(self, image_index):
         """Return the image at image_index from Gimp.get_images(), raise if none open."""
@@ -2428,8 +2636,62 @@ class MCPPlugin(Gimp.PlugIn):
             )
         return images[image_index]
 
-    def _resolve_layer(self, image, layer_name, layer_index):
-        """Resolve a layer by name, index, or fall back to the active layer."""
+    def _get_image_by_id(self, image_id):
+        """Resolve image by GIMP id; raise RuntimeError with HANDLE_NOT_FOUND semantics.
+
+        Does not change legacy ``_get_image(index)``. Drops registry entry when id
+        is invalid (no reseed of closed images).
+        """
+        iid = int(image_id)
+        try:
+            valid = bool(Gimp.Image.id_is_valid(iid))
+        except Exception:
+            valid = False
+        if not valid:
+            self._drop_image_generation(iid)
+            raise RuntimeError(f"HANDLE_NOT_FOUND: image_id {iid} is not valid")
+        try:
+            image = Gimp.Image.get_by_id(iid)
+        except Exception as e:
+            self._drop_image_generation(iid)
+            raise RuntimeError(f"HANDLE_NOT_FOUND: image_id {iid}: {e}") from e
+        if image is None:
+            self._drop_image_generation(iid)
+            raise RuntimeError(f"HANDLE_NOT_FOUND: image_id {iid} not found")
+        return image
+
+    def _resolve_layer(self, image, layer_name, layer_index, layer_id=None, item_id=None):
+        """Resolve a layer by id (preferred), root name, index, or active layer.
+
+        Name match is **root-only** (no recursive DFS). Nested layers require
+        ``layer_id`` / ``item_id``.
+        """
+        rid = layer_id if layer_id is not None else item_id
+        if rid is not None:
+            rid = int(rid)
+            item = None
+            try:
+                if hasattr(Gimp, "Layer") and hasattr(Gimp.Layer, "get_by_id"):
+                    item = Gimp.Layer.get_by_id(rid)
+                if item is None and hasattr(Gimp.Item, "get_by_id"):
+                    item = Gimp.Item.get_by_id(rid)
+            except Exception as e:
+                raise RuntimeError(f"HANDLE_NOT_FOUND: layer/item id {rid}: {e}") from e
+            if item is None:
+                raise RuntimeError(f"HANDLE_NOT_FOUND: layer/item id {rid} not found")
+            try:
+                img = item.get_image()
+                if img is None or int(img.get_id()) != int(image.get_id()):
+                    raise RuntimeError(
+                        f"HANDLE_NOT_FOUND: item {rid} does not belong to image {image.get_id()}"
+                    )
+            except RuntimeError:
+                raise
+            except Exception as e:
+                raise RuntimeError(
+                    f"HANDLE_NOT_FOUND: cannot verify membership for item {rid}: {e}"
+                ) from e
+            return item
         if layer_name is not None:
             layers = image.get_layers()
             for layer in layers:
@@ -2448,6 +2710,237 @@ class MCPPlugin(Gimp.PlugIn):
                 raise RuntimeError("No layers in image")
             return layers[0]
         return layer
+
+    def _layer_id_from_params(self, params):
+        """Extract optional layer_id or item_id from params."""
+        lid = params.get("layer_id", None)
+        if lid is None:
+            lid = params.get("item_id", None)
+        if lid is None:
+            return None
+        return int(lid)
+
+    def _image_has_display(self, image_id):
+        """True if any existing display shows this image (never creates displays)."""
+        try:
+            for display in Gimp.get_displays() or []:
+                try:
+                    img = display.get_image()
+                    if img is not None and int(img.get_id()) == int(image_id):
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
+    def _select_image(self, params):
+        """Validate image handle and report display presence (no Display.new).
+
+        ``selected: true`` means the handle is bound for agent targeting — not
+        that a new window was created. ``display`` is true only if an existing
+        display already shows the image. GIMP has no reliable public focus API
+        without Display.new; we never invent a window here.
+        """
+        try:
+            handle = params.get("handle")
+            validated = self._validate_request_handle(handle, kind="image")
+            image_id = int(validated["image_id"])
+            image = self._get_image_by_id(image_id)
+            gen = self._image_generation(image_id)
+            has_display = self._image_has_display(image_id)
+            return {
+                "status": "success",
+                "results": {
+                    "handle": self._emit_image_handle(image),
+                    "image_id": image_id,
+                    "generation": gen,
+                    "selected": True,
+                    "display": bool(has_display),
+                },
+            }
+        except _handles.HandleError as e:
+            return self._handle_error_response(e)
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("HANDLE_NOT_FOUND"):
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+            return {"status": "error", "error": msg, "traceback": traceback.format_exc()}
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _select_layers(self, params):
+        """Select layers by stable item handles (same image, max MAX_SELECT_LAYERS)."""
+        try:
+            raw_handles = params.get("handles")
+            if not isinstance(raw_handles, list):
+                return _sec.make_error(
+                    _sec.CODE_INVALID_HANDLE, "handles must be a list of item handles"
+                )
+            if len(raw_handles) == 0:
+                return _sec.make_error(_sec.CODE_INVALID_HANDLE, "handles list must not be empty")
+            if len(raw_handles) > MAX_SELECT_LAYERS:
+                return _sec.make_error(
+                    _sec.CODE_INVALID_HANDLE,
+                    f"handles list length {len(raw_handles)} exceeds "
+                    f"MAX_SELECT_LAYERS={MAX_SELECT_LAYERS}",
+                )
+
+            # Shape + mixed image_ids first (pure)
+            image_ids = []
+            for i, h in enumerate(raw_handles):
+                if not isinstance(h, dict):
+                    return _sec.make_error(
+                        _sec.CODE_INVALID_HANDLE, f"handles[{i}] must be an object"
+                    )
+                if "image_id" not in h:
+                    return _sec.make_error(
+                        _sec.CODE_INVALID_HANDLE, f"handles[{i}] missing image_id"
+                    )
+                try:
+                    image_ids.append(int(h["image_id"]))
+                except (TypeError, ValueError):
+                    return _sec.make_error(
+                        _sec.CODE_INVALID_HANDLE, f"handles[{i}].image_id must be an integer"
+                    )
+            if len(set(image_ids)) > 1:
+                return _sec.make_error(
+                    _sec.CODE_INVALID_HANDLE, "handles must all share the same image_id"
+                )
+            image_id = image_ids[0]
+            # Do not seed closed images during validation; respect retired floor
+            live_gen = self._image_generations.get(image_id)
+            if live_gen is None:
+                live_gen = self._seed_floor(image_id)
+
+            # §7.7 precedence: pure shape/epoch/generation BEFORE GIMP kind checks.
+            # Pass optimistic id_valid=True so FOREIGN_SESSION/STALE fire first;
+            # layer-ness and membership are enforced after pure validation.
+            try:
+                validated = _handles.require_item_handles(
+                    raw_handles,
+                    live_epoch=int(self.session_epoch),
+                    live_generation=int(live_gen),
+                    id_valid_flags=[True] * len(raw_handles),
+                    item_belongs_flags=[None] * len(raw_handles),
+                    max_count=MAX_SELECT_LAYERS,
+                )
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+
+            layers = []
+            for h in validated:
+                item_id = int(h["item_id"])
+                item = None
+                try:
+                    id_ok = True
+                    if hasattr(Gimp.Item, "id_is_valid"):
+                        id_ok = bool(Gimp.Item.id_is_valid(item_id))
+                    if not id_ok:
+                        return _sec.make_error(
+                            _sec.CODE_HANDLE_NOT_FOUND,
+                            f"item_id {item_id} is not valid (closed or never existed)",
+                        )
+                    # Spec: each id must be a layer — do not fall through to bare Item
+                    if hasattr(Gimp, "Layer") and hasattr(Gimp.Layer, "get_by_id"):
+                        item = Gimp.Layer.get_by_id(item_id)
+                    if item is None and hasattr(Gimp.Item, "id_is_layer"):
+                        if bool(Gimp.Item.id_is_layer(item_id)):
+                            item = Gimp.Item.get_by_id(item_id)
+                        else:
+                            if hasattr(Gimp.Item, "get_by_id"):
+                                probe = Gimp.Item.get_by_id(item_id)
+                                if probe is not None:
+                                    return _sec.make_error(
+                                        _sec.CODE_INVALID_HANDLE,
+                                        f"item_id {item_id} is not a layer",
+                                    )
+                    if item is None and hasattr(Gimp.Item, "get_by_id"):
+                        candidate = Gimp.Item.get_by_id(item_id)
+                        if candidate is not None:
+                            is_layer = False
+                            if hasattr(Gimp, "Layer") and isinstance(candidate, Gimp.Layer):
+                                is_layer = True
+                            elif hasattr(candidate, "is_layer") and callable(candidate.is_layer):
+                                try:
+                                    is_layer = bool(candidate.is_layer())
+                                except Exception:
+                                    is_layer = False
+                            if is_layer:
+                                item = candidate
+                            else:
+                                return _sec.make_error(
+                                    _sec.CODE_INVALID_HANDLE,
+                                    f"item_id {item_id} is not a layer",
+                                )
+                    if item is None:
+                        return _sec.make_error(
+                            _sec.CODE_HANDLE_NOT_FOUND,
+                            f"item_id {item_id} is not a valid layer",
+                        )
+                    try:
+                        img = item.get_image()
+                        belongs = img is not None and int(img.get_id()) == int(image_id)
+                    except Exception:
+                        belongs = False
+                    if not belongs:
+                        return _sec.make_error(
+                            _sec.CODE_HANDLE_NOT_FOUND,
+                            f"item_id {item_id} does not belong to image_id {image_id}",
+                        )
+                except _sec.SecurityError:
+                    raise
+                except Exception:
+                    return _sec.make_error(
+                        _sec.CODE_HANDLE_NOT_FOUND,
+                        f"item_id {item_id} could not be resolved as a layer",
+                    )
+                layers.append(item)
+
+            # Resolve image (live only) then seed/emit generation for open image
+            image = self._get_image_by_id(image_id)
+            selected_layers = list(layers)
+            try:
+                image.set_selected_layers(selected_layers)
+            except Exception as e:
+                msg = str(e).lower()
+                # Only float/floating/anchor → SELECTION_CONFLICT (not generic PDB failures)
+                if "float" in msg or "floating" in msg or "anchor" in msg:
+                    return _sec.make_error(
+                        _sec.CODE_SELECTION_CONFLICT,
+                        "Cannot set selected layers while a floating selection exists; "
+                        "anchor or remove floating selection first",
+                    )
+                return _sec.make_error(_sec.CODE_INTERNAL, str(e))
+
+            Gimp.displays_flush()
+            selected_handles = [
+                self._emit_item_handle_ids(int(v["item_id"]), image_id) for v in validated
+            ]
+            return {
+                "status": "success",
+                "results": {
+                    "selected_handles": selected_handles,
+                    "image_id": image_id,
+                    "generation": self._image_generation(image_id),
+                },
+            }
+        except _handles.HandleError as e:
+            return self._handle_error_response(e)
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("HANDLE_NOT_FOUND"):
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+            return {"status": "error", "error": msg, "traceback": traceback.format_exc()}
+        except Exception as e:
+            msg = str(e).lower()
+            if "float" in msg or "floating" in msg or "anchor" in msg:
+                return _sec.make_error(
+                    _sec.CODE_SELECTION_CONFLICT,
+                    "Cannot set selected layers while a floating selection exists; "
+                    "anchor or remove floating selection first",
+                )
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _channel_ops_from_string(self, op):
         """Map operation string to Gimp.ChannelOps enum value."""
@@ -3037,15 +3530,19 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.ImageBaseType.GRAY: "Grayscale",
                 Gimp.ImageBaseType.INDEXED: "Indexed",
             }
+            image_id = int(image.get_id())
+            gen = self._seed_image_generation(image_id, 1)
             return {
                 "status": "success",
                 "results": {
-                    "image_id": image.get_id(),
+                    "image_id": image_id,
                     "width": image.get_width(),
                     "height": image.get_height(),
                     "color_mode": mode_map.get(base_type, str(base_type)),
                     "num_layers": len(image.get_layers()),
                     "display_opened": display is not None,
+                    "generation": gen,
+                    "handle": self._emit_image_handle(image),
                 },
             }
         except Exception as e:
@@ -3732,6 +4229,7 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             angle = float(params.get("angle", 90))
             image = self._get_image(image_index)
+            structural_flatten = False
             image.undo_group_start()
             try:
                 rot_map = {
@@ -3758,10 +4256,16 @@ class MCPPlugin(Gimp.PlugIn):
                             cfg.set_property("center-y", 0)
                             proc.run(cfg)
                     image.flatten()
+                    structural_flatten = True
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success", "angle": angle}}
+            results = {"status": "success", "angle": angle}
+            if structural_flatten:
+                gen = self._bump_image_generation(int(image.get_id()))
+                results["generation"] = gen
+                results["handle"] = self._emit_image_handle(image)
+            return {"status": "success", "results": results}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -3814,6 +4318,7 @@ class MCPPlugin(Gimp.PlugIn):
                 "bottom-right": (new_w - src_w, new_h - src_h),
             }
             off_x, off_y = anchor_offsets.get(anchor, (dx, dy))
+            structural_flatten = False
             image.undo_group_start()
             try:
                 image.resize(new_w, new_h, off_x, off_y)
@@ -3823,20 +4328,26 @@ class MCPPlugin(Gimp.PlugIn):
                         bg = Gegl.Color.new(fill)
                         Gimp.context_set_background(bg)
                         image.flatten()
+                        structural_flatten = True
                     finally:
                         Gimp.context_pop()
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
+            results = {
+                "status": "success",
+                "width": new_w,
+                "height": new_h,
+                "offset_x": off_x,
+                "offset_y": off_y,
+            }
+            if structural_flatten:
+                gen = self._bump_image_generation(int(image.get_id()))
+                results["generation"] = gen
+                results["handle"] = self._emit_image_handle(image)
             return {
                 "status": "success",
-                "results": {
-                    "status": "success",
-                    "width": new_w,
-                    "height": new_h,
-                    "offset_x": off_x,
-                    "offset_y": off_y,
-                },
+                "results": results,
             }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -4045,6 +4556,8 @@ class MCPPlugin(Gimp.PlugIn):
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
+            image_id = int(image.get_id())
+            gen = self._bump_image_generation(image_id)
             return {
                 "status": "success",
                 "results": {
@@ -4053,6 +4566,8 @@ class MCPPlugin(Gimp.PlugIn):
                     "width": width,
                     "height": height,
                     "position": position,
+                    "generation": gen,
+                    "handle": self._emit_item_handle(layer, image_id),
                 },
             }
         except Exception as e:
@@ -4064,7 +4579,9 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             layer_name = params.get("layer_name", None)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(image, layer_name, None)
+            layer = self._resolve_layer(
+                image, layer_name, None, layer_id=self._layer_id_from_params(params)
+            )
             layers = image.get_layers()
             position = layers.index(layer) if layer in layers else 0
             image.undo_group_start()
@@ -4074,9 +4591,16 @@ class MCPPlugin(Gimp.PlugIn):
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
+            image_id = int(image.get_id())
+            gen = self._bump_image_generation(image_id)
             return {
                 "status": "success",
-                "results": {"layer_name": new_layer.get_name(), "layer_id": new_layer.get_id()},
+                "results": {
+                    "layer_name": new_layer.get_name(),
+                    "layer_id": new_layer.get_id(),
+                    "generation": gen,
+                    "handle": self._emit_item_handle(new_layer, image_id),
+                },
             }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -4090,19 +4614,30 @@ class MCPPlugin(Gimp.PlugIn):
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(image, layer_name, layer_index)
+            layer = self._resolve_layer(
+                image, layer_name, layer_index, layer_id=self._layer_id_from_params(params)
+            )
             image.undo_group_start()
             try:
                 image.remove_layer(layer)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success"}}
+            image_id = int(image.get_id())
+            gen = self._bump_image_generation(image_id)
+            return {
+                "status": "success",
+                "results": {
+                    "status": "success",
+                    "generation": gen,
+                    "handle": self._emit_image_handle(image),
+                },
+            }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _rename_layer(self, params):
-        """Rename a layer."""
+        """Rename a layer (non-structural — no generation bump)."""
         try:
             image_index = int(params.get("image_index", 0))
             old_name = params.get("old_name", None)
@@ -4111,7 +4646,9 @@ class MCPPlugin(Gimp.PlugIn):
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(image, old_name, layer_index)
+            layer = self._resolve_layer(
+                image, old_name, layer_index, layer_id=self._layer_id_from_params(params)
+            )
             prev_name = layer.get_name()
             layer.set_name(new_name)
             Gimp.displays_flush()
@@ -4131,7 +4668,9 @@ class MCPPlugin(Gimp.PlugIn):
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(image, layer_name, layer_index)
+            layer = self._resolve_layer(
+                image, layer_name, layer_index, layer_id=self._layer_id_from_params(params)
+            )
             image.undo_group_start()
             try:
                 if opacity is not None:
@@ -4157,14 +4696,25 @@ class MCPPlugin(Gimp.PlugIn):
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(image, layer_name, layer_index)
+            layer = self._resolve_layer(
+                image, layer_name, layer_index, layer_id=self._layer_id_from_params(params)
+            )
             image.undo_group_start()
             try:
                 image.reorder_item(layer, None, new_position)
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success"}}
+            image_id = int(image.get_id())
+            gen = self._bump_image_generation(image_id)
+            return {
+                "status": "success",
+                "results": {
+                    "status": "success",
+                    "generation": gen,
+                    "handle": self._emit_item_handle(layer, image_id),
+                },
+            }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4178,12 +4728,21 @@ class MCPPlugin(Gimp.PlugIn):
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success"}}
+            image_id = int(image.get_id())
+            gen = self._bump_image_generation(image_id)
+            return {
+                "status": "success",
+                "results": {
+                    "status": "success",
+                    "generation": gen,
+                    "handle": self._emit_image_handle(image),
+                },
+            }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _merge_visible_layers(self, params):
-        """Merge visible layers."""
+        """Merge visible layers (live agent tool — bumps generation)."""
         try:
             image = self._get_image(int(params.get("image_index", 0)))
             image.undo_group_start()
@@ -4192,9 +4751,16 @@ class MCPPlugin(Gimp.PlugIn):
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
+            image_id = int(image.get_id())
+            gen = self._bump_image_generation(image_id)
             return {
                 "status": "success",
-                "results": {"layer_name": merged.get_name(), "layer_id": merged.get_id()},
+                "results": {
+                    "layer_name": merged.get_name(),
+                    "layer_id": merged.get_id(),
+                    "generation": gen,
+                    "handle": self._emit_item_handle(merged, image_id),
+                },
             }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
@@ -4682,6 +5248,8 @@ class MCPPlugin(Gimp.PlugIn):
                     "error": "add_text: no text layer was created (no PDB procedure succeeded)",
                 }
 
+            image_id = int(image.get_id())
+            gen = self._bump_image_generation(image_id)
             return {
                 "status": "success",
                 "results": {
@@ -4690,6 +5258,8 @@ class MCPPlugin(Gimp.PlugIn):
                     "text_width": text_layer.get_width(),
                     "text_height": text_layer.get_height(),
                     "position": [x, y],
+                    "generation": gen,
+                    "handle": self._emit_item_handle(text_layer, image_id),
                 },
             }
         except Exception as e:
@@ -4707,7 +5277,9 @@ class MCPPlugin(Gimp.PlugIn):
             new_size = params.get("size", None)
             new_color = params.get("color", None)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(image, layer_name, None)
+            layer = self._resolve_layer(
+                image, layer_name, None, layer_id=self._layer_id_from_params(params)
+            )
             pdb = Gimp.get_pdb()
             image.undo_group_start()
             try:
@@ -4893,7 +5465,9 @@ class MCPPlugin(Gimp.PlugIn):
             color_str = params.get("color", "black")
             opacity = float(params.get("opacity", 60))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_layer(
+                image, layer_name, None, layer_id=self._layer_id_from_params(params)
+            )
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
@@ -4931,7 +5505,17 @@ class MCPPlugin(Gimp.PlugIn):
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
-            return {"status": "success", "results": {"status": "success"}}
+            image_id = int(image.get_id())
+            gen = self._bump_image_generation(image_id)
+            return {
+                "status": "success",
+                "results": {
+                    "status": "success",
+                    "generation": gen,
+                    "handle": self._emit_item_handle(shadow_layer, image_id),
+                    "layer_id": shadow_layer.get_id(),
+                },
+            }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5592,13 +6176,15 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("file", gio_file)
                     proc.run(cfg)
             # Delete all displays for this image
+            closed_id = int(image.get_id())
             for display in Gimp.get_displays():
                 try:
-                    if display.get_image().get_id() == image.get_id():
+                    if display.get_image().get_id() == closed_id:
                         Gimp.Display.delete(display)
                 except Exception:
                     pass
             image.delete()
+            self._drop_image_generation(closed_id)
             return {"status": "success", "results": {"status": "success"}}
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
