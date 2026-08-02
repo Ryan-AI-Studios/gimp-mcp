@@ -91,13 +91,13 @@ minting. Track IDs are creation order, not execution order.
 
 ```
 0001 Quality gates bootstrap — Completed (87bc111)
-  → 0002 Quality surface stabilization — Completed (full clean lint/format/types/tests)
-  → 0003 Security … through 0028 Final product polish (v1) — NEXT ready for full plan/impl
+  → 0002 Quality surface stabilization — Completed
+  → 0003 Security … through 0028 Final product polish (v1) — NEXT
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
 recipes → packaging → golden path → v1 polish. Most remaining tracks are **Proposed placeholders**
-until a full planning pass. **0002 is Completed** (awaiting formal conductor close if still open).
+until a full planning pass. **0002 is Completed.** Next focus: **0003 SecurityHardening**.
 Authoritative table: `conductor/conductor.md`.
 
 ---
@@ -263,7 +263,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0002 implement done (await orchestrator review/close)** → then 0003 SecurityHardening |
+| Active focus | **0002 Completed** → **0003 SecurityHardening** next |
 | Track count | 0001–0028 (see conductor.md) |
 
 ---
@@ -277,3 +277,4 @@ If indexes are empty: `ledgerful index --incremental`.
 | 2026-08-02 | Full plan for 0002: pins ruff 0.16.1 / basedpyright 1.39.9 / pytest 9.1.1; roll-in rules.toml + script layout |
 | 2026-08-02 | Folded AI-review.md into 0002: ruff-check hooks, unicode policy, rules apply check, CI dedupe, dead T201, DoD-8 ignores |
 | 2026-08-02 | 0002 quality surface policy: full product ruff; plugin type exclude; uv.lock SoT; lint.yml retired; scripts/ layout |
+| 2026-08-02 | 0002 Completed: full surface green; conductor + deferred updated; next=0003 |
