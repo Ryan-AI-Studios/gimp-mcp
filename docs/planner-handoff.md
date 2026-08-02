@@ -190,7 +190,7 @@ Known upstream defects (must remain visible until fixed by tracks):
 |---|---|---|
 | #17 composite | Snapshot/top-layer buffer ≠ visible canvas | 0004 |
 | #16 alpha | “Success” export without transparency | 0005 |
-| Trust boundary | Unauthenticated TCP + arbitrary `cmds`/exec | 0003 |
+| Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
 Hard rules for product work:
@@ -199,8 +199,10 @@ Hard rules for product work:
 - Never trust `status: success` alone — require composite/alpha/objective checks when vision matters.
 - Track layers by **stable handles**, not names (once 0007 lands; until then prefer IDs over names).
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
-- Disable arbitrary Python exec in production plugin paths (0003).
-- Bind TCP to `127.0.0.1` only; confine paths to workspace roots.
+- **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
+  `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
+  `127.0.0.1`/`AF_INET` only; confine all param file I/O to `GIMP_WORKSPACE_ROOT`;
+  deploy `gimp_mcp_security.py` beside the plug-in. See `SECURITY.md`.
 - Max **3** automatic refine loops; escalate subjective failures to humans.
 
 ---
@@ -263,7 +265,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0002 Completed** → **0003 SecurityHardening** next |
+| Active focus | **0003-SecurityHardening** — secure defaults in progress (exec off, 127.0.0.1, token, path jail); 0002 Completed |
 | Track count | 0001–0028 (see conductor.md) |
 
 ---
@@ -276,5 +278,8 @@ If indexes are empty: `ledgerful index --incremental`.
 | 2026-08-02 | Expanded conductor to 28 placeholder tracks; 0001 Completed; 0002 stabilization Ready |
 | 2026-08-02 | Full plan for 0002: pins ruff 0.16.1 / basedpyright 1.39.9 / pytest 9.1.1; roll-in rules.toml + script layout |
 | 2026-08-02 | Folded AI-review.md into 0002: ruff-check hooks, unicode policy, rules apply check, CI dedupe, dead T201, DoD-8 ignores |
+| 2026-08-02 | Full plan for 0003 Security: exec off, 127.0.0.1, token auth, path jail, audit; call_api gated; demos guarded |
+| 2026-08-02 | Folded AI-review into 0003: Class A/B exec split; exhaustive path jail; AF_INET; env plumbing; auth-first; token ACL; DEBUG scope |
 | 2026-08-02 | 0002 quality surface policy: full product ruff; plugin type exclude; uv.lock SoT; lint.yml retired; scripts/ layout |
 | 2026-08-02 | 0002 Completed: full surface green; conductor + deferred updated; next=0003 |
+| 2026-08-02 | 0003 secure defaults: exec off, 127.0.0.1 AF_INET, token auth, path jail, SECURITY.md |

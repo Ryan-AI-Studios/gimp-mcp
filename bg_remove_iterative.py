@@ -15,16 +15,41 @@ Usage:
 import argparse
 import base64
 import json
+import os
 import socket
 import sys
+from pathlib import Path
 
-# ── transport ───────────────────────────────────────────────────────────────
+# ── transport (127.0.0.1 + session auth) ─────────────────────────────────────
+
+HOST = os.environ.get("GIMP_MCP_HOST", "127.0.0.1")
+PORT = int(os.environ.get("GIMP_MCP_PORT", "9877"))
+
+
+def _load_token() -> str | None:
+    tok = os.environ.get("GIMP_MCP_TOKEN")
+    if tok:
+        return tok.strip()
+    override = os.environ.get("GIMP_MCP_TOKEN_FILE")
+    if override:
+        p = Path(override)
+    elif sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+        p = Path(base) / "gimp-mcp" / "session.token" if base else None
+    else:
+        p = Path.home() / ".config" / "gimp-mcp" / "session.token"
+    if p and p.is_file():
+        return p.read_text(encoding="utf-8").strip() or None
+    return None
 
 
 def _send(msg, timeout, recv_size, parse_truncate):
-    s = socket.socket()
+    token = _load_token()
+    if token and "auth" not in msg:
+        msg = {**msg, "auth": token}
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
-    s.connect(("127.0.0.1", 9877))
+    s.connect((HOST, PORT))
     s.send(json.dumps(msg).encode() + b"\n")
     r = b""
     while True:
@@ -52,7 +77,18 @@ def cmd(t, params=None):
 
 
 def exec_gimp(code):
-    return _send({"cmds": [code]}, 60, 65536, 200)
+    """Requires GIMP_MCP_ALLOW_EXEC=1 (advanced mode)."""
+    r = _send({"cmds": [code]}, 60, 65536, 200)
+    if r.get("code") == "EXEC_DISABLED" or (
+        r.get("status") == "error" and "EXEC_DISABLED" in str(r.get("error", ""))
+    ):
+        print(
+            "ERROR: EXEC_DISABLED — iterative demo needs plugin cmds.\n"
+            "Set GIMP_MCP_ALLOW_EXEC=1 for the GIMP process (advanced footgun).",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return r
 
 
 def snapshot(label="", region=None, max_size=512):

@@ -3,6 +3,37 @@
 ## Overview
 This document describes how to execute PyGObject commands in GIMP using the MCP (Model Context Protocol) interface. The GIMP MCP server provides multiple tools for interacting with GIMP 3.0, including image export capabilities that return MCP-compliant Image objects.
 
+## Secure defaults (0003)
+
+| Topic | Default |
+|---|---|
+| TCP host | **`127.0.0.1`** (`AF_INET`) — not bare `localhost` |
+| Auth | Every JSON request must include `"auth": "<session token>"` |
+| `cmds` / plugin eval | **Disabled** unless `GIMP_MCP_ALLOW_EXEC=1` → `EXEC_DISABLED` |
+| MCP `call_api` | **Disabled** unless `GIMP_MCP_ALLOW_EXEC=1` (Class B / PDB-mediated) |
+| File paths | Must resolve under `GIMP_WORKSPACE_ROOT` or → `PATH_DENIED` |
+| String `disable_auto_disconnect` | **Deprecated / rejected** without auth; use authenticated JSON type |
+
+Example authenticated typed command:
+
+```json
+{"type": "list_images", "params": {}, "auth": "<token>"}
+```
+
+Deprecated bare string (rejected in secure mode):
+
+```text
+disable_auto_disconnect
+```
+
+Authenticated replacement:
+
+```json
+{"type": "disable_auto_disconnect", "auth": "<token>"}
+```
+
+See [SECURITY.md](SECURITY.md) for env vars, start order, and residuals.
+
 ## Available MCP Tools
 
 ### 1. Image Export Tools
@@ -47,6 +78,10 @@ Returns comprehensive information about the GIMP installation and runtime enviro
 #### `call_api(api_path, args=[], kwargs={})`
 
 Execute GIMP 3.0 API methods through PyGObject console.
+
+> **Security:** Disabled by default (`EXEC_DISABLED`). Requires `GIMP_MCP_ALLOW_EXEC=1`.
+> Prefer typed tools (`open_image`, adjustments, layers, etc.). This is **Class B**
+> (PDB-mediated) exec — distinct from plugin-internal `cmds` (Class A).
 
 **GIMP MCP Protocol:**
 - Use api_path="exec" to execute Python code in GIMP
