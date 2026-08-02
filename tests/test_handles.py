@@ -485,6 +485,22 @@ def test_wiring_select_layers_checks_layer_ness() -> None:
     assert "INVALID_HANDLE" in body or "CODE_INVALID_HANDLE" in body
 
 
+def test_wiring_select_layers_epoch_before_layer_kind() -> None:
+    """Codex P2-1: pure require_* (epoch/gen) must run before GIMP layer-kind rejects.
+
+    Foreign-session non-layer handles must return FOREIGN_SESSION, not INVALID_HANDLE.
+    """
+    text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    body = _method_body(text, "def _select_layers")
+    req_pos = body.find("require_item_handles")
+    kind_pos = body.find("not a layer")
+    assert req_pos != -1, "select_layers must call require_item_handles"
+    assert kind_pos != -1, "select_layers must reject non-layers"
+    assert req_pos < kind_pos, "epoch/gen validation must precede layer-kind check"
+    # Optimistic id_valid so FOREIGN_SESSION is not masked by id/kind failures
+    assert "id_valid_flags=[True]" in body or "id_valid_flags = [True]" in body
+
+
 def test_wiring_security_codes_in_handles_module() -> None:
     text = (ROOT / "gimp_mcp_handles.py").read_text(encoding="utf-8")
     assert "CODE_STALE_HANDLE" in text

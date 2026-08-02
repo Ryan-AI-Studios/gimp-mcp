@@ -2813,86 +2813,93 @@ class MCPPlugin(Gimp.PlugIn):
             if live_gen is None:
                 live_gen = self._seed_floor(image_id)
 
-            id_valid_flags = []
-            belongs_flags = []
-            layers = []
-            for h in raw_handles:
-                try:
-                    item_id = int(h.get("item_id"))
-                except (TypeError, ValueError):
-                    return _sec.make_error(_sec.CODE_INVALID_HANDLE, "item_id must be an integer")
-                item = None
-                valid = False
-                try:
-                    id_ok = True
-                    if hasattr(Gimp.Item, "id_is_valid"):
-                        id_ok = bool(Gimp.Item.id_is_valid(item_id))
-                    if id_ok:
-                        # Spec: each id must be a layer — do not fall through to bare Item
-                        if hasattr(Gimp, "Layer") and hasattr(Gimp.Layer, "get_by_id"):
-                            item = Gimp.Layer.get_by_id(item_id)
-                        if item is None and hasattr(Gimp.Item, "id_is_layer"):
-                            if bool(Gimp.Item.id_is_layer(item_id)):
-                                item = Gimp.Item.get_by_id(item_id)
-                            else:
-                                # Valid non-layer item (channel/path/etc.)
-                                if hasattr(Gimp.Item, "get_by_id"):
-                                    probe = Gimp.Item.get_by_id(item_id)
-                                    if probe is not None:
-                                        return _sec.make_error(
-                                            _sec.CODE_INVALID_HANDLE,
-                                            f"item_id {item_id} is not a layer",
-                                        )
-                        if item is None and hasattr(Gimp.Item, "get_by_id"):
-                            candidate = Gimp.Item.get_by_id(item_id)
-                            if candidate is not None:
-                                is_layer = False
-                                if hasattr(Gimp, "Layer") and isinstance(candidate, Gimp.Layer):
-                                    is_layer = True
-                                elif hasattr(candidate, "is_layer") and callable(
-                                    candidate.is_layer
-                                ):
-                                    try:
-                                        is_layer = bool(candidate.is_layer())
-                                    except Exception:
-                                        is_layer = False
-                                if is_layer:
-                                    item = candidate
-                                else:
-                                    return _sec.make_error(
-                                        _sec.CODE_INVALID_HANDLE,
-                                        f"item_id {item_id} is not a layer",
-                                    )
-                        valid = item is not None
-                except Exception:
-                    valid = False
-                    item = None
-                id_valid_flags.append(valid)
-                belongs = None
-                if valid and item is not None:
-                    try:
-                        img = item.get_image()
-                        belongs = img is not None and int(img.get_id()) == int(image_id)
-                    except Exception:
-                        belongs = False
-                belongs_flags.append(belongs)
-                layers.append(item)
-
+            # §7.7 precedence: pure shape/epoch/generation BEFORE GIMP kind checks.
+            # Pass optimistic id_valid=True so FOREIGN_SESSION/STALE fire first;
+            # layer-ness and membership are enforced after pure validation.
             try:
                 validated = _handles.require_item_handles(
                     raw_handles,
                     live_epoch=int(self.session_epoch),
                     live_generation=int(live_gen),
-                    id_valid_flags=id_valid_flags,
-                    item_belongs_flags=belongs_flags,
+                    id_valid_flags=[True] * len(raw_handles),
+                    item_belongs_flags=[None] * len(raw_handles),
                     max_count=MAX_SELECT_LAYERS,
                 )
             except _handles.HandleError as e:
                 return self._handle_error_response(e)
 
+            layers = []
+            for h in validated:
+                item_id = int(h["item_id"])
+                item = None
+                try:
+                    id_ok = True
+                    if hasattr(Gimp.Item, "id_is_valid"):
+                        id_ok = bool(Gimp.Item.id_is_valid(item_id))
+                    if not id_ok:
+                        return _sec.make_error(
+                            _sec.CODE_HANDLE_NOT_FOUND,
+                            f"item_id {item_id} is not valid (closed or never existed)",
+                        )
+                    # Spec: each id must be a layer — do not fall through to bare Item
+                    if hasattr(Gimp, "Layer") and hasattr(Gimp.Layer, "get_by_id"):
+                        item = Gimp.Layer.get_by_id(item_id)
+                    if item is None and hasattr(Gimp.Item, "id_is_layer"):
+                        if bool(Gimp.Item.id_is_layer(item_id)):
+                            item = Gimp.Item.get_by_id(item_id)
+                        else:
+                            if hasattr(Gimp.Item, "get_by_id"):
+                                probe = Gimp.Item.get_by_id(item_id)
+                                if probe is not None:
+                                    return _sec.make_error(
+                                        _sec.CODE_INVALID_HANDLE,
+                                        f"item_id {item_id} is not a layer",
+                                    )
+                    if item is None and hasattr(Gimp.Item, "get_by_id"):
+                        candidate = Gimp.Item.get_by_id(item_id)
+                        if candidate is not None:
+                            is_layer = False
+                            if hasattr(Gimp, "Layer") and isinstance(candidate, Gimp.Layer):
+                                is_layer = True
+                            elif hasattr(candidate, "is_layer") and callable(candidate.is_layer):
+                                try:
+                                    is_layer = bool(candidate.is_layer())
+                                except Exception:
+                                    is_layer = False
+                            if is_layer:
+                                item = candidate
+                            else:
+                                return _sec.make_error(
+                                    _sec.CODE_INVALID_HANDLE,
+                                    f"item_id {item_id} is not a layer",
+                                )
+                    if item is None:
+                        return _sec.make_error(
+                            _sec.CODE_HANDLE_NOT_FOUND,
+                            f"item_id {item_id} is not a valid layer",
+                        )
+                    try:
+                        img = item.get_image()
+                        belongs = img is not None and int(img.get_id()) == int(image_id)
+                    except Exception:
+                        belongs = False
+                    if not belongs:
+                        return _sec.make_error(
+                            _sec.CODE_HANDLE_NOT_FOUND,
+                            f"item_id {item_id} does not belong to image_id {image_id}",
+                        )
+                except _sec.SecurityError:
+                    raise
+                except Exception:
+                    return _sec.make_error(
+                        _sec.CODE_HANDLE_NOT_FOUND,
+                        f"item_id {item_id} could not be resolved as a layer",
+                    )
+                layers.append(item)
+
             # Resolve image (live only) then seed/emit generation for open image
             image = self._get_image_by_id(image_id)
-            selected_layers = [ly for ly in layers if ly is not None]
+            selected_layers = list(layers)
             try:
                 image.set_selected_layers(selected_layers)
             except Exception as e:
