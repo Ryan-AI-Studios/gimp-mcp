@@ -42,6 +42,22 @@ def test_bitmap_method_uses_duplicate_and_merge() -> None:
     assert "CLIP_TO_IMAGE" in body or "MergeType" in body
 
 
+def test_bitmap_method_captures_merge_flatten_return() -> None:
+    """Export must use merge/flatten return layer, not bare call + layers[0] guess."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_get_current_image_bitmap")
+    # Assign return of merge_visible_layers (not a bare discarded call only)
+    assert re.search(r"=\s*.*merge_visible_layers\s*\(", body), (
+        "merge_visible_layers return must be assigned for export drawable"
+    )
+    # Flatten fallback must also capture return
+    assert re.search(r"=\s*.*\.flatten\s*\(", body), (
+        "flatten() return must be assigned for export drawable"
+    )
+    # Must fail closed rather than only guessing selected/layers[0]
+    assert "No drawable for export" in body or "returned no layer" in body
+
+
 def test_bitmap_method_no_single_layer_edit_copy() -> None:
     text = PLUGIN.read_text(encoding="utf-8")
     body = _method_body(text, "_get_current_image_bitmap")
@@ -224,3 +240,49 @@ def test_snapshot_tool_result_region_relative_scales() -> None:
     assert structured["scale_y"] == pytest.approx(0.5)
     # Not full-canvas scale
     assert structured["scale_x"] != pytest.approx(100 / 4000)
+
+
+def test_convert_result_passthrough_for_tool_result() -> None:
+    """Patched FuncMetadata.convert_result must return (content, structured) for ToolResult."""
+    from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+
+    import gimp_mcp_server as server
+
+    fake_png = b"\x89PNG\r\n\x1a\ncvt"
+    results = {
+        "image_data": base64.b64encode(fake_png).decode("ascii"),
+        "format": "png",
+        "width": 64,
+        "height": 48,
+        "original_width": 320,
+        "original_height": 240,
+        "encoding": "base64",
+        "image_index": 0,
+        "mode": "visible_composite",
+        "scale_x": 64 / 320,
+        "scale_y": 48 / 240,
+        "region": None,
+        "composite_method": snap.COMPOSITE_METHOD_MERGE,
+        "source_width": 320,
+        "source_height": 240,
+        "rendered_width": 64,
+        "rendered_height": 48,
+    }
+    tr = server._snapshot_tool_result(results, image_index=0)
+    assert isinstance(tr, server.ToolResult)
+
+    # Invoke the monkey-patched class method (self unused on ToolResult branch)
+    out = FuncMetadata.convert_result(None, tr)  # type: ignore[arg-type]
+    assert isinstance(out, tuple)
+    assert len(out) == 2
+    content_list, structured_dict = out
+    assert isinstance(content_list, list)
+    assert len(content_list) == 1
+    assert content_list[0].type == "image"
+    assert isinstance(structured_dict, dict)
+    assert structured_dict["mode"] == "visible_composite"
+    assert structured_dict["source_width"] == 320
+    assert structured_dict["rendered_width"] == 64
+    assert structured_dict["composite_method"] == snap.COMPOSITE_METHOD_MERGE
+    assert "scale_x" in structured_dict
+    assert "image_index" in structured_dict

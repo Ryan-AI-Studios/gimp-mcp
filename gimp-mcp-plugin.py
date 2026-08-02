@@ -773,9 +773,12 @@ class MCPPlugin(Gimp.PlugIn):
             except (AttributeError, RuntimeError) as e:
                 print(f"Warning: Selection.none on snapshot dup failed: {e}")
 
+            # Capture merge/flatten return layer — do not guess layers[0]
+            # (merge_visible_layers keeps invisible layers; layers[0] may be hidden).
             composite_method = _snap.COMPOSITE_METHOD_MERGE
+            merged = None
             try:
-                dup.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
+                merged = dup.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
             except (AttributeError, RuntimeError) as merge_err:
                 print(f"merge_visible_layers failed, trying flatten: {merge_err}")
                 try:
@@ -783,13 +786,34 @@ class MCPPlugin(Gimp.PlugIn):
                 except (AttributeError, RuntimeError):
                     pass
                 try:
-                    dup.flatten()
+                    merged = dup.flatten()
                     composite_method = _snap.COMPOSITE_METHOD_FLATTEN
                 except (AttributeError, RuntimeError) as flatten_err:
                     raise RuntimeError(
                         f"Composite failed: merge_visible_layers: {merge_err}; "
                         f"flatten: {flatten_err}"
                     ) from flatten_err
+            else:
+                if merged is None:
+                    print("merge_visible_layers returned None, trying flatten")
+                    try:
+                        Gimp.Selection.none(dup)
+                    except (AttributeError, RuntimeError):
+                        pass
+                    try:
+                        merged = dup.flatten()
+                        composite_method = _snap.COMPOSITE_METHOD_FLATTEN
+                    except (AttributeError, RuntimeError) as flatten_err:
+                        raise RuntimeError(
+                            "Composite failed: merge_visible_layers returned None; "
+                            f"flatten: {flatten_err}"
+                        ) from flatten_err
+
+            if merged is None:
+                return {
+                    "status": "error",
+                    "error": "Composite merge/flatten returned no layer",
+                }
 
             # Crop region on the composite duplicate only
             if region_requested:
@@ -831,18 +855,45 @@ class MCPPlugin(Gimp.PlugIn):
                     )
                     dup.scale(target_width, target_height)
 
-            # Export PNG via existing PDB paths (no Pillow)
+            # Export PNG via existing PDB paths (no Pillow).
+            # Prefer the merge/flatten return layer as drawable. Crop/scale may
+            # invalidate the proxy — re-resolve to a single safe layer only.
             temp_path = str(_snap.snapshot_temp_path())
-            layers = dup.get_layers()
-            if not layers:
-                return {"status": "error", "error": "No layers found after composite"}
+            drawable = None
+            if merged is not None:
+                try:
+                    _ = merged.get_width()
+                    drawable = merged
+                except (AttributeError, RuntimeError):
+                    drawable = None
 
-            try:
-                drawable = (dup.get_selected_layers() or dup.get_layers() or [None])[0]
-            except (AttributeError, RuntimeError):
-                drawable = layers[0]
+            if drawable is None:
+                try:
+                    layers = list(dup.get_layers() or [])
+                except (AttributeError, RuntimeError, TypeError):
+                    layers = []
+                visible = []
+                for layer in layers:
+                    try:
+                        if layer.get_visible():
+                            visible.append(layer)
+                    except (AttributeError, RuntimeError):
+                        continue
+                if len(visible) == 1:
+                    drawable = visible[0]
+                elif len(layers) == 1:
+                    drawable = layers[0]
+                else:
+                    return {
+                        "status": "error",
+                        "error": "No drawable for export after composite",
+                    }
+
             if not drawable:
-                drawable = layers[0]
+                return {
+                    "status": "error",
+                    "error": "No drawable for export after composite",
+                }
 
             try:
                 from gi.repository import Gio
