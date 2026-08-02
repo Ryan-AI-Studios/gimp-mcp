@@ -23,6 +23,8 @@ import base64
 import os
 import platform
 import signal
+import uuid
+from datetime import UTC, datetime
 
 # ---------------------------------------------------------------------------
 # Security + snapshot helpers (stdlib modules — deploy beside this file)
@@ -101,6 +103,14 @@ class MCPPlugin(Gimp.PlugIn):
         self.workspace_root = _sec.workspace_root()
         self.audit_path = _sec.audit_log_path()
         self._last_peer = None
+
+        # Session identity for provisional handles / state-manifest (track 0006).
+        # Constant for process lifetime; new process → new session_id + epoch reset.
+        self.session_id = str(uuid.uuid4())
+        self.session_epoch = 1
+        self.session_started_at = (
+            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
 
         print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
         if not _sec.is_loopback_host(self.host):
@@ -488,7 +498,9 @@ class MCPPlugin(Gimp.PlugIn):
                 params = j.get("params", {})
                 return self._get_current_image_bitmap(params)
             elif "type" in j and j["type"] == "get_image_metadata":
-                return self._get_current_image_metadata()
+                return self._get_current_image_metadata(j.get("params", {}))
+            elif "type" in j and j["type"] == "orient_workspace":
+                return self._orient_workspace(j.get("params", {}))
             elif "type" in j and j["type"] == "get_gimp_info":
                 return self._get_gimp_info()
             elif "type" in j and j["type"] == "get_context_state":
@@ -1067,18 +1079,14 @@ class MCPPlugin(Gimp.PlugIn):
                 except OSError as e:
                     print(f"Warning: Failed to unlink snapshot temp file: {e}")
 
-    def _get_current_image_metadata(self):
-        """Get comprehensive metadata about the current image without bitmap data."""
+    def _get_current_image_metadata(self, params=None):
+        """Get comprehensive metadata about the current image without bitmap data.
+
+        params may include image_index (default 0) for multi-document workspaces.
+        """
         try:
             print("Getting current image metadata...")
-
-            # Get the current images
-            images = Gimp.get_images()
-            if not images:
-                return {"status": "error", "error": "No images are currently open in GIMP"}
-
-            # Use the first image (most recently active)
-            image = images[0]
+            image = self._get_image(int((params or {}).get("image_index", 0)))
 
             # Basic image properties
             width = image.get_width()
@@ -1212,6 +1220,548 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             print(f"Error getting image metadata: {e!s}")
             return _sec.redact_error(e, message=f"Error getting image metadata: {e!s}")
+
+    # -------------------------------------------------------------------------
+    # State-manifest orientation (track 0006) — read-only raw dump
+    # Host (gimp_mcp_state.finalize_manifest) injects capabilities + transport.
+    # -------------------------------------------------------------------------
+
+    _ORIENT_MAX_LAYER_DEPTH = 32
+
+    def _orient_classify_kind(self, layer):
+        """Classify layer kind via isinstance / gtype — never _get_layer_type_string."""
+        try:
+            for cls_name, kind in (
+                ("GroupLayer", "group"),
+                ("TextLayer", "text"),
+                ("LinkLayer", "link"),
+                ("VectorLayer", "vector"),
+            ):
+                cls = getattr(Gimp, cls_name, None)
+                if cls is not None and isinstance(layer, cls):
+                    return kind
+        except Exception:
+            pass
+        type_name = None
+        try:
+            gtype = getattr(layer, "__gtype__", None)
+            if gtype is not None:
+                type_name = getattr(gtype, "name", None) or str(gtype)
+        except Exception:
+            type_name = None
+        if type_name:
+            # Inline map (keep plugin free of gimp_mcp_state import).
+            name = str(type_name).rsplit(".", 1)[-1]
+            mapping = {
+                "GimpGroupLayer": "group",
+                "GimpTextLayer": "text",
+                "GimpLinkLayer": "link",
+                "GimpVectorLayer": "vector",
+            }
+            if name in mapping:
+                return mapping[name]
+            lower = name.lower()
+            if "group" in lower:
+                return "group"
+            if "text" in lower:
+                return "text"
+            if "link" in lower:
+                return "link"
+            if "vector" in lower:
+                return "vector"
+        # is_group() fallback for group layers when types are missing
+        try:
+            if hasattr(layer, "is_group") and callable(layer.is_group) and layer.is_group():
+                return "group"
+        except Exception:
+            pass
+        return "raster"
+
+    def _orient_item_handle(self, item_id, image_id):
+        return {
+            "item_id": int(item_id),
+            "generation": 1,
+            "image_id": int(image_id),
+            "session_epoch": int(self.session_epoch),
+        }
+
+    def _orient_image_handle(self, image_id):
+        return {
+            "image_id": int(image_id),
+            "generation": 1,
+            "session_epoch": int(self.session_epoch),
+        }
+
+    def _orient_source_path(self, image):
+        try:
+            image_file = image.get_file()
+            if image_file is None:
+                return None
+            if hasattr(image_file, "get_path"):
+                path = image_file.get_path()
+                return path if path else None
+        except Exception:
+            pass
+        return None
+
+    def _orient_selection(self, image):
+        """Read-only Selection.bounds → {empty, bounds?}."""
+        try:
+            _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
+            if not non_empty:
+                return {"empty": True}
+            return {
+                "empty": False,
+                "bounds": {
+                    "x": int(x1),
+                    "y": int(y1),
+                    "width": int(x2 - x1),
+                    "height": int(y2 - y1),
+                },
+            }
+        except Exception as e:
+            print(f"[MCP] orient selection bounds failed: {e}")
+            return {"empty": True}
+
+    def _orient_color_profile(self, image):
+        """Best-effort color profile; null on failure (never fail whole orient)."""
+        try:
+            profile = None
+            if hasattr(image, "get_color_profile"):
+                profile = image.get_color_profile()
+            if profile is None:
+                return None
+            out = {"embedded": True}
+            try:
+                if hasattr(profile, "get_name"):
+                    name = profile.get_name()
+                    if name:
+                        out["name"] = str(name)
+            except Exception:
+                pass
+            try:
+                if hasattr(profile, "get_description"):
+                    desc = profile.get_description()
+                    if desc:
+                        out["description"] = str(desc)
+            except Exception:
+                pass
+            if "name" not in out:
+                out["name"] = "unknown"
+            return out
+        except Exception as e:
+            print(f"[MCP] orient color_profile failed: {e}")
+            return None
+
+    def _orient_exif_orientation(self, image):
+        """Best-effort Exif.Image/Photo.Orientation → 1..8 or null."""
+        try:
+            if not hasattr(image, "get_metadata"):
+                return None
+            meta = image.get_metadata()
+            if meta is None:
+                return None
+            for tag in ("Exif.Image.Orientation", "Exif.Photo.Orientation"):
+                raw = None
+                try:
+                    if hasattr(meta, "get_tag_long"):
+                        try:
+                            raw = meta.get_tag_long(tag)
+                        except Exception:
+                            raw = None
+                    if raw is None and hasattr(meta, "get_tag_string"):
+                        try:
+                            s = meta.get_tag_string(tag)
+                            if s is not None and str(s).strip():
+                                raw = int(str(s).strip().split()[0])
+                        except Exception:
+                            raw = None
+                except Exception:
+                    raw = None
+                if raw is None:
+                    continue
+                try:
+                    val = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if 1 <= val <= 8:
+                    return val
+            return None
+        except Exception as e:
+            print(f"[MCP] orient EXIF orientation failed: {e}")
+            return None
+
+    def _orient_layer_node(self, layer, parent_handle, image_id, depth, visited):
+        """Recursive layer tree via _layer_children only (not flat iterator)."""
+        try:
+            lid = int(layer.get_id())
+        except Exception:
+            return None
+        if depth > self._ORIENT_MAX_LAYER_DEPTH or lid in visited:
+            return None
+        visited.add(lid)
+        handle = self._orient_item_handle(lid, image_id)
+        kind = self._orient_classify_kind(layer)
+
+        try:
+            name = layer.get_name() or f"layer-{lid}"
+        except Exception:
+            name = f"layer-{lid}"
+        try:
+            visible = bool(layer.get_visible())
+        except Exception:
+            visible = True
+        try:
+            opacity = float(layer.get_opacity())
+        except Exception:
+            opacity = 100.0
+        # Clamp 0..100 without host helper
+        if opacity < 0.0:
+            opacity = 0.0
+        elif opacity > 100.0:
+            opacity = 100.0
+        try:
+            blend_mode = str(layer.get_mode())
+        except Exception:
+            blend_mode = "unknown"
+        try:
+            offsets = layer.get_offsets()
+            if isinstance(offsets, (list, tuple)) and len(offsets) >= 2:
+                ox, oy = int(offsets[0]), int(offsets[1])
+            else:
+                # GIMP sometimes returns (success, x, y)
+                ox = int(offsets[1]) if offsets and len(offsets) >= 3 else 0
+                oy = int(offsets[2]) if offsets and len(offsets) >= 3 else 0
+        except Exception:
+            ox, oy = 0, 0
+        try:
+            lw = int(layer.get_width())
+            lh = int(layer.get_height())
+        except Exception:
+            lw, lh = 0, 0
+        try:
+            has_alpha = bool(layer.has_alpha())
+        except Exception:
+            has_alpha = False
+
+        mask_info = {"present": False}
+        try:
+            mask = layer.get_mask() if hasattr(layer, "get_mask") else None
+            if mask is not None:
+                mask_info = {"present": True}
+                try:
+                    if hasattr(layer, "get_apply_mask"):
+                        mask_info["apply"] = bool(layer.get_apply_mask())
+                except Exception:
+                    pass
+                try:
+                    if hasattr(layer, "get_show_mask"):
+                        mask_info["show"] = bool(layer.get_show_mask())
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        children = []
+        for child in self._layer_children(layer):
+            node = self._orient_layer_node(child, handle, image_id, depth + 1, visited)
+            if node is not None:
+                children.append(node)
+
+        return {
+            "handle": handle,
+            "name": str(name),
+            "kind": kind,
+            "parent_handle": parent_handle,
+            "visible": visible,
+            "opacity": opacity,
+            "blend_mode": blend_mode,
+            "offset": {"x": ox, "y": oy},
+            "size": {"width": lw, "height": lh},
+            "has_alpha": has_alpha,
+            "mask": mask_info,
+            "filters": [],
+            "children": children,
+        }
+
+    def _orient_item_summaries(self, items, image_id):
+        summaries = []
+        for item in items or []:
+            try:
+                iid = int(item.get_id())
+                name = str(item.get_name() or f"item-{iid}")
+                try:
+                    visible = bool(item.get_visible())
+                except Exception:
+                    visible = True
+                summaries.append(
+                    {
+                        "handle": self._orient_item_handle(iid, image_id),
+                        "name": name,
+                        "visible": visible,
+                    }
+                )
+            except Exception as ex:
+                print(f"[MCP] orient item summary failed: {ex}")
+        return summaries
+
+    def _orient_image_entry(self, image, front_id, summary_only):
+        image_id = int(image.get_id())
+        try:
+            name = image.get_name() or f"image-{image_id}"
+        except Exception:
+            name = f"image-{image_id}"
+        try:
+            width = int(image.get_width())
+            height = int(image.get_height())
+        except Exception:
+            width, height = 1, 1
+        if width < 1:
+            width = 1
+        if height < 1:
+            height = 1
+        try:
+            base_type = self._base_type_to_string(image.get_base_type())
+        except Exception:
+            base_type = "RGB"
+        try:
+            precision = self._precision_to_string(image.get_precision())
+        except Exception:
+            precision = "unknown"
+        try:
+            dirty = bool(image.is_dirty())
+        except Exception:
+            dirty = False
+
+        selected = front_id is not None and image_id == front_id
+        entry = {
+            "handle": self._orient_image_handle(image_id),
+            "name": str(name),
+            "source_path": self._orient_source_path(image),
+            "width": width,
+            "height": height,
+            "base_type": base_type,
+            "precision": str(precision),
+            "dirty": dirty,
+            "selected": bool(selected),
+            "alpha_present": bool(self._preflight_has_alpha(image)),
+            "color_profile": self._orient_color_profile(image),
+            "metadata": {
+                "exif_orientation_original": self._orient_exif_orientation(image),
+                "pixel_orientation_normalized": False,
+            },
+            "selection": self._orient_selection(image),
+            "active_layer_handles": [],
+            "layers": [],
+            "channels": [],
+            "paths": [],
+        }
+
+        # Active / selected layers
+        try:
+            selected_layers = list(image.get_selected_layers() or [])
+        except Exception:
+            selected_layers = []
+        for sl in selected_layers:
+            try:
+                entry["active_layer_handles"].append(
+                    self._orient_item_handle(int(sl.get_id()), image_id)
+                )
+            except Exception:
+                pass
+
+        if summary_only:
+            try:
+                # Cheap count: roots only + note (full tree skipped)
+                roots = list(image.get_layers() or [])
+                count = 0
+                for root in roots:
+                    count += 1
+                    # Count descendants shallow via recursive walk without building nodes
+                    stack = list(self._layer_children(root))
+                    while stack:
+                        n = stack.pop()
+                        count += 1
+                        stack.extend(self._layer_children(n))
+                entry["layer_count"] = count
+            except Exception:
+                entry["layer_count"] = 0
+            entry["layers"] = []
+            return entry
+
+        # Full recursive layer tree
+        visited = set()
+        try:
+            roots = list(image.get_layers() or [])
+        except Exception:
+            roots = []
+        for root in roots:
+            node = self._orient_layer_node(root, None, image_id, 0, visited)
+            if node is not None:
+                entry["layers"].append(node)
+
+        # Channels / paths as itemSummary
+        try:
+            entry["channels"] = self._orient_item_summaries(
+                list(image.get_channels() or []), image_id
+            )
+        except Exception as e:
+            print(f"[MCP] orient channels failed: {e}")
+            entry["channels"] = []
+        try:
+            paths = list(image.get_paths() or []) if hasattr(image, "get_paths") else []
+            entry["paths"] = self._orient_item_summaries(paths, image_id)
+        except Exception as e:
+            print(f"[MCP] orient paths failed: {e}")
+            entry["paths"] = []
+
+        return entry
+
+    def _orient_gimp_env(self):
+        """Best-effort gimp block for the raw dump (host may fill gaps)."""
+        version = "unknown"
+        try:
+            if hasattr(Gimp, "version") and callable(Gimp.version):
+                version = str(Gimp.version())
+            elif hasattr(Gimp, "VERSION"):
+                version = str(Gimp.VERSION)
+            else:
+                parts = []
+                for attr in ("MAJOR_VERSION", "MINOR_VERSION", "MICRO_VERSION"):
+                    if hasattr(Gimp, attr):
+                        parts.append(str(getattr(Gimp, attr)))
+                if parts:
+                    version = ".".join(parts)
+        except Exception:
+            pass
+        executable = "unknown"
+        try:
+            executable = sys.executable or "unknown"
+        except Exception:
+            pass
+        config_directory = None
+        try:
+            if hasattr(Gimp, "directory") and callable(Gimp.directory):
+                config_directory = str(Gimp.directory())
+        except Exception:
+            pass
+        out = {
+            "version": version,
+            "api_version": "3.0",
+            "os": platform.system() or "unknown",
+            "executable": executable,
+            "plugin_version": "0.1.0",
+        }
+        if config_directory:
+            out["config_directory"] = config_directory
+        return out
+
+    def _orient_context(self, displays_open):
+        """Paint context fg/bg as 0.0–1.0 floats (design scale)."""
+        ctx = {"displays_open": bool(displays_open)}
+        try:
+            fg = Gimp.context_get_foreground()
+            if hasattr(fg, "get_rgba"):
+                rgba = fg.get_rgba()
+                if rgba is not None:
+                    ctx["foreground_rgba"] = [float(c) for c in list(rgba)[:4]]
+        except Exception as e:
+            print(f"[MCP] orient foreground failed: {e}")
+        try:
+            bg = Gimp.context_get_background()
+            if hasattr(bg, "get_rgba"):
+                rgba = bg.get_rgba()
+                if rgba is not None:
+                    ctx["background_rgba"] = [float(c) for c in list(rgba)[:4]]
+        except Exception as e:
+            print(f"[MCP] orient background failed: {e}")
+        try:
+            brush = Gimp.context_get_brush()
+            if brush is not None and hasattr(brush, "get_name"):
+                ctx["brush_name"] = str(brush.get_name())
+        except Exception:
+            pass
+        try:
+            ctx["opacity"] = float(Gimp.context_get_opacity())
+        except Exception:
+            pass
+        try:
+            ctx["paint_mode"] = str(Gimp.context_get_paint_mode())
+        except Exception:
+            pass
+        return ctx
+
+    def _orient_workspace(self, params):
+        """Read-only raw workspace dump for host finalize_manifest (track 0006).
+
+        Zero mutation: no undo groups, no Selection mutators, no export/dup/flatten,
+        no displays_flush.
+        """
+        try:
+            params = params or {}
+            image_index = params.get("image_index", None)
+            summary_only = bool(params.get("summary_only", False))
+
+            # Front display image id for selected (H2)
+            front_id = None
+            displays_open = False
+            try:
+                displays = Gimp.get_displays() or []
+                displays_open = len(displays) > 0
+                if displays:
+                    try:
+                        front_img = displays[0].get_image()
+                        if front_img is not None:
+                            front_id = int(front_img.get_id())
+                    except Exception as e:
+                        print(f"[MCP] orient front display failed: {e}")
+                        front_id = None
+            except Exception as e:
+                print(f"[MCP] orient get_displays failed: {e}")
+                displays = []
+                displays_open = False
+                front_id = None
+
+            try:
+                all_images = list(Gimp.get_images() or [])
+            except Exception:
+                all_images = []
+
+            if image_index is not None:
+                idx = int(image_index)
+                if idx < 0 or idx >= len(all_images):
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"image_index {idx} out of range (only {len(all_images)} images open)"
+                        ),
+                    }
+                images_to_dump = [all_images[idx]]
+            else:
+                images_to_dump = all_images
+
+            image_entries = []
+            for image in images_to_dump:
+                try:
+                    image_entries.append(self._orient_image_entry(image, front_id, summary_only))
+                except Exception as img_err:
+                    print(f"[MCP] orient image entry failed: {img_err}")
+                    traceback.print_exc()
+
+            raw = {
+                "session": {
+                    "session_id": self.session_id,
+                    "epoch": int(self.session_epoch),
+                    "started_at": self.session_started_at,
+                },
+                "gimp": self._orient_gimp_env(),
+                "images": image_entries,
+                "context": self._orient_context(displays_open),
+            }
+            return {"status": "success", "results": raw}
+        except Exception as e:
+            print(f"Error in orient_workspace: {e!s}")
+            return _sec.redact_error(e, message=f"Error in orient_workspace: {e!s}")
 
     def _base_type_to_string(self, base_type):
         """Convert GIMP base type enum to string."""
