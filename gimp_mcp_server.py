@@ -13,12 +13,28 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from fastmcp.tools.tool import ToolResult
 from mcp.server.fastmcp import Context, FastMCP, Image
+from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+from mcp.types import Annotations
 
 import gimp_mcp_security as sec
+import gimp_mcp_snapshot as snap
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("GimpMCPServer")
+
+# FastMCP 2.10.1: allow ToolResult (image content + structuredContent) through convert_result.
+_orig_convert = FuncMetadata.convert_result
+
+
+def _convert_result_passthrough(self, result):  # type: ignore[no-untyped-def]
+    if isinstance(result, ToolResult):
+        return result.to_mcp_result()
+    return _orig_convert(self, result)
+
+
+FuncMetadata.convert_result = _convert_result_passthrough  # type: ignore[method-assign]
 
 # Env plumbing — never default to bare "localhost" (IPv6 dual-stack risk).
 try:
@@ -74,6 +90,69 @@ def _jail_path_or_raise(path: str, label: str = "path") -> str:
         return str(sec.resolve_under_root(path))
     except sec.SecurityError as e:
         raise RuntimeError(f"{e.code}: {e.message} ({label})") from e
+
+
+def _snapshot_tool_result(
+    plugin_results: dict[str, Any],
+    *,
+    image_index: int = 0,
+) -> ToolResult:
+    """Build MCP ToolResult: PNG ImageContent + structuredContent mapping metadata."""
+    base64_data = plugin_results["image_data"]
+    as_bytes = base64.b64decode(base64_data)
+
+    rendered_w = int(plugin_results.get("width") or plugin_results.get("rendered_width") or 0)
+    rendered_h = int(plugin_results.get("height") or plugin_results.get("rendered_height") or 0)
+    source_w = int(
+        plugin_results.get("original_width") or plugin_results.get("source_width") or rendered_w
+    )
+    source_h = int(
+        plugin_results.get("original_height") or plugin_results.get("source_height") or rendered_h
+    )
+    idx = int(plugin_results.get("image_index", image_index))
+    region = plugin_results.get("region")
+    composite_method = plugin_results.get("composite_method", snap.COMPOSITE_METHOD_MERGE)
+
+    # Prefer plugin-supplied mapping fields; rebuild if incomplete.
+    if all(
+        k in plugin_results
+        for k in (
+            "mode",
+            "scale_x",
+            "scale_y",
+            "source_width",
+            "source_height",
+            "rendered_width",
+            "rendered_height",
+        )
+    ):
+        mapping: dict[str, Any] = {
+            "mode": plugin_results["mode"],
+            "image_index": idx,
+            "source_width": int(plugin_results["source_width"]),
+            "source_height": int(plugin_results["source_height"]),
+            "rendered_width": int(plugin_results["rendered_width"]),
+            "rendered_height": int(plugin_results["rendered_height"]),
+            "scale_x": float(plugin_results["scale_x"]),
+            "scale_y": float(plugin_results["scale_y"]),
+            "region": region,
+            "composite_method": composite_method,
+        }
+    else:
+        mapping = snap.build_mapping_metadata(
+            image_index=idx,
+            source_width=source_w,
+            source_height=source_h,
+            rendered_width=rendered_w,
+            rendered_height=rendered_h,
+            region=region,
+            composite_method=str(composite_method),
+        )
+
+    img = Image(data=as_bytes, format="png")
+    content = img.to_image_content()
+    content.annotations = Annotations(audience=["user", "assistant"])
+    return ToolResult(content=[content], structured_content=mapping)
 
 
 class GimpConnection:
@@ -309,11 +388,16 @@ def new_canvas(
 @mcp.tool()
 def get_image_bitmap(
     ctx: Context,
+    image_index: int = 0,
     max_width: int | None = None,
     max_height: int | None = None,
     region: dict | None = None,
-) -> Image:
-    """Get the current open image in GIMP as an Image object with optional scaling and region selection.
+) -> ToolResult:
+    """Get the visible composite of an open GIMP image as PNG + mapping metadata.
+
+    By default returns the **visible composite** (all visible layers, opacity, blend
+    modes, masks — GIMP's canvas projection), not a single top layer. Never mutates
+    the user's original image.
 
     No size restrictions — pass any max_width/max_height you need.
     For large images, omit max_width/max_height to get the full resolution.
@@ -323,9 +407,10 @@ def get_image_bitmap(
     2. Region extraction with optional scaling (pass region dict)
 
     Parameters:
+    - image_index: Which open image to capture (default 0)
     - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved).
       Omit for full resolution.
-    - region: Dictionary with keys:
+    - region: Dictionary with keys (origin_x/origin_y or x/y aliases):
         - origin_x, origin_y: Top-left corner of region to extract
         - width, height: Dimensions of region to extract
         - max_width, max_height: Optional scaling for the extracted region
@@ -334,13 +419,12 @@ def get_image_bitmap(
     - Full image at full res: get_image_bitmap()
     - Full image scaled: get_image_bitmap(max_width=2048, max_height=2048)
     - Region: get_image_bitmap(region={"origin_x": 0, "origin_y": 0, "width": 512, "height": 512})
+    - Second open image: get_image_bitmap(image_index=1)
 
     Returns:
-    - Image object containing PNG data in MCP-compliant format
-    - Includes width, height, and base64-encoded image data
-
-    The returned Image object automatically handles base64 encoding and MIME types
-    according to the Model Context Protocol specification.
+    - ToolResult with PNG ImageContent plus structuredContent mapping:
+      mode, image_index, source_width/height, rendered_width/height,
+      scale_x/scale_y (region-relative when region set), region, composite_method
 
     Raises:
     - RuntimeError if no image is open, region is invalid, or export fails
@@ -350,27 +434,23 @@ def get_image_bitmap(
 
         conn = get_gimp_connection()
 
-        # Build parameters for the bitmap request
-        params = {}
+        params: dict[str, Any] = {"image_index": image_index}
         if max_width is not None:
             params["max_width"] = max_width
         if max_height is not None:
             params["max_height"] = max_height
         if region is not None:
-            params["region"] = region
+            try:
+                norm = snap.normalize_region(region)
+            except (TypeError, ValueError) as e:
+                raise Exception(f"Invalid region: {e}") from e
+            if norm is not None:
+                params["region"] = norm
 
         result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
-            # Extract the base64 image data
-            image_info = result["results"]
-            base64_data = image_info["image_data"]
-
-            as_bytes = base64.b64decode(base64_data)
-
-            # Return as MCP Image object (base64 data will be handled automatically)
-            return Image(data=as_bytes, format="png")
-        else:
-            raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
+            return _snapshot_tool_result(result["results"], image_index=image_index)
+        raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Failed to get image bitmap: {e}")
@@ -448,21 +528,27 @@ def get_state_snapshot(
     max_size: int = 512,
     region: dict | None = None,
     label: str = "",
-) -> Image:
-    """Return a live visual snapshot of the current image state — no file save needed.
+) -> ToolResult:
+    """Return a live visual snapshot of the visible composite — no file save needed.
 
     AI agents call this to get immediate visual feedback after any edit operation,
     letting them verify results and decide next steps without saving to disk.
 
+    Captures the **visible composite** (all visible layers / opacity / blend), not a
+    single layer. Never mutates the user's original image.
+
     Parameters:
     - image_index: Which open image to snapshot (default: 0 = most recent)
     - max_size: Maximum width/height of the returned preview in pixels (default: 512)
-    - region: Optional dict {x, y, width, height} to zoom into a specific area
+    - region: Optional dict {x, y, width, height} or {origin_x, origin_y, width, height}
+              to zoom into a specific area
               e.g. {"x": 200, "y": 300, "width": 100, "height": 80} for mouth area
     - label: Optional annotation label (logged but not drawn — for agent bookkeeping)
 
     Returns:
-    - PNG image of the current GIMP canvas state (with alpha if present)
+    - ToolResult with PNG ImageContent of the GIMP canvas composite, plus
+      structuredContent mapping (mode, image_index, source/rendered sizes,
+      scale_x/scale_y, region, composite_method) for coordinate recovery
 
     Typical agent workflow:
         1. open_image / new_canvas
@@ -476,23 +562,30 @@ def get_state_snapshot(
         if label:
             print(f"[snapshot] {label}")
         conn = get_gimp_connection()
-        params: dict = {"image_index": image_index}
+        params: dict[str, Any] = {"image_index": image_index}
         if max_size:
             params["max_width"] = max_size
             params["max_height"] = max_size
         if region:
-            params["region"] = {
-                "origin_x": int(region.get("x", 0)),
-                "origin_y": int(region.get("y", 0)),
-                "width": int(region.get("width", max_size)),
-                "height": int(region.get("height", max_size)),
-            }
+            try:
+                norm = snap.normalize_region(region)
+            except (TypeError, ValueError) as e:
+                raise Exception(f"Invalid region: {e}") from e
+            if norm is None:
+                norm = {}
+            # Defaults for partial shorthand from agents
+            if "origin_x" not in norm:
+                norm["origin_x"] = 0
+            if "origin_y" not in norm:
+                norm["origin_y"] = 0
+            if "width" not in norm:
+                norm["width"] = int(max_size)
+            if "height" not in norm:
+                norm["height"] = int(max_size)
+            params["region"] = norm
         result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
-            img_info = result["results"]
-            b64_data = img_info["image_data"]
-            raw_bytes = base64.b64decode(b64_data)
-            return Image(data=raw_bytes, format="png")
+            return _snapshot_tool_result(result["results"], image_index=image_index)
         raise Exception(result.get("error", "Unknown error"))
     except Exception as e:
         traceback.print_exc()
