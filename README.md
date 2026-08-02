@@ -93,10 +93,11 @@ uv sync
 ### 2. Install the GIMP Plugin
 
 Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, **`gimp_mcp_snapshot.py`**,
-**`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, and **`gimp_mcp_coords.py`** to
-GIMP's plug-ins directory (same folder) and restart GIMP. The security, snapshot, export,
-handles, and coords modules are stdlib-only and must sit next to the plugin
-(**7 files** total including the plugin). (`gimp_mcp_state.py` is host-side only.)
+**`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, **`gimp_mcp_coords.py`**, and
+**`gimp_mcp_policy.py`** to GIMP's plug-ins directory (same folder) and restart GIMP.
+The security, snapshot, export, handles, coords, and policy modules are stdlib-only and
+must sit next to the plugin (**8 files** total including the plugin).
+(`gimp_mcp_state.py` is host-side only.)
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
 > (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
@@ -121,7 +122,7 @@ if [ -z "$GIMP_DIR" ]; then
 fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
 cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py gimp_mcp_export.py \
-  gimp_mcp_handles.py gimp_mcp_coords.py \
+  gimp_mcp_handles.py gimp_mcp_coords.py gimp_mcp_policy.py \
   "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
@@ -135,8 +136,9 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_export.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_handles.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_coords.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_policy.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **six** shared modules listed above (7 files total) and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **seven** shared modules listed above (8 files total) and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
@@ -282,13 +284,19 @@ Supports `image_index` (default 0). Returns PNG image content plus the same
 | `rename_layer` | Rename layer (non-structural; generation unchanged) |
 | `set_layer_properties` | Opacity, blend mode, visibility |
 | `reorder_layer` | Move layer in stack (returns `generation` + item `handle`) |
-| `merge_visible_layers` | Flatten visible to one layer (returns `generation` + item `handle`) |
-| `flatten_image` | Flatten all layers (returns `generation` + image `handle`) |
+| `merge_visible_layers` | Merge visible — requires `confirm_destructive=true` |
+| `flatten_image` | Flatten all layers — requires `confirm_destructive=true` |
+| `ensure_source_immutable` | Protect root sources under `Source_Immutable` (working copies + locks) |
+| `checkpoint_create` / `checkpoint_restore` | Workspace-jailed XCF checkpoints + integrity sidecar |
 | `list_layers` | List all layers with properties |
 
+**Agent intake order:** `orient_workspace` → `ensure_source_immutable` →
+`checkpoint_create` before destructive work → `confirm_destructive=true` for live flatten/merge.
+
 Structural layer tools (`create_layer`, `duplicate_layer`, `delete_layer`, `reorder_layer`,
-`merge_visible_layers`, `flatten_image`, plus `add_text` / `apply_drop_shadow`) return live
-`generation` and a stable `handle` on success so agents can refresh stale handles after mutations.
+`merge_visible_layers`, `flatten_image`, `ensure_source_immutable`, plus `add_text` /
+`apply_drop_shadow`) return live `generation` and a stable `handle` on success so agents
+can refresh stale handles after mutations.
 
 ### 🖌️ Drawing & Fill
 | Tool | Description |
@@ -448,6 +456,7 @@ gimp_mcp_server.py          ← MCP tool definitions (+ gimp_mcp_state finalize)
 gimp-mcp-plugin.py          ← Runs inside GIMP process (generation registry + orient dump)
   + gimp_mcp_handles.py     ← shared pure require_*/builders (host + plug-in install)
   + gimp_mcp_coords.py      ← pure preview/layer math + EXIF op table (7th install file)
+  + gimp_mcp_policy.py      ← Source_Immutable + checkpoint paths/sidecar (8th install file)
       │  PyGObject
       ▼
 GIMP 3.2 (gi.repository.Gimp)
@@ -479,8 +488,9 @@ GIMP 3.2 (gi.repository.Gimp)
 
 Export prep always runs on a **duplicate** (user document unchanged). Alpha path uses
 `merge_visible_layers(CLIP_TO_IMAGE)` + GIMP 3 `file-*-export` only (no `file-*-save`).
-Install must include **`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, and
-**`gimp_mcp_coords.py`** next to the plugin (7 files total with security/snapshot/plugin).
+Install must include **`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**,
+**`gimp_mcp_coords.py`**, and **`gimp_mcp_policy.py`** next to the plugin
+(8 files total with security/snapshot/plugin).
 
 For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).
 Do **not** confuse with `flatten_image`, which mutates the open document.

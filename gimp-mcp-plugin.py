@@ -25,6 +25,7 @@ import platform
 import signal
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Security + snapshot helpers (stdlib modules — deploy beside this file)
@@ -67,6 +68,13 @@ except ImportError as _coords_imp_err:  # pragma: no cover - fail closed at runt
         "gimp_mcp_coords.py must sit next to gimp-mcp-plugin.py "
         f"(looked in {_plugin_dir}): {_coords_imp_err}"
     ) from _coords_imp_err
+try:
+    import gimp_mcp_policy as _policy
+except ImportError as _policy_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_policy.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_policy_imp_err}"
+    ) from _policy_imp_err
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
@@ -136,6 +144,11 @@ class MCPPlugin(Gimp.PlugIn):
         # Per-image EXIF/pixel orientation normalized flags (track 0008).
         # True after successful normalize_image_orientation in this session.
         self._orientation_normalized: dict[int, bool] = {}
+        # Per-image protected Source_Immutable item ids (track 0009).
+        # item_id → denied for mutators unless allow_source_mutation=true.
+        self._protected_item_ids: dict[int, set[int]] = {}
+        # Working copies created by ensure_source_immutable (skip on re-ensure).
+        self._working_item_ids: dict[int, set[int]] = {}
 
         print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
         if not _sec.is_loopback_host(self.host):
@@ -624,6 +637,12 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._merge_visible_layers(j.get("params", {}))
             elif "type" in j and j["type"] == "list_layers":
                 return self._list_layers(j.get("params", {}))
+            elif "type" in j and j["type"] == "ensure_source_immutable":
+                return self._ensure_source_immutable(j.get("params", {}))
+            elif "type" in j and j["type"] == "checkpoint_create":
+                return self._checkpoint_create(j.get("params", {}))
+            elif "type" in j and j["type"] == "checkpoint_restore":
+                return self._checkpoint_restore(j.get("params", {}))
             # ── Category 6: Color & Paint ─────────────────────────────────────
             elif "type" in j and j["type"] == "fill_layer":
                 return self._fill_layer(j.get("params", {}))
@@ -1512,6 +1531,24 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception:
             has_alpha = False
 
+        # Additive 0009: tattoo (write-only identity) + protected flag
+        tattoo_val = None
+        try:
+            if hasattr(layer, "get_tattoo"):
+                tattoo_val = int(layer.get_tattoo())
+        except Exception:
+            tattoo_val = None
+        protected_flag = False
+        try:
+            protected_flag = lid in (self._protected_item_ids.get(int(image_id)) or set())
+        except Exception:
+            protected_flag = False
+        if not protected_flag:
+            try:
+                protected_flag = self._item_under_source_immutable_policy(layer)
+            except Exception:
+                protected_flag = False
+
         mask_info = {"present": False}
         try:
             mask = layer.get_mask() if hasattr(layer, "get_mask") else None
@@ -1536,7 +1573,7 @@ class MCPPlugin(Gimp.PlugIn):
             if node is not None:
                 children.append(node)
 
-        return {
+        node = {
             "handle": handle,
             "name": str(name),
             "kind": kind,
@@ -1550,7 +1587,11 @@ class MCPPlugin(Gimp.PlugIn):
             "mask": mask_info,
             "filters": [],
             "children": children,
+            "protected": bool(protected_flag),
         }
+        if tattoo_val is not None:
+            node["tattoo"] = tattoo_val
+        return node
 
     def _orient_item_summaries(self, items, image_id):
         summaries = []
@@ -1804,6 +1845,12 @@ class MCPPlugin(Gimp.PlugIn):
 
             # F1: drop closed-image generation keys; never reseed them here
             self._sync_image_generations(all_images)
+            # Durable Source_Immutable hydrate for orient protected flags
+            for _img in all_images:
+                try:
+                    self._hydrate_protected_from_group(_img)
+                except Exception:
+                    pass
 
             explicit_index = image_index is not None
             if explicit_index:
@@ -2511,6 +2558,9 @@ class MCPPlugin(Gimp.PlugIn):
             self._retired_generations[iid] = max(floor, prev)
         # Session orientation flag must not survive close / id recycle (M1).
         self._orientation_normalized.pop(iid, None)
+        # Protected Source_Immutable set must not survive close / id recycle (0009 M1).
+        self._protected_item_ids.pop(iid, None)
+        self._working_item_ids.pop(iid, None)
 
     def _sync_image_generations(self, open_images=None):
         """Prune generation map to currently open images. Does not reseed closed ids.
@@ -2542,6 +2592,23 @@ class MCPPlugin(Gimp.PlugIn):
                 continue
             if iid not in open_ids:
                 self._orientation_normalized.pop(key, None)
+        # Drop protected/working item sets for pruned / non-open ids (0009 M1).
+        for key in list(self._protected_item_ids.keys()):
+            try:
+                iid = int(key)
+            except (TypeError, ValueError):
+                self._protected_item_ids.pop(key, None)
+                continue
+            if iid not in open_ids:
+                self._protected_item_ids.pop(key, None)
+        for key in list(self._working_item_ids.keys()):
+            try:
+                iid = int(key)
+            except (TypeError, ValueError):
+                self._working_item_ids.pop(key, None)
+                continue
+            if iid not in open_ids:
+                self._working_item_ids.pop(key, None)
         return dropped
 
     def _pixel_orientation_normalized(self, image_id, tag=None):
@@ -2792,6 +2859,146 @@ class MCPPlugin(Gimp.PlugIn):
                 raise RuntimeError("No layers in image")
             return layers[0]
         return layer
+
+    def _find_source_immutable_group(self, image):
+        """Return parasite-marked Source_Immutable group or None (no create)."""
+        group_name = _policy.SOURCE_IMMUTABLE_GROUP_NAME
+        for layer in image.get_layers() or []:
+            try:
+                if layer.get_name() != group_name:
+                    continue
+            except Exception:
+                continue
+            if not self._item_is_group(layer):
+                continue
+            if self._item_has_policy_parasite(layer):
+                return layer
+        return None
+
+    def _hydrate_protected_from_group(self, image, image_id=None):
+        """Populate session protected set from marked-group descendants.
+
+        Durable across plugin restart / checkpoint_restore (Codex final P1).
+        Returns the set of hydrated item_ids (may be empty).
+        """
+        try:
+            iid = int(image_id if image_id is not None else image.get_id())
+        except Exception:
+            return set()
+        group = self._find_source_immutable_group(image)
+        if group is None:
+            return set()
+        found: set[int] = set()
+
+        def walk(layer, depth, visited):
+            if depth > 32:
+                return
+            try:
+                lid = int(layer.get_id())
+            except Exception:
+                return
+            if lid in visited:
+                return
+            visited.add(lid)
+            if not self._item_is_group(layer):
+                found.add(lid)
+            for child in self._layer_children(layer):
+                walk(child, depth + 1, visited)
+
+        visited: set = set()
+        for child in self._layer_children(group):
+            walk(child, 0, visited)
+        if found:
+            self._protected_item_ids.setdefault(iid, set()).update(found)
+        return found
+
+    def _item_under_source_immutable_policy(self, item):
+        """True if item is a descendant of a parasite-marked Source_Immutable group."""
+        try:
+            img = item.get_image()
+        except Exception:
+            return False
+        if img is None:
+            return False
+        group = self._find_source_immutable_group(img)
+        if group is None:
+            return False
+        return self._layer_under_policy_group(item, group)
+
+    def _assert_mutable(self, item, *, allow_source_mutation=False):
+        """Raise POLICY_DENIED if item is Source_Immutable protected.
+
+        Checks:
+        1. Session ``_protected_item_ids`` (fast path after ensure)
+        2. Durable ancestry under parasite-marked Source_Immutable group
+           (survives restart / checkpoint_restore — Codex final P1)
+
+        Stale pre-protect layer handles still hit this assert by **item_id**.
+        """
+        if allow_source_mutation:
+            return
+        try:
+            item_id = int(item.get_id())
+        except Exception as e:
+            raise RuntimeError(f"cannot resolve item id for mutability check: {e}") from e
+        try:
+            img = item.get_image()
+            image_id = int(img.get_id()) if img is not None else None
+        except Exception:
+            image_id = None
+            img = None
+        if image_id is None:
+            return
+        protected = self._protected_item_ids.get(int(image_id)) or set()
+        if item_id in protected:
+            raise _sec.SecurityError(
+                _sec.CODE_POLICY_DENIED,
+                f"item_id {item_id} is Source_Immutable protected; "
+                "mutate the working copy or pass allow_source_mutation=true",
+            )
+        # Durable path when session set empty (restore/restart)
+        if self._item_under_source_immutable_policy(item):
+            # Hydrate session set so subsequent checks are O(1)
+            if img is not None:
+                self._hydrate_protected_from_group(img, image_id)
+            raise _sec.SecurityError(
+                _sec.CODE_POLICY_DENIED,
+                f"item_id {item_id} is under Source_Immutable (durable policy); "
+                "mutate the working copy or pass allow_source_mutation=true",
+            )
+
+    def _resolve_mutable_layer(
+        self,
+        image,
+        layer_name,
+        layer_index,
+        layer_id=None,
+        item_id=None,
+        *,
+        allow_source_mutation=False,
+    ):
+        """Resolve a layer then assert it is mutable under Source_Immutable policy."""
+        layer = self._resolve_layer(
+            image, layer_name, layer_index, layer_id=layer_id, item_id=item_id
+        )
+        self._assert_mutable(layer, allow_source_mutation=allow_source_mutation)
+        return layer
+
+    def _allow_source_mutation_from_params(self, params):
+        """Coerce allow_source_mutation without bool(\"false\")==True (0009 Codex P1)."""
+        return _exp.coerce_bool((params or {}).get("allow_source_mutation", False), default=False)
+
+    def _require_confirm_destructive(self, params, action):
+        """Require confirm_destructive=true for live flatten/merge paths.
+
+        Uses :func:`gimp_mcp_export.coerce_bool` so stringly ``\"false\"`` / ``\"0\"``
+        cannot satisfy the gate (authenticated TCP JSON safety).
+        """
+        if not _exp.coerce_bool((params or {}).get("confirm_destructive", False), default=False):
+            raise _sec.SecurityError(
+                _sec.CODE_CONFIRM_REQUIRED,
+                f"{action} requires confirm_destructive=true (destroys the live layer stack)",
+            )
 
     def _layer_id_from_params(self, params):
         """Extract optional layer_id or item_id from params."""
@@ -3819,6 +4026,8 @@ class MCPPlugin(Gimp.PlugIn):
             }
             image_id = int(image.get_id())
             gen = self._seed_image_generation(image_id, 1)
+            # If XCF already had Source_Immutable group, hydrate session deny set
+            self._hydrate_protected_from_group(image, image_id)
             return {
                 "status": "success",
                 "results": {
@@ -4045,7 +4254,12 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             layer_name = params.get("layer_name", None)
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
@@ -4071,6 +4285,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4097,7 +4313,12 @@ class MCPPlugin(Gimp.PlugIn):
             channel_str = params.get("channel", "value")
 
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             channel = CHANNEL_MAP.get(channel_str.lower(), Gimp.HistogramChannel.VALUE)
 
             if custom_pts is not None:
@@ -4137,6 +4358,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4148,7 +4371,12 @@ class MCPPlugin(Gimp.PlugIn):
             brightness = float(params.get("brightness", 0))
             contrast = float(params.get("contrast", 0))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
@@ -4163,6 +4391,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4185,7 +4415,12 @@ class MCPPlugin(Gimp.PlugIn):
             lightness = float(params.get("lightness", 0))
             color_range = params.get("color_range", "all")
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             hue_range = HUE_RANGE_MAP.get(color_range.lower(), Gimp.HueRange.ALL)
             image.undo_group_start()
             try:
@@ -4204,6 +4439,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4223,7 +4460,12 @@ class MCPPlugin(Gimp.PlugIn):
             yellow_blue = float(params.get("yellow_blue", 0))
             range_str = params.get("range", "midtones")
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             color_range = RANGE_MAP.get(range_str.lower(), 1)
             image.undo_group_start()
             try:
@@ -4242,6 +4484,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4254,7 +4498,12 @@ class MCPPlugin(Gimp.PlugIn):
             radius = float(params.get("radius", 3.0))
             threshold = int(params.get("threshold", 0))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
@@ -4282,6 +4531,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4293,7 +4544,12 @@ class MCPPlugin(Gimp.PlugIn):
             radius_x = float(params.get("radius_x", 5.0))
             radius_y = float(params.get("radius_y", 5.0))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
@@ -4320,6 +4576,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4330,7 +4588,12 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name = params.get("layer_name", None)
             strength = int(params.get("strength", 50))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(
@@ -4345,6 +4608,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4363,7 +4628,12 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name = params.get("layer_name", None)
             mode_str = params.get("mode", "luminosity")
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             mode = MODE_MAP.get(mode_str.lower(), Gimp.DesaturateMode.LUMINANCE)
             image.undo_group_start()
             try:
@@ -4378,6 +4648,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4387,7 +4659,12 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             layer_name = params.get("layer_name", None)
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 pdb = Gimp.get_pdb()
@@ -4401,6 +4678,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4511,20 +4790,27 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _rotate_image(self, params):
-        """Rotate image by angle."""
+        """Rotate image by angle.
+
+        Free-angle branch flattens the live stack and requires
+        ``confirm_destructive=true`` (track 0009 H1). 90/180/270 lossless does not.
+        """
         try:
             image_index = int(params.get("image_index", 0))
             angle = float(params.get("angle", 90))
             image = self._get_image(image_index)
             structural_flatten = False
+            rot_map = {
+                90.0: Gimp.RotationType.DEGREES90,
+                180.0: Gimp.RotationType.DEGREES180,
+                270.0: Gimp.RotationType.DEGREES270,
+                -90.0: Gimp.RotationType.DEGREES270,
+            }
+            needs_free_angle_flatten = angle not in rot_map
+            if needs_free_angle_flatten:
+                self._require_confirm_destructive(params, "rotate_image free-angle flatten")
             image.undo_group_start()
             try:
-                rot_map = {
-                    90.0: Gimp.RotationType.DEGREES90,
-                    180.0: Gimp.RotationType.DEGREES180,
-                    270.0: Gimp.RotationType.DEGREES270,
-                    -90.0: Gimp.RotationType.DEGREES270,
-                }
                 if angle in rot_map:
                     image.rotate(rot_map[angle])
                 else:
@@ -4553,6 +4839,8 @@ class MCPPlugin(Gimp.PlugIn):
                 results["generation"] = gen
                 results["handle"] = self._emit_image_handle(image)
             return {"status": "success", "results": results}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4578,7 +4866,11 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _resize_canvas(self, params):
-        """Resize canvas without scaling content."""
+        """Resize canvas without scaling content.
+
+        Non-transparent fill path flattens the live stack and requires
+        ``confirm_destructive=true`` (track 0009 H1). Transparent fill does not.
+        """
         try:
             from gi.repository import Gegl
 
@@ -4606,10 +4898,15 @@ class MCPPlugin(Gimp.PlugIn):
             }
             off_x, off_y = anchor_offsets.get(anchor, (dx, dy))
             structural_flatten = False
+            will_flatten = str(fill).lower() != "transparent"
+            if will_flatten:
+                self._require_confirm_destructive(
+                    params, "resize_canvas non-transparent fill flatten"
+                )
             image.undo_group_start()
             try:
                 image.resize(new_w, new_h, off_x, off_y)
-                if fill.lower() != "transparent":
+                if will_flatten:
                     Gimp.context_push()
                     try:
                         bg = Gegl.Color.new(fill)
@@ -4636,6 +4933,8 @@ class MCPPlugin(Gimp.PlugIn):
                 "status": "success",
                 "results": results,
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4866,8 +5165,12 @@ class MCPPlugin(Gimp.PlugIn):
             image_index = int(params.get("image_index", 0))
             layer_name = params.get("layer_name", None)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(
-                image, layer_name, None, layer_id=self._layer_id_from_params(params)
+            layer = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                layer_id=self._layer_id_from_params(params),
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
             )
             layers = image.get_layers()
             position = layers.index(layer) if layer in layers else 0
@@ -4889,6 +5192,8 @@ class MCPPlugin(Gimp.PlugIn):
                     "handle": self._emit_item_handle(new_layer, image_id),
                 },
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4901,8 +5206,12 @@ class MCPPlugin(Gimp.PlugIn):
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(
-                image, layer_name, layer_index, layer_id=self._layer_id_from_params(params)
+            layer = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                layer_index,
+                layer_id=self._layer_id_from_params(params),
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
             )
             image.undo_group_start()
             try:
@@ -4920,6 +5229,8 @@ class MCPPlugin(Gimp.PlugIn):
                     "handle": self._emit_image_handle(image),
                 },
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4933,13 +5244,19 @@ class MCPPlugin(Gimp.PlugIn):
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(
-                image, old_name, layer_index, layer_id=self._layer_id_from_params(params)
+            layer = self._resolve_mutable_layer(
+                image,
+                old_name,
+                layer_index,
+                layer_id=self._layer_id_from_params(params),
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
             )
             prev_name = layer.get_name()
             layer.set_name(new_name)
             Gimp.displays_flush()
             return {"status": "success", "results": {"old_name": prev_name, "new_name": new_name}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4955,8 +5272,12 @@ class MCPPlugin(Gimp.PlugIn):
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(
-                image, layer_name, layer_index, layer_id=self._layer_id_from_params(params)
+            layer = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                layer_index,
+                layer_id=self._layer_id_from_params(params),
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
             )
             image.undo_group_start()
             try:
@@ -4970,6 +5291,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -4983,8 +5306,12 @@ class MCPPlugin(Gimp.PlugIn):
             if layer_index is not None:
                 layer_index = int(layer_index)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(
-                image, layer_name, layer_index, layer_id=self._layer_id_from_params(params)
+            layer = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                layer_index,
+                layer_id=self._layer_id_from_params(params),
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
             )
             image.undo_group_start()
             try:
@@ -5002,12 +5329,15 @@ class MCPPlugin(Gimp.PlugIn):
                     "handle": self._emit_item_handle(layer, image_id),
                 },
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _flatten_image(self, params):
-        """Flatten all layers."""
+        """Flatten all layers (live document — requires confirm_destructive)."""
         try:
+            self._require_confirm_destructive(params, "flatten_image")
             image = self._get_image(int(params.get("image_index", 0)))
             image.undo_group_start()
             try:
@@ -5025,12 +5355,15 @@ class MCPPlugin(Gimp.PlugIn):
                     "handle": self._emit_image_handle(image),
                 },
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _merge_visible_layers(self, params):
-        """Merge visible layers (live agent tool — bumps generation)."""
+        """Merge visible layers (live agent tool — bumps generation; confirm_destructive)."""
         try:
+            self._require_confirm_destructive(params, "merge_visible_layers")
             image = self._get_image(int(params.get("image_index", 0)))
             image.undo_group_start()
             try:
@@ -5049,6 +5382,8 @@ class MCPPlugin(Gimp.PlugIn):
                     "handle": self._emit_item_handle(merged, image_id),
                 },
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5084,6 +5419,775 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     # =========================================================================
+    # CATEGORY 5b — Source_Immutable policy + checkpoints (track 0009)
+    # =========================================================================
+
+    def _item_is_group(self, item):
+        try:
+            if hasattr(item, "is_group") and callable(item.is_group):
+                return bool(item.is_group())
+        except Exception:
+            pass
+        try:
+            tname = type(item).__name__
+            if "GroupLayer" in tname:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _item_has_policy_parasite(self, item):
+        """True if item carries the Source_Immutable parasite marker."""
+        name = _policy.PARASITE_SOURCE_IMMUTABLE
+        try:
+            if hasattr(item, "get_parasite"):
+                p = item.get_parasite(name)
+                if p is not None:
+                    return True
+            if hasattr(item, "find_parasite"):
+                p = item.find_parasite(name)
+                if p is not None:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _attach_policy_parasite(self, item):
+        """Attach gimp-mcp:source-immutable parasite; fail closed if API missing."""
+        name = _policy.PARASITE_SOURCE_IMMUTABLE
+        if not hasattr(Gimp, "Parasite") or not hasattr(Gimp.Parasite, "new"):
+            raise RuntimeError("Gimp.Parasite.new unavailable — cannot mark Source_Immutable group")
+        if not hasattr(item, "attach_parasite"):
+            raise RuntimeError(
+                "item.attach_parasite unavailable — cannot mark Source_Immutable group"
+            )
+        # flags: 0 = temporary / not persistent to XCF is wrong; use PERSISTENT if available
+        flags = 0
+        try:
+            if hasattr(Gimp, "PARASITE_PERSISTENT"):
+                flags = int(Gimp.PARASITE_PERSISTENT)
+            elif hasattr(Gimp.Parasite, "PERSISTENT"):
+                flags = int(Gimp.Parasite.PERSISTENT)
+        except Exception:
+            flags = 1  # common PERSISTENT value historically
+        data = b"1"
+        parasite = Gimp.Parasite.new(name, flags, data)
+        item.attach_parasite(parasite)
+
+    def _create_source_immutable_group(self, image):
+        """Find or create parasite-marked Source_Immutable group.
+
+        Name collision without parasite → POLICY_DENIED.
+        """
+        group_name = _policy.SOURCE_IMMUTABLE_GROUP_NAME
+        # Search root layers for existing group by name
+        for layer in image.get_layers() or []:
+            try:
+                if layer.get_name() != group_name:
+                    continue
+            except Exception:
+                continue
+            if not self._item_is_group(layer):
+                raise _sec.SecurityError(
+                    _sec.CODE_POLICY_DENIED,
+                    f"Layer named {group_name!r} exists but is not a group",
+                )
+            if not self._item_has_policy_parasite(layer):
+                raise _sec.SecurityError(
+                    _sec.CODE_POLICY_DENIED,
+                    f"Name collision: {group_name!r} exists without "
+                    f"parasite {_policy.PARASITE_SOURCE_IMMUTABLE!r}",
+                )
+            return layer
+
+        # Create new group at bottom of root stack
+        if not hasattr(Gimp, "GroupLayer") or not hasattr(Gimp.GroupLayer, "new"):
+            raise RuntimeError("Gimp.GroupLayer.new unavailable")
+        group = Gimp.GroupLayer.new(image, group_name)
+        # position -1 often means append; use end of root stack
+        n = len(image.get_layers() or [])
+        image.insert_layer(group, None, n)
+        self._attach_policy_parasite(group)
+        # Prefer hidden + content-locked group
+        try:
+            ok = group.set_visible(False)
+            self._gimp_bool_or_fail(ok, "Source_Immutable group set_visible(False)")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Source_Immutable group set_visible failed: {e}") from e
+        try:
+            if hasattr(group, "set_lock_content"):
+                ok = group.set_lock_content(True)
+                self._gimp_bool_or_fail(ok, "Source_Immutable group set_lock_content(True)")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Source_Immutable group set_lock_content failed: {e}") from e
+        return group
+
+    def _group_has_children(self, group):
+        """True if group layer has at least one child (prior ensure applied)."""
+        try:
+            kids = self._layer_children(group) if group is not None else []
+            return bool(kids)
+        except Exception:
+            return False
+
+    def _layer_under_policy_group(self, layer, policy_group):
+        """True if layer is already a descendant of the marked policy group."""
+        try:
+            group_id = int(policy_group.get_id())
+        except Exception:
+            return False
+        try:
+            parent = layer.get_parent() if hasattr(layer, "get_parent") else None
+        except Exception:
+            parent = None
+        visited = set()
+        while parent is not None:
+            try:
+                pid = int(parent.get_id())
+            except Exception:
+                break
+            if pid in visited:
+                break
+            visited.add(pid)
+            if pid == group_id:
+                return True
+            try:
+                parent = parent.get_parent() if hasattr(parent, "get_parent") else None
+            except Exception:
+                break
+        return False
+
+    def _unique_working_name(self, image, base_name):
+        """Return a non-colliding working-layer name: base + ' (working)' [+ n]."""
+        candidate = f"{base_name} (working)"
+        existing = set()
+        try:
+            for lyr in image.get_layers() or []:
+                try:
+                    existing.add(str(lyr.get_name()))
+                except Exception:
+                    continue
+                # also scan one level of children
+                try:
+                    if self._item_is_group(lyr) and hasattr(lyr, "get_children"):
+                        for ch in lyr.get_children() or []:
+                            try:
+                                existing.add(str(ch.get_name()))
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        if candidate not in existing:
+            return candidate
+        n = 2
+        while f"{candidate} {n}" in existing:
+            n += 1
+        return f"{candidate} {n}"
+
+    def _lock_source_layer(self, layer):
+        """Hide + lock content/position/visibility on original; check gboolean each."""
+        ok = layer.set_visible(False)
+        self._gimp_bool_or_fail(ok, "set_visible(False) on protected layer")
+        if not hasattr(layer, "set_lock_content"):
+            raise RuntimeError("set_lock_content unavailable")
+        ok = layer.set_lock_content(True)
+        self._gimp_bool_or_fail(ok, "set_lock_content(True) on protected layer")
+        if not hasattr(layer, "set_lock_position"):
+            raise RuntimeError("set_lock_position unavailable")
+        ok = layer.set_lock_position(True)
+        self._gimp_bool_or_fail(ok, "set_lock_position(True) on protected layer")
+        if not hasattr(layer, "set_lock_visibility"):
+            raise RuntimeError("set_lock_visibility unavailable")
+        ok = layer.set_lock_visibility(True)
+        self._gimp_bool_or_fail(ok, "set_lock_visibility(True) on protected layer")
+
+    def _ensure_source_immutable(self, params):
+        """Protect root source layers: copy working → reparent original → lock/hide.
+
+        Locked order per layer (§7.1):
+          1. working = layer.copy()
+          2. insert_layer(working, None, original_index)
+          3. reorder_item(original, parent=group, position=-1)
+          4. set_visible(False); set_lock_content/position/visibility(True)
+        Single generation bump after ALL layers; emit handles after.
+        """
+        try:
+            image_index = int(params.get("image_index", 0))
+            image = self._get_image(image_index)
+            image_id = int(image.get_id())
+            # Optional explicit layer ids (root non-group only when omitted)
+            raw_ids = params.get("layer_ids") or params.get("item_ids") or None
+            explicit_ids = None
+            if raw_ids is not None:
+                if not isinstance(raw_ids, (list, tuple)):
+                    return _sec.make_error(
+                        _sec.CODE_INVALID_HANDLE
+                        if hasattr(_sec, "CODE_INVALID_HANDLE")
+                        else _sec.CODE_INTERNAL,
+                        "layer_ids must be a list of integers",
+                    )
+                explicit_ids = [int(x) for x in raw_ids]
+
+            protected_out = []
+            working_out = []
+            skipped = []
+            noop = False
+
+            image.undo_group_start()
+            try:
+                group = self._create_source_immutable_group(image)
+                # Hydrate session set from any prior XCF/session group members
+                self._hydrate_protected_from_group(image, image_id)
+
+                # Snapshot root candidates (root stack changes as we process)
+                roots = list(image.get_layers() or [])
+                targets = []
+                working_set = self._working_item_ids.get(image_id) or set()
+                protected_set = self._protected_item_ids.get(image_id) or set()
+                for layer in roots:
+                    try:
+                        lid = int(layer.get_id())
+                    except Exception:
+                        continue
+                    if self._item_is_group(layer):
+                        # skip groups (including the policy group itself)
+                        continue
+                    if explicit_ids is not None and lid not in explicit_ids:
+                        continue
+                    if self._layer_under_policy_group(layer, group):
+                        skipped.append({"item_id": lid, "reason": "already_under_policy_group"})
+                        continue
+                    if lid in protected_set:
+                        skipped.append({"item_id": lid, "reason": "already_protected"})
+                        continue
+                    # Session working copies from a prior ensure (idempotent)
+                    if lid in working_set:
+                        skipped.append({"item_id": lid, "reason": "working_copy"})
+                        continue
+                    # Name-based defense only after policy group already has
+                    # children (prior ensure). Avoids first-run skip of a
+                    # source intentionally/accidentally named "... (working)".
+                    try:
+                        lname = str(layer.get_name() or "")
+                    except Exception:
+                        lname = ""
+                    if _policy.is_working_layer_name(lname) and (
+                        protected_set or self._group_has_children(group)
+                    ):
+                        skipped.append(
+                            {"item_id": lid, "reason": "working_copy_name", "name": lname}
+                        )
+                        continue
+                    targets.append(layer)
+
+                # True no-op: nothing to protect → no gen bump (idempotent)
+                if not targets:
+                    noop = True
+                else:
+                    for layer in targets:
+                        try:
+                            orig_id = int(layer.get_id())
+                            orig_name = str(layer.get_name() or f"layer-{orig_id}")
+                        except Exception as e:
+                            raise RuntimeError(f"cannot read layer for protect: {e}") from e
+
+                        # original_index among current root layers
+                        roots_now = list(image.get_layers() or [])
+                        try:
+                            original_index = roots_now.index(layer)
+                        except ValueError:
+                            # not at root anymore
+                            skipped.append({"item_id": orig_id, "reason": "not_root"})
+                            continue
+
+                        # 1. copy working
+                        working = layer.copy()
+                        # 2. insert working into original slot (working takes the slot)
+                        image.insert_layer(working, None, original_index)
+                        try:
+                            wname = self._unique_working_name(image, orig_name)
+                            working.set_name(wname)
+                        except Exception:
+                            pass
+                        # 3. reparent original into policy group
+                        if not hasattr(image, "reorder_item"):
+                            raise RuntimeError("image.reorder_item unavailable")
+                        image.reorder_item(layer, group, -1)
+                        # 4. hide + lock original
+                        self._lock_source_layer(layer)
+
+                        # register protected + working for session idempotency
+                        self._protected_item_ids.setdefault(image_id, set()).add(orig_id)
+
+                        protected_out.append(
+                            {
+                                "item_id": orig_id,
+                                "name": orig_name,
+                                "handle": self._emit_item_handle(layer, image_id),
+                            }
+                        )
+                        try:
+                            wid = int(working.get_id())
+                            self._working_item_ids.setdefault(image_id, set()).add(wid)
+                            working_out.append(
+                                {
+                                    "item_id": wid,
+                                    "name": working.get_name(),
+                                    "handle": self._emit_item_handle(working, image_id),
+                                }
+                            )
+                        except Exception:
+                            working_out.append({"item_id": None, "name": None})
+            finally:
+                image.undo_group_end()
+
+            if noop:
+                gen = self._image_generation(image_id)
+                return {
+                    "status": "success",
+                    "results": {
+                        "status": "success",
+                        "image_id": image_id,
+                        "generation": gen,
+                        "handle": self._emit_image_handle(image),
+                        "protected": [],
+                        "working": [],
+                        "skipped": skipped,
+                        "group_name": _policy.SOURCE_IMMUTABLE_GROUP_NAME,
+                        "protected_item_ids": sorted(
+                            self._protected_item_ids.get(image_id) or set()
+                        ),
+                        "noop": True,
+                    },
+                }
+
+            # Single generation bump after ALL layers (AI2 BS3) — only if work done
+            gen = self._bump_image_generation(image_id)
+            Gimp.displays_flush()
+
+            # Re-emit handles after gen bump so generation is current
+            for entry in protected_out:
+                try:
+                    entry["handle"] = self._emit_item_handle_ids(int(entry["item_id"]), image_id)
+                except Exception:
+                    pass
+            for entry in working_out:
+                if entry.get("item_id") is not None:
+                    try:
+                        entry["handle"] = self._emit_item_handle_ids(
+                            int(entry["item_id"]), image_id
+                        )
+                    except Exception:
+                        pass
+
+            return {
+                "status": "success",
+                "results": {
+                    "status": "success",
+                    "image_id": image_id,
+                    "generation": gen,
+                    "handle": self._emit_image_handle(image),
+                    "protected": protected_out,
+                    "working": working_out,
+                    "skipped": skipped,
+                    "group_name": _policy.SOURCE_IMMUTABLE_GROUP_NAME,
+                    "protected_item_ids": sorted(self._protected_item_ids.get(image_id) or set()),
+                    "noop": False,
+                },
+            }
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except Exception as e:
+            return _sec.redact_error(e)
+
+    def _collect_layers_for_sidecar(self, image, image_id):
+        """Build flat layer inventory for checkpoint sidecar (tattoos write-only)."""
+        out = []
+        protected = self._protected_item_ids.get(int(image_id)) or set()
+
+        def walk(layer, parent_item_id, depth, visited):
+            if depth > 32:
+                return
+            try:
+                lid = int(layer.get_id())
+            except Exception:
+                return
+            if lid in visited:
+                return
+            visited.add(lid)
+            kind = self._orient_classify_kind(layer)
+            try:
+                name = str(layer.get_name() or f"layer-{lid}")
+            except Exception:
+                name = f"layer-{lid}"
+            entry = {
+                "item_id": lid,
+                "name": name,
+                "kind": kind,
+                "parent_item_id": parent_item_id,
+                "protected": lid in protected,
+            }
+            try:
+                if hasattr(layer, "get_tattoo"):
+                    entry["tattoo"] = int(layer.get_tattoo())
+            except Exception:
+                pass
+            out.append(entry)
+            for child in self._layer_children(layer):
+                walk(child, lid, depth + 1, visited)
+
+        visited: set = set()
+        for root in image.get_layers() or []:
+            walk(root, None, 0, visited)
+        return out
+
+    def _pdb_status_is_success(self, result):
+        """Best-effort: True if *result* looks like PDB SUCCESS (or unknown)."""
+        if result is None:
+            return True  # no status surface — rely on file checks
+        try:
+            status = result.index(0)
+        except Exception:
+            try:
+                status = result[0]
+            except Exception:
+                return True
+        try:
+            success = Gimp.PDBStatusType.SUCCESS
+            if status == success:
+                return True
+            # Some builds return int enum values
+            if int(status) == int(success):
+                return True
+            # Explicit non-success statuses fail closed
+            for name in ("EXECUTION_ERROR", "CALLING_ERROR", "PASS_THROUGH", "CANCEL"):
+                if hasattr(Gimp.PDBStatusType, name) and status == getattr(
+                    Gimp.PDBStatusType, name
+                ):
+                    return False
+            return False
+        except Exception:
+            return True
+
+    def _save_xcf_to_path(self, image, file_path):
+        """Save image as XCF to an already-jailed absolute path.
+
+        Writes to a ``.partial`` sibling first, verifies non-empty bytes, then
+        ``os.replace`` into the final path so a failed overwrite cannot pair a
+        stale XCF with a fresh sidecar (Codex P1). Full atomic product semantics
+        remain **0013**.
+        """
+        from gi.repository import Gio
+
+        xcf_path = os.fspath(file_path)
+        tmp_path = xcf_path + ".partial"
+        try:
+            if os.path.isfile(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            gio_file = Gio.File.new_for_path(tmp_path)
+            pdb = Gimp.get_pdb()
+            proc = pdb.lookup_procedure("gimp-xcf-save")
+            if proc:
+                cfg = proc.create_config()
+                cfg.set_property("image", image)
+                cfg.set_property("file", gio_file)
+                result = proc.run(cfg)
+                if not self._pdb_status_is_success(result):
+                    raise RuntimeError(f"gimp-xcf-save failed (status={result!r})")
+            else:
+                Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
+            if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) <= 0:
+                raise RuntimeError(f"XCF save produced empty/missing file: {tmp_path}")
+            os.replace(tmp_path, xcf_path)
+            if not os.path.isfile(xcf_path) or os.path.getsize(xcf_path) <= 0:
+                raise RuntimeError(f"XCF replace did not yield file: {xcf_path}")
+            return xcf_path
+        finally:
+            if os.path.isfile(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
+    def _checkpoint_create(self, params):
+        """Create a workspace-jailed XCF checkpoint + JSON sidecar.
+
+        Sidecar is written **only after** XCF save succeeds. ``xcf_sha256`` is
+        integrity of as-written bytes (not reproducibility).
+        """
+        try:
+            if not self.workspace_root:
+                return _sec.make_error(
+                    _sec.CODE_PATH_DENIED,
+                    "checkpoint_create requires GIMP_WORKSPACE_ROOT",
+                )
+            raw_label = params.get("label", "")
+            try:
+                label = _policy.sanitize_checkpoint_label(str(raw_label))
+            except ValueError as e:
+                return _sec.make_error(_sec.CODE_POLICY_DENIED, str(e))
+
+            overwrite = _exp.coerce_bool(params.get("overwrite", False), default=False)
+            include_orient = _exp.coerce_bool(
+                params.get("include_orient_snapshot", False), default=False
+            )
+            image_index = int(params.get("image_index", 0))
+            image = self._get_image(image_index)
+            image_id = int(image.get_id())
+            gen = self._image_generation(image_id)
+
+            # Prefer absolute under workspace_root then jail
+            intended_dir = Path(str(self.workspace_root)) / _policy.CHECKPOINT_DIR_NAME / label
+            intended_xcf = intended_dir / _policy.CHECKPOINT_XCF_NAME
+            intended_json = intended_dir / _policy.CHECKPOINT_JSON_NAME
+
+            safe_dir, err = self._jail_path(str(intended_dir))
+            if err is not None:
+                return err
+            safe_xcf, err = self._jail_path(str(intended_xcf))
+            if err is not None:
+                return err
+            safe_json, err = self._jail_path(str(intended_json))
+            if err is not None:
+                return err
+
+            if (safe_dir.exists() or safe_xcf.exists()) and not overwrite:
+                return _sec.make_error(
+                    _sec.CODE_CHECKPOINT_EXISTS,
+                    f"checkpoint label {label!r} already exists (pass overwrite=true)",
+                )
+
+            safe_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save XCF first — sidecar only on success (AI2 BS5)
+            self._save_xcf_to_path(image, safe_xcf)
+            if not safe_xcf.is_file():
+                return _sec.make_error(
+                    _sec.CODE_INTERNAL,
+                    f"XCF save did not produce file: {safe_xcf}",
+                )
+            digest = _policy.sha256_file(safe_xcf)
+
+            try:
+                img_name = None
+                src = self._orient_source_path(image)
+                if src:
+                    img_name = os.path.basename(src)
+            except Exception:
+                img_name = None
+
+            layers = self._collect_layers_for_sidecar(image, image_id)
+            image_meta = {
+                "image_id": image_id,
+                "generation": int(gen),
+                "width": int(image.get_width()),
+                "height": int(image.get_height()),
+            }
+            if img_name:
+                image_meta["name"] = img_name
+
+            sidecar = _policy.build_sidecar(
+                label=label,
+                session_epoch=int(self.session_epoch),
+                image=image_meta,
+                xcf_path=str(safe_xcf),
+                xcf_sha256=digest,
+                layers=layers,
+            )
+            if include_orient:
+                # M6 default False. True is honesty-only: no full orient payload
+                # embedded (agent must orient_workspace after restore / reopen).
+                sidecar["orient_note"] = (
+                    "include_orient_snapshot=true: note-only; full orient dump not "
+                    "embedded in sidecar (call orient_workspace after restore)"
+                )
+
+            try:
+                validated = _policy.validate_sidecar(sidecar)
+            except ValueError as e:
+                return _sec.make_error(
+                    _sec.CODE_INTERNAL,
+                    f"checkpoint sidecar validation failed after XCF save: {e}",
+                )
+
+            safe_json.write_text(
+                json.dumps(validated, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            return {
+                "status": "success",
+                "results": {
+                    "status": "success",
+                    "label": label,
+                    "xcf_path": str(safe_xcf),
+                    "json_path": str(safe_json),
+                    "xcf_sha256": digest,
+                    "generation": int(gen),
+                    "handle": self._emit_image_handle(image),
+                    "image_id": image_id,
+                    "layers_count": len(layers),
+                },
+            }
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except Exception as e:
+            return _sec.redact_error(e)
+
+    def _checkpoint_restore(self, params):
+        """Open a checkpoint XCF alongside (default); optional close_prior.
+
+        Returns a **new** image handle. Prior handles for the closed/replaced
+        image become invalid. Agent **must** re-run ``orient_workspace``.
+        Sidecar tattoos are **not** used for rebind in 0009.
+        """
+        try:
+            if not self.workspace_root:
+                return _sec.make_error(
+                    _sec.CODE_PATH_DENIED,
+                    "checkpoint_restore requires GIMP_WORKSPACE_ROOT",
+                )
+            raw_label = params.get("label", "")
+            try:
+                label = _policy.sanitize_checkpoint_label(str(raw_label))
+            except ValueError as e:
+                return _sec.make_error(_sec.CODE_POLICY_DENIED, str(e))
+
+            close_prior = _exp.coerce_bool(params.get("close_prior", False), default=False)
+            prior_index = params.get("image_index", None)
+            verify_hash = _exp.coerce_bool(params.get("verify_hash", True), default=True)
+
+            intended_dir = Path(str(self.workspace_root)) / _policy.CHECKPOINT_DIR_NAME / label
+            intended_xcf = intended_dir / _policy.CHECKPOINT_XCF_NAME
+            intended_json = intended_dir / _policy.CHECKPOINT_JSON_NAME
+
+            safe_xcf, err = self._jail_path(str(intended_xcf))
+            if err is not None:
+                return err
+            safe_json, err = self._jail_path(str(intended_json))
+            if err is not None:
+                return err
+
+            if not safe_xcf.is_file():
+                return _sec.make_error(
+                    _sec.CODE_CHECKPOINT_NOT_FOUND,
+                    f"checkpoint XCF not found for label {label!r}: {safe_xcf}",
+                )
+
+            hash_status = "skipped"
+            if verify_hash and safe_json.is_file():
+                try:
+                    data = json.loads(safe_json.read_text(encoding="utf-8"))
+                    expected = data.get("xcf_sha256")
+                    actual = _policy.sha256_file(safe_xcf)
+                    if isinstance(expected, str) and expected.lower() != actual.lower():
+                        return _sec.make_error(
+                            _sec.CODE_CHECKPOINT_CORRUPTED,
+                            f"checkpoint XCF hash mismatch for {label!r} "
+                            f"(integrity soft-check; not reproducibility)",
+                        )
+                    hash_status = "matched"
+                except _sec.SecurityError:
+                    raise
+                except Exception as e:
+                    # Soft: missing/unreadable sidecar does not block open
+                    hash_status = f"soft_skip:{e}"
+
+            from gi.repository import Gio
+
+            xcf_path = os.fspath(safe_xcf)
+            gio_file = Gio.File.new_for_path(xcf_path)
+            image = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, gio_file)
+            if image is None:
+                return {
+                    "status": "error",
+                    "error": f"Could not open checkpoint XCF: {safe_xcf}",
+                }
+            display = Gimp.Display.new(image)
+            Gimp.displays_flush()
+            new_id = int(image.get_id())
+            gen = self._seed_image_generation(new_id, 1)
+            # Rebuild durable Source_Immutable session set from parasite group
+            hydrated = self._hydrate_protected_from_group(image, new_id)
+
+            closed_prior = None
+            if close_prior:
+                try:
+                    if prior_index is not None:
+                        prior = self._get_image(int(prior_index))
+                    else:
+                        # close nothing specific if not provided — optional only
+                        prior = None
+                    if prior is not None and int(prior.get_id()) != new_id:
+                        closed_prior = int(prior.get_id())
+                        for display_obj in Gimp.get_displays() or []:
+                            try:
+                                if (
+                                    display_obj.get_image() is not None
+                                    and int(display_obj.get_image().get_id()) == closed_prior
+                                ):
+                                    Gimp.Display.delete(display_obj)
+                            except Exception:
+                                pass
+                        prior.delete()
+                        self._drop_image_generation(closed_prior)
+                except Exception as e:
+                    # Open succeeded; report close failure without discarding new image
+                    return {
+                        "status": "success",
+                        "results": {
+                            "status": "success",
+                            "label": label,
+                            "image_id": new_id,
+                            "generation": gen,
+                            "handle": self._emit_image_handle(image),
+                            "display_opened": display is not None,
+                            "hash_status": hash_status,
+                            "close_prior_error": str(e),
+                            "protected_hydrated": sorted(hydrated),
+                            "note": (
+                                "Restored as NEW image. Prior handles for any closed "
+                                "image are invalid. Call orient_workspace; tattoos are "
+                                "not rebound in 0009. Source_Immutable re-hydrated."
+                            ),
+                        },
+                    }
+
+            return {
+                "status": "success",
+                "results": {
+                    "status": "success",
+                    "label": label,
+                    "image_id": new_id,
+                    "generation": gen,
+                    "handle": self._emit_image_handle(image),
+                    "display_opened": display is not None,
+                    "hash_status": hash_status,
+                    "closed_prior_image_id": closed_prior,
+                    "protected_hydrated": sorted(hydrated),
+                    "note": (
+                        "Restored as NEW image handle. Prior handles for the previous "
+                        "document are invalid if closed. Agent must call "
+                        "orient_workspace. Sidecar tattoos are write-only (no rebind). "
+                        "Source_Immutable descendants re-hydrated into session deny set."
+                    ),
+                },
+            }
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except Exception as e:
+            return _sec.redact_error(e)
+
+    # =========================================================================
     # CATEGORY 6 — Color & Paint
     # =========================================================================
 
@@ -5096,7 +6200,12 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name = params.get("layer_name", None)
             color_str = params.get("color", "white")
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             Gimp.context_push()
             try:
@@ -5110,6 +6219,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5123,7 +6234,12 @@ class MCPPlugin(Gimp.PlugIn):
             fill_type = (params.get("fill_type") or "foreground").lower()
             color_str = params.get("color", "white")
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             Gimp.context_push()
             try:
@@ -5146,6 +6262,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5179,7 +6297,12 @@ class MCPPlugin(Gimp.PlugIn):
             line_width = float(params.get("width", 2.0))
             tool = params.get("tool", "pencil").lower()
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             Gimp.context_push()
             try:
@@ -5197,6 +6320,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5214,7 +6339,12 @@ class MCPPlugin(Gimp.PlugIn):
             color_str = params.get("color", None)
             line_width = float(params.get("line_width", 2.0))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             Gimp.context_push()
             try:
@@ -5236,6 +6366,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5253,7 +6385,12 @@ class MCPPlugin(Gimp.PlugIn):
             color_str = params.get("color", None)
             line_width = float(params.get("line_width", 2.0))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             Gimp.context_push()
             try:
@@ -5275,6 +6412,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5291,7 +6430,12 @@ class MCPPlugin(Gimp.PlugIn):
             height = int(params.get("height"))
             color_str = params.get("color", "white")
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             Gimp.context_push()
             try:
@@ -5304,6 +6448,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5320,7 +6466,12 @@ class MCPPlugin(Gimp.PlugIn):
             height = int(params.get("height"))
             color_str = params.get("color", "white")
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             Gimp.context_push()
             try:
@@ -5333,6 +6484,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5347,7 +6500,12 @@ class MCPPlugin(Gimp.PlugIn):
             color2 = params.get("color2", "white")
             gradient_type = params.get("gradient_type", "linear").lower()
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             w = image.get_width()
             h = image.get_height()
             x1 = float(params.get("x1") or params.get("start_x") or 0)
@@ -5396,6 +6554,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5564,8 +6724,12 @@ class MCPPlugin(Gimp.PlugIn):
             new_size = params.get("size", None)
             new_color = params.get("color", None)
             image = self._get_image(image_index)
-            layer = self._resolve_layer(
-                image, layer_name, None, layer_id=self._layer_id_from_params(params)
+            layer = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                layer_id=self._layer_id_from_params(params),
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
             )
             pdb = Gimp.get_pdb()
             image.undo_group_start()
@@ -5603,6 +6767,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5629,7 +6795,12 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name = params.get("layer_name", None)
             vectors = params.get("vectors", [])
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             pdb = Gimp.get_pdb()
 
             image.undo_group_start()
@@ -5701,6 +6872,8 @@ class MCPPlugin(Gimp.PlugIn):
 
             Gimp.displays_flush()
             return {"status": "success", "results": {"warped_vectors": len(vectors)}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5752,8 +6925,12 @@ class MCPPlugin(Gimp.PlugIn):
             color_str = params.get("color", "black")
             opacity = float(params.get("opacity", 60))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(
-                image, layer_name, None, layer_id=self._layer_id_from_params(params)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                layer_id=self._layer_id_from_params(params),
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
             )
             image.undo_group_start()
             try:
@@ -5803,6 +6980,8 @@ class MCPPlugin(Gimp.PlugIn):
                     "layer_id": shadow_layer.get_id(),
                 },
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5813,7 +6992,12 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name = params.get("layer_name", None)
             radius = float(params.get("radius", 5.0))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(
@@ -5829,6 +7013,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5839,7 +7025,12 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name = params.get("layer_name", None)
             block_size = int(params.get("block_size", 10))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(
@@ -5855,6 +7046,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5867,7 +7060,12 @@ class MCPPlugin(Gimp.PlugIn):
             elevation = float(params.get("elevation", 45))
             depth = float(params.get("depth", 2))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(
@@ -5885,6 +7083,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5896,7 +7096,12 @@ class MCPPlugin(Gimp.PlugIn):
             softness = float(params.get("softness", 3.0))
             shape = float(params.get("shape", 1.0))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(
@@ -5913,6 +7118,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
@@ -5923,7 +7130,12 @@ class MCPPlugin(Gimp.PlugIn):
             layer_name = params.get("layer_name", None)
             amount = float(params.get("amount", 0.2))
             image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name,
+                None,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
             image.undo_group_start()
             try:
                 self._apply_gegl_filter(
@@ -5940,6 +7152,8 @@ class MCPPlugin(Gimp.PlugIn):
                 image.undo_group_end()
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 

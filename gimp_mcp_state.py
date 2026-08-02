@@ -206,6 +206,8 @@ def default_capabilities() -> dict[str, bool]:
         "state_manifest_orientation": True,  # 0006
         "stable_handle_registry": True,  # 0007
         "coordinate_exif_normalized": True,  # 0008
+        "source_immutable_policy": True,  # 0009
+        "checkpoints": True,  # 0009
     }
 
 

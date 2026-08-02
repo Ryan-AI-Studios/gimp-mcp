@@ -122,7 +122,9 @@ def coerce_bool(value: Any, default: bool = False) -> bool:
     - ``bool`` → as-is
     - ``str`` (case-insensitive): ``true``/``1``/``yes`` → True;
       ``false``/``0``/``no``/``""`` → False; other strings → *default*
-    - ``int`` (and other numbers): ``0`` → False, nonzero → True
+    - ``int`` / ``float`` (not bool): ``0`` → False, nonzero → True
+    - **all other types** (list/dict/object) → *default* (fail-closed;
+      never ``bool([0])`` / ``bool({})``)
     """
     if value is None:
         return default
@@ -137,7 +139,7 @@ def coerce_bool(value: Any, default: bool = False) -> bool:
         return default
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return value != 0
-    return bool(value)
+    return default
 
 
 def coerce_optional_bool(value: Any) -> bool | None:

@@ -97,14 +97,15 @@ minting. Track IDs are creation order, not execution order.
   → 0005 AlphaExportCorrectness — Completed
   → 0006 StateManifestOrientation — Completed
   → 0007 StableHandleRegistry — Completed
-  → 0008 CoordinateModelAndExif … through 0028 Final product polish (v1)
+  → 0008 CoordinateModelAndExif — Completed
+  → 0009 LayerPolicyAndCheckpoints … through 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
 recipes → packaging → golden path → v1 polish. **0001–0008 Completed.** Orientation SoT is
 `orient_workspace` (state-manifest v1). Stable handles + STALE_HANDLE + `select_*` in **0007**.
 Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF normalize + coordinate math in **0008**.
-Authoritative table: `conductor/conductor.md`.
+Source_Immutable + checkpoints → **0009 Ready**. Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -198,6 +199,8 @@ Known upstream defects (must remain visible until fixed by tracks):
 | #16 alpha | “Success” export without transparency | **0005** (Completed: flatten default False; merge-on-dup; file-*-export; PNG IHDR ALPHA_LOST; verify_alpha_channel) |
 | Orientation | Agents need schema-versioned workspace model before edit | **0006** (Completed: `orient_workspace` state-manifest v1) |
 | Handles | Track by handle not name; STALE after structural mutation | **0007** (Completed: gen registry, select_*, STALE_HANDLE) |
+| Coords / EXIF | Preview map + normalize | **0008** (Completed) |
+| Source integrity | Source_Immutable + checkpoints + destructive confirm | **0009** (Ready plan) |
 | Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
@@ -208,7 +211,8 @@ Hard rules for product work:
   Re-orient after create/delete/reorder/merge/rasterize/relink. Manifest is **read-only**.
 - Never trust `status: success` alone — require composite/alpha/objective checks when vision matters.
 - Track layers by **stable handles**, not names (`orient_workspace` + `select_*`; re-orient or use mutator gen after structural ops; STALE_HANDLE on stale gen).
-- Spatial edits: use snapshot **mapping** + **0008** coordinate helpers; normalize EXIF before phase-sensitive work (plan Ready).
+- Spatial edits: use snapshot **mapping** + **0008** coordinate helpers; normalize EXIF before phase-sensitive work.
+- **Source integrity (0009 plan):** `ensure_source_immutable` before first mutation; `checkpoint_create`; flatten/live-merge need `confirm_destructive`; restore → re-orient.
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
@@ -276,7 +280,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0009-LayerPolicyAndCheckpoints** (placeholder — needs full plan); prior **0008 Completed** PR #8 / main@8970ad2 |
+| Active focus | **0009-LayerPolicyAndCheckpoints** — **Ready — not started** (full plan 2026-08-02); prior **0008 Completed** PR #8 / main@8970ad2 |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep). PyPI has mcp 2.x / fastmcp 3.4+ — **do not major-bump** casually. No Pillow. |
 
@@ -310,7 +314,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Tools:** `select_image` / `select_layers` (handles only; MAX=64; no Display.new; float → SELECTION_CONFLICT).
 - **Mutators:** structural success returns `generation` + `handle`; never bump snapshot/export dups.
 - **Capability:** `stable_handle_registry: true`.
-- **OOS residuals:** full name ban (**0010**), error envelope (**0011**), CLI exit 5 (**0012**), tattoos (**0009/0013**). EXIF → **0008 Completed**.
+- **OOS residuals:** full name ban (**0010**), error envelope (**0011**), CLI exit 5 (**0012**). Tattoos → **0009 partial plan** / **0013**. EXIF → **0008 Completed**.
 - Codex final: **PASS WITH DEFERRED P3** (live matrix waiver).
 
 ### 0008 completion notes (planners / implementers)
@@ -325,7 +329,18 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Capability:** `coordinate_exif_normalized: true`. Rounding half-even. No Pillow.
 - **Codex final:** **PASS WITH DEFERRED P3** (live EXIF matrix waived).
 - **Residuals:** live matrix + nested offset proof (ops); legacy rotate/flip gen gaps (refactor); CLI ExifTool **0012**; declaration hard gate **0010/0020**.
-- **Next:** **0009-LayerPolicyAndCheckpoints** (placeholder — needs full plan).
+- **Next:** **0009 Ready plan** (Source_Immutable + checkpoints).
+
+### 0009 planning notes (planners / implementers)
+
+- **Status:** Ready — not started. Spec/plan: `conductor/0009-LayerPolicyAndCheckpoints/`.
+- **AI-review folded** (`C:\dev\AI-review.md` AI1+AI2): H1–H5, M1–M8, L1–L6, AI2 BS1–5.
+- **Core:** `ensure_source_immutable` (reparent-then-lock incl. **`set_lock_visibility`**; parasite-marked group; **single gen bump at end**); central mutability guard; **all live flatten sites** gated (`flatten`, `merge_visible`, free-angle rotate, resize fill).
+- **Codes:** `POLICY_DENIED` (protected); **`CONFIRM_REQUIRED`** (missing confirm_destructive).
+- **Checkpoints:** create XCF then sidecar; integrity sha256 only; restore → new handles + re-orient; tattoos write-only; `close_prior` optional; `include_orient_snapshot` default false.
+- **Ship:** `gimp_mcp_policy.py` as **8th** plug-in file (locked).
+- **Atomic honesty:** `atomic_xcf_save` stays **false** until **0013**.
+- **Precondition:** 0003+0006+0007+0008 Completed (met). **Ledger:** FEATURE.
 
 ---
 
@@ -333,6 +348,8 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-02 | Folded AI-review into **0009**: live flatten inventory, central guard, lock_visibility, CONFIRM_REQUIRED, integrity hash |
+| 2026-08-02 | Full plan **0009** LayerPolicyAndCheckpoints: Source_Immutable, checkpoints, confirm_destructive; Ready — not started |
 | 2026-08-02 | **0008 Completed:** coords, mapping three-path, normalize, map_*; PR #8 / main@8970ad2; Codex PASS WITH DEFERRED P3; next=0009 |
 | 2026-08-02 | Folded AI-review into **0008**: default assume_pixels_upright; ordered 5/7; three mapping edits; ship coords; METADATA_WRITE_FAILED |
 | 2026-08-02 | Full plan **0008** CoordinateModelAndExif: coords math, EXIF normalize, mapping fields; Ready — not started |
