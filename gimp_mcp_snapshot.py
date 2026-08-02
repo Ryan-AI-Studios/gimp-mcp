@@ -218,3 +218,33 @@ def snapshot_temp_path(prefix: str = "snapshot-", suffix: str = ".png") -> Path:
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=str(d))
     os.close(fd)
     return Path(path)
+
+
+# ---------------------------------------------------------------------------
+# PNG validation (fail-closed export)
+# ---------------------------------------------------------------------------
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+MIN_PNG_BYTES = 8  # signature length; empty mkstemp files fail this check
+
+
+def validate_png_bytes(data: bytes) -> bool:
+    """Return True if *data* is non-empty and starts with the PNG signature.
+
+    Used after export so an empty mkstemp file or garbage write cannot be
+    base64-encoded and returned as a successful snapshot.
+    """
+    return len(data) >= MIN_PNG_BYTES and data[:8] == PNG_SIGNATURE
+
+
+def validate_png_file(path: str | Path) -> bool:
+    """Return True if *path* exists and contains a valid PNG signature."""
+    try:
+        p = Path(path)
+        if not p.is_file():
+            return False
+        with p.open("rb") as f:
+            head = f.read(MIN_PNG_BYTES)
+        return validate_png_bytes(head)
+    except OSError:
+        return False

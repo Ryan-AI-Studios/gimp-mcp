@@ -229,3 +229,36 @@ def test_temp_path_pid_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     p = snap.snapshot_temp_path()
     assert p.parent == d
     p.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# PNG validation (Codex P2-2)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_png_bytes_accepts_signature() -> None:
+    assert snap.validate_png_bytes(b"\x89PNG\r\n\x1a\n") is True
+    assert snap.validate_png_bytes(b"\x89PNG\r\n\x1a\n" + b"IHDR-rest") is True
+
+
+def test_validate_png_bytes_rejects_empty_and_non_png() -> None:
+    assert snap.validate_png_bytes(b"") is False
+    assert snap.validate_png_bytes(b"\x00" * 8) is False
+    assert snap.validate_png_bytes(b"PNG") is False
+    assert snap.validate_png_bytes(b"\x89PNG\r\n\x1a") is False  # truncated
+    assert snap.validate_png_bytes(b"not a png file at all") is False
+
+
+def test_validate_png_file_empty_mkstemp_style(tmp_path: Path) -> None:
+    """snapshot_temp_path pre-creates empty files — must not validate as PNG."""
+    empty = tmp_path / "empty.png"
+    empty.write_bytes(b"")
+    assert snap.validate_png_file(empty) is False
+    assert snap.validate_png_file(tmp_path / "missing.png") is False
+
+
+def test_validate_png_file_with_signature(tmp_path: Path) -> None:
+    p = tmp_path / "ok.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+    assert snap.validate_png_file(p) is True
+    assert snap.validate_png_file(str(p)) is True

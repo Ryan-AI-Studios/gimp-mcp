@@ -767,11 +767,15 @@ class MCPPlugin(Gimp.PlugIn):
             except (AttributeError, RuntimeError) as e:
                 print(f"Warning: undo_disable on snapshot dup failed: {e}")
 
-            # Clear inherited selection so merge is not clipped
+            # Clear inherited selection so merge is not clipped — fail closed.
+            # A failed clear must not proceed to merge (selection can silently clip).
             try:
                 Gimp.Selection.none(dup)
             except (AttributeError, RuntimeError) as e:
-                print(f"Warning: Selection.none on snapshot dup failed: {e}")
+                raise RuntimeError(
+                    f"Selection.none on snapshot dup failed "
+                    f"(cannot safely composite without clearing selection): {e}"
+                ) from e
 
             # Capture merge/flatten return layer — do not guess layers[0]
             # (merge_visible_layers keeps invisible layers; layers[0] may be hidden).
@@ -783,8 +787,10 @@ class MCPPlugin(Gimp.PlugIn):
                 print(f"merge_visible_layers failed, trying flatten: {merge_err}")
                 try:
                     Gimp.Selection.none(dup)
-                except (AttributeError, RuntimeError):
-                    pass
+                except (AttributeError, RuntimeError) as e:
+                    raise RuntimeError(
+                        f"Selection.none before flatten failed (cannot safely composite): {e}"
+                    ) from e
                 try:
                     merged = dup.flatten()
                     composite_method = _snap.COMPOSITE_METHOD_FLATTEN
@@ -798,8 +804,10 @@ class MCPPlugin(Gimp.PlugIn):
                     print("merge_visible_layers returned None, trying flatten")
                     try:
                         Gimp.Selection.none(dup)
-                    except (AttributeError, RuntimeError):
-                        pass
+                    except (AttributeError, RuntimeError) as e:
+                        raise RuntimeError(
+                            f"Selection.none before flatten failed (cannot safely composite): {e}"
+                        ) from e
                     try:
                         merged = dup.flatten()
                         composite_method = _snap.COMPOSITE_METHOD_FLATTEN
@@ -895,65 +903,98 @@ class MCPPlugin(Gimp.PlugIn):
                     "error": "No drawable for export after composite",
                 }
 
+            # Export PNG (no Pillow). Fail closed: never return success for empty
+            # or non-PNG bytes (mkstemp pre-creates an empty file).
+            export_errors: list[str] = []
             try:
                 from gi.repository import Gio
 
                 file_obj = Gio.File.new_for_path(temp_path)
                 export_proc = Gimp.get_pdb().lookup_procedure("file-png-export")
                 if not export_proc:
-                    return {"status": "error", "error": "PNG export procedure not found"}
-
-                export_config = export_proc.create_config()
-                export_config.set_property("image", dup)
-                export_config.set_property("file", file_obj)
-                try:
-                    export_config.set_property("drawable", drawable)
-                except Exception:
+                    export_errors.append("PNG export procedure not found")
+                else:
+                    export_config = export_proc.create_config()
+                    export_config.set_property("image", dup)
+                    export_config.set_property("file", file_obj)
+                    drawable_set = False
                     try:
-                        export_config.set_property("drawables", [drawable])
+                        export_config.set_property("drawable", drawable)
+                        drawable_set = True
                     except Exception:
-                        pass
+                        try:
+                            export_config.set_property("drawables", [drawable])
+                            drawable_set = True
+                        except Exception as prop_err:
+                            # Do not run file-png-export without a drawable —
+                            # image-level fallbacks handle that path.
+                            export_errors.append(
+                                f"file-png-export drawable/drawables property failed: {prop_err}"
+                            )
 
-                result = export_proc.run(export_config)
-                print(f"Export result: {result}")
+                    if drawable_set:
+                        result = export_proc.run(export_config)
+                        print(f"Export result: {result}")
+                        if not _snap.validate_png_file(temp_path):
+                            export_errors.append(
+                                f"file-png-export produced empty/invalid PNG (result={result})"
+                            )
             except Exception as export_error:
                 print(f"Export error: {export_error}")
+                export_errors.append(f"file-png-export error: {export_error}")
+
+            # Image-level fallbacks when primary path did not yield a valid PNG
+            if not _snap.validate_png_file(temp_path):
                 try:
                     from gi.repository import Gio
 
                     file_obj = Gio.File.new_for_path(temp_path)
                     Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, dup, file_obj)
-                    print("Fallback export successful")
+                    print("Fallback export (Gimp.file_save) attempted")
+                    if not _snap.validate_png_file(temp_path):
+                        export_errors.append("Gimp.file_save produced empty/invalid PNG")
                 except Exception as fallback_error:
                     print(f"Fallback export error: {fallback_error}")
-                    try:
-                        pdb = Gimp.get_pdb()
-                        save_proc = pdb.lookup_procedure("gimp-file-save")
-                        if save_proc:
-                            save_config = save_proc.create_config()
-                            save_config.set_property("image", dup)
-                            save_config.set_property("file", file_obj)
-                            save_result = save_proc.run(save_config)
-                            print(f"PDB save result: {save_result}")
-                        else:
-                            return {
-                                "status": "error",
-                                "error": (
-                                    f"All export methods failed: {export_error}, "
-                                    f"fallback: {fallback_error}"
-                                ),
-                            }
-                    except Exception as pdb_error:
-                        return {
-                            "status": "error",
-                            "error": (
-                                f"All export methods failed: {export_error}, "
-                                f"fallback: {fallback_error}, PDB: {pdb_error}"
-                            ),
-                        }
+                    export_errors.append(f"Gimp.file_save: {fallback_error}")
+
+            if not _snap.validate_png_file(temp_path):
+                try:
+                    from gi.repository import Gio
+
+                    file_obj = Gio.File.new_for_path(temp_path)
+                    pdb = Gimp.get_pdb()
+                    save_proc = pdb.lookup_procedure("gimp-file-save")
+                    if save_proc:
+                        save_config = save_proc.create_config()
+                        save_config.set_property("image", dup)
+                        save_config.set_property("file", file_obj)
+                        save_result = save_proc.run(save_config)
+                        print(f"PDB save result: {save_result}")
+                        if not _snap.validate_png_file(temp_path):
+                            export_errors.append(
+                                f"gimp-file-save produced empty/invalid PNG (result={save_result})"
+                            )
+                    else:
+                        export_errors.append("gimp-file-save procedure not found")
+                except Exception as pdb_error:
+                    export_errors.append(f"gimp-file-save: {pdb_error}")
+
+            # Fail closed: never base64-encode empty mkstemp / garbage bytes
+            if not _snap.validate_png_file(temp_path):
+                detail = "; ".join(export_errors) if export_errors else "unknown"
+                return {
+                    "status": "error",
+                    "error": (f"PNG export failed or produced empty/invalid file: {detail}"),
+                }
 
             with open(temp_path, "rb") as f:
-                encoded_image = base64.b64encode(f.read()).decode("utf-8")
+                image_bytes = f.read()
+            if not _snap.validate_png_bytes(image_bytes):
+                return {
+                    "status": "error",
+                    "error": "PNG export validation failed: empty or non-PNG data",
+                }
+            encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
             rendered_width = dup.get_width()
             rendered_height = dup.get_height()

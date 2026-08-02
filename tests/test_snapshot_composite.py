@@ -102,6 +102,51 @@ def test_bitmap_method_cleanup_deletes_dup() -> None:
     assert "dup.delete()" in body or "delete()" in body
 
 
+def test_bitmap_method_selection_none_fail_closed() -> None:
+    """Codex P2-1: Selection.none failure must not only warn-and-continue.
+
+    Inherited selection can silently clip merge/flatten; clear failures re-raise.
+    """
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_get_current_image_bitmap")
+    assert "Selection.none" in body
+    # Primary clear: raise RuntimeError on failure (not warning-only)
+    assert "Selection.none on snapshot dup failed" in body
+    assert re.search(
+        r"Selection\.none\(dup\).*?raise RuntimeError",
+        body,
+        re.DOTALL,
+    ), "Selection.none failure must re-raise RuntimeError"
+    # Must not swallow selection clear with bare pass (flatten retries)
+    # Ban the pre-fix pattern: except ...: pass after Selection.none
+    assert not re.search(
+        r"Gimp\.Selection\.none\(dup\)\s*\n"
+        r"\s*except \(AttributeError, RuntimeError\).*?:\s*\n"
+        r"\s*pass\b",
+        body,
+    ), "Selection.none must not be caught with bare pass"
+    # Flatten-path clear also fail-closed
+    assert "Selection.none before flatten failed" in body
+
+
+def test_bitmap_method_export_validates_png() -> None:
+    """Codex P2-2: export must not succeed on empty/invalid PNG (mkstemp residue)."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_get_current_image_bitmap")
+    assert "validate_png_file" in body or "_snap.validate_png_file" in body
+    assert "validate_png_bytes" in body or "_snap.validate_png_bytes" in body
+    # Fail closed string for invalid export
+    assert "empty/invalid" in body or "empty or non-PNG" in body
+    # Drawable property both-fail must not silently run primary with pass
+    assert "drawable_set" in body or "drawables property" in body
+    # Ban pre-fix silent pass on both drawable property failures
+    assert not re.search(
+        r'set_property\("drawables".*?\n\s*except Exception:\s*\n\s*pass\b',
+        body,
+        re.DOTALL,
+    ), "drawable/drawables both-fail must not bare-pass into export run"
+
+
 def test_plugin_imports_snapshot_module() -> None:
     text = PLUGIN.read_text(encoding="utf-8")
     assert "import gimp_mcp_snapshot" in text
