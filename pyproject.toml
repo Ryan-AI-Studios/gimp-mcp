@@ -36,23 +36,12 @@ dev = [
 target-version = "py311"
 line-length = 100
 src = [".", "tests"]
-# Product quality bar focuses on the MCP server + unit tests.
-# Upstream demos, GIMP-embedded plugin, and live scripts are owned by later tracks.
+# Full product Python surface is in scope. Governance / local agent dirs stay out.
+# .venv/.git/__pycache__ are covered by Ruff defaults; list governance dirs only.
 extend-exclude = [
-    ".venv",
-    ".git",
     ".agents",
     "conductor",
     ".ledgerful",
-    "docs",
-    "*.md",
-    # Product bulk surface excluded until 0002 Phases 3–4 format+lint commits.
-    "gimp-mcp-plugin.py",
-    "agent_edit_demo.py",
-    "bg_remove.py",
-    "bg_remove_iterative.py",
-    "run_tests.py",
-    "scripts",
 ]
 
 [tool.ruff.lint]
