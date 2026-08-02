@@ -27,13 +27,16 @@ def _load_token() -> str | None:
 
 
 def cmd(t, params=None):
+    token = _load_token()
+    if not token:
+        raise SystemExit(
+            "No session token — set GIMP_MCP_TOKEN or start the GIMP MCP plugin "
+            "first (refusing unauthenticated TCP)."
+        )
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(20)
     s.connect((HOST, PORT))
-    msg = {"type": t, "params": params if params is not None else {}}
-    token = _load_token()
-    if token:
-        msg["auth"] = token
+    msg = {"type": t, "params": params if params is not None else {}, "auth": token}
     s.send(json.dumps(msg).encode() + b"\n")
     r = b""
     while True:

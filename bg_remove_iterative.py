@@ -45,7 +45,12 @@ def _load_token() -> str | None:
 
 def _send(msg, timeout, recv_size, parse_truncate):
     token = _load_token()
-    if token and "auth" not in msg:
+    if not token:
+        raise SystemExit(
+            "No session token — set GIMP_MCP_TOKEN or start the GIMP MCP plugin "
+            "first (refusing unauthenticated TCP)."
+        )
+    if "auth" not in msg:
         msg = {**msg, "auth": token}
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)

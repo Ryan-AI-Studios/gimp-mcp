@@ -538,3 +538,21 @@ def test_close_image_uses_fspath_for_gio() -> None:
     assert m is not None
     body = m.group(1)
     assert "os.fspath(safe_path)" in body or "str(safe_path)" in body
+
+
+def test_raw_tcp_clients_refuse_without_token() -> None:
+    """Demos/scripts must fail closed before send when no token (Codex P2)."""
+    root = Path(__file__).resolve().parents[1]
+    clients = [
+        root / "agent_edit_demo.py",
+        root / "bg_remove.py",
+        root / "bg_remove_iterative.py",
+        root / "run_tests.py",
+        root / "scripts" / "add_text_metadata.py",
+        root / "scripts" / "continuous_edit_test" / "continuous_edit_test.py",
+    ]
+    for path in clients:
+        text = path.read_text(encoding="utf-8")
+        assert "refusing unauthenticated TCP" in text or (
+            "No session token" in text and "SystemExit" in text
+        ), f"{path.name} must refuse unauthenticated TCP"

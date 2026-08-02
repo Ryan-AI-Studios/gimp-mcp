@@ -64,7 +64,7 @@ Audit default:
 
 `GIMP_MCP_ALLOW_EXEC=1` enables:
 
-- **Class A:** plugin `cmds` / eval / exec routing  
+- **Class A:** plugin `cmds` / eval / exec routing
 - **Class B:** MCP `call_api` (PDB-mediated `pyGObject-console` / eval)
 
 It does **not** disable GIMP’s built-in PDB procedures globally. Startup audit event: `exec_mode_enabled`; exec audits tagged `mode: elevated`.
