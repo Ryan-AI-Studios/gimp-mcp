@@ -93,9 +93,10 @@ uv sync
 ### 2. Install the GIMP Plugin
 
 Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, **`gimp_mcp_snapshot.py`**,
-**`gimp_mcp_export.py`**, and **`gimp_mcp_handles.py`** to GIMP's plug-ins directory
-(same folder) and restart GIMP. The security, snapshot, export, and handles modules are
-stdlib-only and must sit next to the plugin. (`gimp_mcp_state.py` is host-side only.)
+**`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, and **`gimp_mcp_coords.py`** to
+GIMP's plug-ins directory (same folder) and restart GIMP. The security, snapshot, export,
+handles, and coords modules are stdlib-only and must sit next to the plugin
+(**7 files** total including the plugin). (`gimp_mcp_state.py` is host-side only.)
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
 > (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
@@ -120,7 +121,7 @@ if [ -z "$GIMP_DIR" ]; then
 fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
 cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py gimp_mcp_export.py \
-  gimp_mcp_handles.py \
+  gimp_mcp_handles.py gimp_mcp_coords.py \
   "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
@@ -133,8 +134,9 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_snapshot.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_export.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_handles.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_coords.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy all five files and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **six** shared modules listed above (7 files total) and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
@@ -445,6 +447,7 @@ gimp_mcp_server.py          ← MCP tool definitions (+ gimp_mcp_state finalize)
       ▼
 gimp-mcp-plugin.py          ← Runs inside GIMP process (generation registry + orient dump)
   + gimp_mcp_handles.py     ← shared pure require_*/builders (host + plug-in install)
+  + gimp_mcp_coords.py      ← pure preview/layer math + EXIF op table (7th install file)
       │  PyGObject
       ▼
 GIMP 3.2 (gi.repository.Gimp)
@@ -457,6 +460,11 @@ GIMP 3.2 (gi.repository.Gimp)
   `schemas/state-manifest.v1.json`). Prefer this over flat `list_layers` for orientation.
 - **Stable handles:** plugin owns per-image generation; `select_image` / `select_layers`
   validate via shipped `gimp_mcp_handles` (STALE_HANDLE / FOREIGN_SESSION / …).
+- **Coordinates / EXIF (0008):** snapshot mapping includes `coordinate_space`, axes, padding=0,
+  `view_rotation_ignored`, and EXIF honesty flags. Host `map_preview_to_image` /
+  `map_image_to_preview` / `map_layer_local_to_image` / `map_image_to_layer_local` are pure
+  math (no GIMP). `normalize_image_orientation` defaults to **`assume_pixels_upright`**
+  (set tags to 1 only — **never** `Image.policy_rotate`); opt-in `trust_tag` bakes pixels.
 - Two message formats: `{"type": "...", "params": {...}}` for named tools, `{"cmds": ["python..."]}` for arbitrary exec
 
 ### Transparent PNG export (Issue 16)
@@ -471,7 +479,8 @@ GIMP 3.2 (gi.repository.Gimp)
 
 Export prep always runs on a **duplicate** (user document unchanged). Alpha path uses
 `merge_visible_layers(CLIP_TO_IMAGE)` + GIMP 3 `file-*-export` only (no `file-*-save`).
-Install must include **`gimp_mcp_export.py`** and **`gimp_mcp_handles.py`** next to the plugin.
+Install must include **`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, and
+**`gimp_mcp_coords.py`** next to the plugin (7 files total with security/snapshot/plugin).
 
 For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).
 Do **not** confuse with `flatten_image`, which mutates the open document.

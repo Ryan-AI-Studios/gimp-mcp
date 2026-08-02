@@ -103,7 +103,7 @@ minting. Track IDs are creation order, not execution order.
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
 recipes → packaging → golden path → v1 polish. **0001–0007 Completed.** Orientation SoT is
 `orient_workspace` (state-manifest v1). Stable handles + STALE_HANDLE + `select_*` in **0007**.
-Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF **normalize** remains **0008**.
+Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF normalize + coordinate math → **0008 Ready**.
 Authoritative table: `conductor/conductor.md`.
 
 ---
@@ -208,6 +208,7 @@ Hard rules for product work:
   Re-orient after create/delete/reorder/merge/rasterize/relink. Manifest is **read-only**.
 - Never trust `status: success` alone — require composite/alpha/objective checks when vision matters.
 - Track layers by **stable handles**, not names (`orient_workspace` + `select_*`; re-orient or use mutator gen after structural ops; STALE_HANDLE on stale gen).
+- Spatial edits: use snapshot **mapping** + **0008** coordinate helpers; normalize EXIF before phase-sensitive work (plan Ready).
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
@@ -275,9 +276,9 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0008-CoordinateModelAndExif** — Proposed placeholder (needs full plan pass); prior **0007 Completed** PR #6 / main@33df2b5 |
+| Active focus | **0008-CoordinateModelAndExif** — implemented on feature branch (offline gates green; live EXIF matrix waived); next track **0009** |
 | Track count | 0001–0028 (see conductor.md) |
-| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep). PyPI has mcp 2.x / fastmcp 3.4+ — **do not major-bump** casually. |
+| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep). PyPI has mcp 2.x / fastmcp 3.4+ — **do not major-bump** casually. No Pillow. |
 
 ### 0005 completion notes (planners)
 
@@ -295,7 +296,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **selected:** `displays[0]` only; no displays → all `selected: false`.
 - **Hygiene:** `get_image_metadata(image_index)` three coordinated edits (server + dispatcher + plugin).
 - **Guards:** summary_only count + `_iter_layers_recursive` also depth/visited (Codex P1).
-- **OOS still:** EXIF normalize (**0008**), CLI orient (**0012**). Handles/STALE → **0007 Completed**.
+- **OOS still:** CLI orient (**0012**). EXIF normalize → **0008 Ready plan**. Handles/STALE → **0007 Completed**.
 - Residuals: live GIMP matrix (ops); large manifest size → **0023**.
 - Codex final: **PASS WITH DEFERRED P3** (live matrix).
 
@@ -309,8 +310,19 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Tools:** `select_image` / `select_layers` (handles only; MAX=64; no Display.new; float → SELECTION_CONFLICT).
 - **Mutators:** structural success returns `generation` + `handle`; never bump snapshot/export dups.
 - **Capability:** `stable_handle_registry: true`.
-- **OOS residuals:** full name ban (**0010**), error envelope (**0011**), CLI exit 5 (**0012**), tattoos (**0009/0013**), EXIF (**0008**).
+- **OOS residuals:** full name ban (**0010**), error envelope (**0011**), CLI exit 5 (**0012**), tattoos (**0009/0013**). EXIF → **0008 Ready plan**.
 - Codex final: **PASS WITH DEFERRED P3** (live matrix waiver).
+
+### 0008 completion notes (planners / implementers)
+
+- **Status:** Implemented (feature branch); offline full gate green; live EXIF matrix **waived**.
+- **Core shipped:** pure **`gimp_mcp_coords.py` as 7th plug-in file**; ordered EXIF ops (5/7 flip then rotate); mapping enrichment on **three** paths; four host `map_*` tools; **`normalize_image_orientation`**.
+- **Default mode:** **`assume_pixels_upright`** (set tags to 1 only). Never `policy_rotate`. `trust_tag` opt-in.
+- **Normalize:** direct `image.rotate`/`flip` + own gen bump; undo group; both EXIF tags; `METADATA_WRITE_FAILED` on set_metadata false.
+- **Rounding:** `int(round(x))` half-even. **Padding:** 0. Capability `coordinate_exif_normalized: true`.
+- **Session:** `_orientation_normalized` synced with gen prune/close; honesty = session flag OR tag identity.
+- **Residuals:** legacy `_rotate_image`/`_flip_image` gen gaps; nested offset live proof; CLI ExifTool → **0012**.
+- **Next:** **0009-LayerPolicyAndCheckpoints**.
 
 ---
 
@@ -318,6 +330,9 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-02 | **0008 implemented:** gimp_mcp_coords, mapping three-path, normalize_image_orientation, map_* x4; offline gate green; live EXIF waived |
+| 2026-08-02 | Folded AI-review into **0008**: default assume_pixels_upright; ordered 5/7; three mapping edits; ship coords; METADATA_WRITE_FAILED |
+| 2026-08-02 | Full plan **0008** CoordinateModelAndExif: coords math, EXIF normalize, mapping fields; Ready — not started |
 | 2026-08-02 | **0007 Completed:** stable handles, STALE_HANDLE, select_*; PR #6; Codex PASS WITH DEFERRED P3; next=0008 |
 | 2026-08-02 | Folded AI-review into **0007**: H1–H5, ship handles module, SELECTION_CONFLICT, immutable fingerprint, no Display.new |
 | 2026-08-02 | Full plan **0007** StableHandleRegistry: generation registry, STALE_HANDLE, select_*; Ready — not started |

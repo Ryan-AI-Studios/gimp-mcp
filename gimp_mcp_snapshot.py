@@ -115,11 +115,17 @@ def build_mapping_metadata(
     region: Mapping[str, Any] | None = None,
     composite_method: str = COMPOSITE_METHOD_MERGE,
     mode: str = MODE_VISIBLE_COMPOSITE,
+    pixel_orientation_normalized: bool = False,
+    exif_orientation_original: int | None = None,
 ) -> dict[str, Any]:
     """Build structuredContent mapping for canvas↔snapshot coordinate recovery.
 
     When *region* is set, ``scale_* = rendered / region_*`` (region-relative).
     Full-canvas: ``scale_* = rendered / source_*``.
+
+    Additive coordinate-declaration fields (track 0008): coordinate space,
+    axes, padding=0, view_rotation_ignored, and snapshot-time EXIF/normalize
+    honesty flags. Existing keys are unchanged.
     """
     region_out: dict[str, int] | None = None
     if region is not None:
@@ -168,6 +174,16 @@ def build_mapping_metadata(
         "scale_y": float(scale_y),
         "region": region_out,
         "composite_method": composite_method,
+        # Coordinate declaration (0008) — additive; padding 0 under resize-fit
+        "coordinate_space": "image-pixels",
+        "origin": "top-left",
+        "x_axis": "right",
+        "y_axis": "down",
+        "preview_padding_x": 0,
+        "preview_padding_y": 0,
+        "view_rotation_ignored": True,
+        "pixel_orientation_normalized": bool(pixel_orientation_normalized),
+        "exif_orientation_original": exif_orientation_original,
     }
 
 
