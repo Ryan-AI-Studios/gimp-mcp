@@ -441,10 +441,18 @@ def strip_traceback_unless_debug(response: Mapping[str, Any]) -> dict[str, Any]:
 
     Legacy handlers that only set ``status``/``error`` get ``code=INTERNAL_ERROR``
     so the wire envelope always carries a structured code (DoD-6).
+
+    Also sanitizes ``error`` strings that embedded ``traceback.format_exc()``
+    into the message body (common pre-0003 pattern).
     """
     out = dict(response)
     if not debug_enabled():
         out.pop("traceback", None)
+        err = out.get("error")
+        if isinstance(err, str) and "Traceback (most recent call last)" in err:
+            # Keep the first line / message before the traceback dump.
+            head = err.split("Traceback (most recent call last)", 1)[0].rstrip("\n: ")
+            out["error"] = head if head else "Internal error"
     if out.get("status") == "error" and "code" not in out:
         out["code"] = CODE_INTERNAL
     return out

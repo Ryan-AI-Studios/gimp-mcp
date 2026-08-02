@@ -471,7 +471,7 @@ def test_send_command_refuses_without_token(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.delenv(sec.ENV_TOKEN, raising=False)
     import gimp_mcp_server as server
 
-    monkeypatch.setattr(server, "_ensure_session_token", lambda: None)
+    monkeypatch.setattr(server, "_ensure_session_token", lambda *a, **k: None)
     conn = server.GimpConnection(host="127.0.0.1", port=9877)
 
     class _FakeSock:
@@ -498,3 +498,43 @@ def test_non_loopback_warns(
     assert sec.assert_bind_host("0.0.0.0") == "0.0.0.0"
     err = capsys.readouterr().err
     assert "non-loopback" in err.lower() or "WARNING" in err
+
+
+def test_strip_sanitizes_embedded_traceback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(sec.ENV_DEBUG, raising=False)
+    embedded = (
+        "Error getting GIMP info: boom\n"
+        "Traceback (most recent call last):\n"
+        '  File "x.py", line 1, in <module>\n'
+        "RuntimeError: boom"
+    )
+    cleaned = sec.strip_traceback_unless_debug(
+        {"status": "error", "error": embedded, "traceback": "stack"}
+    )
+    assert "Traceback" not in cleaned["error"]
+    assert "traceback" not in cleaned
+    assert cleaned["code"] == sec.CODE_INTERNAL
+
+
+def test_reset_connection_clears_token_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """restart_server recovery must drop cached file token (Codex P2)."""
+    import gimp_mcp_server as server
+
+    monkeypatch.setattr(server, "_session_token", "stale-token")
+    monkeypatch.setattr(server, "_token_load_attempted", True)
+    server.reset_gimp_connection()
+    assert server._session_token is None
+    assert server._token_load_attempted is False
+
+
+def test_close_image_uses_fspath_for_gio() -> None:
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    m = re.search(
+        r"(    def _close_image\(self.*?)(?=\n    def |\nclass |\Z)",
+        text,
+        re.DOTALL,
+    )
+    assert m is not None
+    body = m.group(1)
+    assert "os.fspath(safe_path)" in body or "str(safe_path)" in body

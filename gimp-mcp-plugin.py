@@ -1191,9 +1191,8 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": metadata}
 
         except Exception as e:
-            error_msg = f"Error getting image metadata: {e!s}\n{traceback.format_exc()}"
-            print(error_msg)
-            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+            print(f"Error getting image metadata: {e!s}")
+            return _sec.redact_error(e, message=f"Error getting image metadata: {e!s}")
 
     def _base_type_to_string(self, base_type):
         """Convert GIMP base type enum to string."""
@@ -1547,8 +1546,8 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": gimp_info}
 
         except Exception as e:
-            error_msg = f"Error getting GIMP info: {e!s}\n{traceback.format_exc()}"
-            return {"status": "error", "error": error_msg, "traceback": traceback.format_exc()}
+            print(f"Error getting GIMP info: {e!s}")
+            return _sec.redact_error(e, message=f"Error getting GIMP info: {e!s}")
 
     def _get_context_state(self):
         """Get current GIMP context state (colors, brush, tool settings)."""
@@ -1646,8 +1645,8 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "success", "results": context_state}
 
         except Exception as e:
-            error_msg = f"Error getting context state: {e!s}\n{traceback.format_exc()}"
-            return {"status": "error", "error": error_msg, "traceback": traceback.format_exc()}
+            print(f"Error getting context state: {e!s}")
+            return _sec.redact_error(e, message=f"Error getting context state: {e!s}")
 
     def _restart_server(self):
         """Gracefully restart the MCP socket server in-place."""
@@ -4391,7 +4390,7 @@ class MCPPlugin(Gimp.PlugIn):
                 safe_path, err = self._jail_path(xcf_path)
                 if err is not None:
                     return err
-                gio_file = Gio.File.new_for_path(safe_path)
+                gio_file = Gio.File.new_for_path(os.fspath(safe_path))
                 pdb = Gimp.get_pdb()
                 proc = pdb.lookup_procedure("gimp-xcf-save")
                 if proc:

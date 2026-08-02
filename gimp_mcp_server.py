@@ -28,14 +28,25 @@ except sec.SecurityError as _bind_err:
     GIMP_HOST = sec.DEFAULT_HOST
 GIMP_PORT = sec.get_port()
 
-# Lazy session token (plugin may write the file after MCP server process starts)
+# Lazy session token (plugin may write the file after MCP server process starts).
+# File-backed tokens rotate on plugin start — cache must be cleared on restart /
+# AUTH_FAILED so a long-lived MCP process reloads the new file token.
 _session_token: str | None = None
 _token_load_attempted = False
 
 
-def _ensure_session_token() -> str | None:
+def _clear_session_token() -> None:
+    """Invalidate cached session token (plugin restart / AUTH_FAILED recovery)."""
+    global _session_token, _token_load_attempted
+    _session_token = None
+    _token_load_attempted = False
+
+
+def _ensure_session_token(*, force_reload: bool = False) -> str | None:
     """Prefer GIMP_MCP_TOKEN env; else retry-read token file on first use."""
     global _session_token, _token_load_attempted
+    if force_reload:
+        _clear_session_token()
     if _session_token:
         return _session_token
     env_tok = os.environ.get(sec.ENV_TOKEN)
@@ -100,6 +111,27 @@ class GimpConnection:
             self.sock = None
 
     def send_command(self, command_type: str, params: dict[str, Any] | None = None):
+        """Send authenticated JSON; reload token once on AUTH_FAILED (plugin rotated)."""
+        last_error: Exception | None = None
+        for attempt in range(2):
+            try:
+                return self._send_command_once(
+                    command_type, params, force_reload_token=(attempt > 0)
+                )
+            except Exception as e:
+                last_error = e
+                raise
+        if last_error:
+            raise last_error
+        raise RuntimeError("send_command failed without error")
+
+    def _send_command_once(
+        self,
+        command_type: str,
+        params: dict[str, Any] | None,
+        *,
+        force_reload_token: bool,
+    ) -> Any:
         if not self.sock:
             self.connect()
         sock = self.sock
@@ -108,7 +140,7 @@ class GimpConnection:
                 f"Could not connect to GIMP at {self.host}:{self.port}. "
                 "Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
             )
-        token = _ensure_session_token()
+        token = _ensure_session_token(force_reload=force_reload_token)
         if not token:
             raise ConnectionError(
                 "No session token available — refusing to send unauthenticated TCP "
@@ -133,7 +165,19 @@ class GimpConnection:
                     break
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
-            return json.loads(response_data.decode("utf-8"))
+            result = json.loads(response_data.decode("utf-8"))
+            # Plugin may have rotated file token after GIMP restart
+            if (
+                isinstance(result, dict)
+                and result.get("code") == sec.CODE_AUTH_FAILED
+                and not force_reload_token
+                and not os.environ.get(sec.ENV_TOKEN)
+            ):
+                logger.info("AUTH_FAILED — reloading session token and retrying once")
+                _clear_session_token()
+                self.disconnect()
+                return self._send_command_once(command_type, params, force_reload_token=True)
+            return result
         except Exception as e:
             logger.error(f"Communication error: {e}")
             raise Exception(f"Error communicating with GIMP: {e}")
@@ -158,6 +202,8 @@ def reset_gimp_connection() -> None:
     if _gimp_connection:
         _gimp_connection.disconnect()
     _gimp_connection = None
+    # Plugin may regenerate file token on restart; drop cached secret.
+    _clear_session_token()
 
 
 # MCP server
