@@ -1919,7 +1919,8 @@ class MCPPlugin(Gimp.PlugIn):
             selected = list(image.get_selected_layers() or [])
         except (AttributeError, RuntimeError, TypeError):
             selected = []
-        for layer in self._iter_layers_recursive(selected, visible_only=False):
+        # Selected layers: only visible ones (invisible selection must not force alpha).
+        for layer in self._iter_layers_recursive(selected, visible_only=True):
             try:
                 if layer.has_alpha():
                     return True
@@ -2072,7 +2073,20 @@ class MCPPlugin(Gimp.PlugIn):
             pdb = Gimp.get_pdb()
             proc_name = _exp.pdb_procedure_for_format(policy.format)
             if proc_name is None:
-                proc_name = "file-png-export"
+                # Never silently substitute PNG for an unsupported format.
+                return _exp.build_export_error(
+                    code=_exp.CODE_UNSUPPORTED_FORMAT,
+                    error=(
+                        f"Unsupported export format {policy.format!r} "
+                        f"(UNSUPPORTED_FORMAT). Supported formats: "
+                        f"{_exp.SUPPORTED_EXPORT_FORMATS_DISPLAY}."
+                    ),
+                    file_path=file_path,
+                    preserve_alpha=policy.preserve_alpha,
+                    preflight_has_alpha=preflight_has_alpha,
+                    format=policy.format,
+                    export_method=export_method,
+                )
             proc = pdb.lookup_procedure(proc_name) if proc_name else None
             used_degraded = False
 
@@ -2146,9 +2160,23 @@ class MCPPlugin(Gimp.PlugIn):
                             pdb_procedure=pdb_procedure,
                         )
 
-                # PNG RGBA8 when preserving alpha and preflight saw alpha
+                # PNG RGBA8 when preserving alpha and preflight saw alpha (DoD-12 fail-closed)
                 if policy.format == "png" and policy.preserve_alpha and preflight_has_alpha:
-                    self._set_png_rgba8_format(cfg, property_errors)
+                    if not self._set_png_rgba8_format(cfg, property_errors):
+                        return _exp.build_export_error(
+                            code=_exp.CODE_EXPORT_FAILED,
+                            error=(
+                                "Failed to set PNG RGBA8 pixel format (alpha-critical); "
+                                "refusing to run export without guaranteed alpha pixel format"
+                            ),
+                            file_path=file_path,
+                            property_errors=property_errors,
+                            preserve_alpha=True,
+                            preflight_has_alpha=preflight_has_alpha,
+                            format=policy.format,
+                            export_method=export_method,
+                            pdb_procedure=pdb_procedure,
+                        )
 
                 # Best-effort quality knobs (not alpha-critical)
                 if policy.format == "jpeg":
@@ -2429,11 +2457,9 @@ class MCPPlugin(Gimp.PlugIn):
             # MCP schema uses format; raw TCP/demos may send file_type
             fmt = params.get("format", params.get("file_type", "png"))
             quality = int(params.get("quality", 90))
-            flatten = bool(params.get("flatten", False))
-            preserve_alpha = params.get("preserve_alpha", None)
-            if preserve_alpha is not None:
-                preserve_alpha = bool(preserve_alpha)
-            verify = bool(params.get("verify", True))
+            flatten = _exp.coerce_bool(params.get("flatten", False), default=False)
+            preserve_alpha = _exp.coerce_optional_bool(params.get("preserve_alpha", None))
+            verify = _exp.coerce_bool(params.get("verify", True), default=True)
             image = self._get_image(image_index)
             result = self._export_to_path(
                 image,
@@ -2469,11 +2495,9 @@ class MCPPlugin(Gimp.PlugIn):
             quality = int(params.get("quality", 90))
             name_pattern = params.get("name_pattern", "{name}")
             image_index = params.get("image_index", None)
-            flatten = bool(params.get("flatten", False))
-            preserve_alpha = params.get("preserve_alpha", None)
-            if preserve_alpha is not None:
-                preserve_alpha = bool(preserve_alpha)
-            verify = bool(params.get("verify", True))
+            flatten = _exp.coerce_bool(params.get("flatten", False), default=False)
+            preserve_alpha = _exp.coerce_optional_bool(params.get("preserve_alpha", None))
+            verify = _exp.coerce_bool(params.get("verify", True), default=True)
 
             images = Gimp.get_images()
             if not images:
@@ -2505,14 +2529,26 @@ class MCPPlugin(Gimp.PlugIn):
                         verify=verify,
                     )
                     if result.get("status") == "error":
-                        errors.append(
-                            {
-                                "index": idx,
-                                "error": result.get("error"),
-                                "code": result.get("code"),
-                                "file_path": out_path,
-                            }
-                        )
+                        # Forward full structured export fields (ALPHA_LOST contract).
+                        err_item = {
+                            "index": idx,
+                            "error": result.get("error"),
+                            "code": result.get("code"),
+                            "file_path": result.get("file_path", out_path),
+                        }
+                        for key in (
+                            "left_on_disk",
+                            "png_color_type",
+                            "preflight_has_alpha",
+                            "property_errors",
+                            "format",
+                            "preserve_alpha",
+                            "export_method",
+                            "pdb_procedure",
+                        ):
+                            if key in result:
+                                err_item[key] = result[key]
+                        errors.append(err_item)
                     else:
                         exported.append(
                             {

@@ -456,7 +456,7 @@ Export prep always runs on a **duplicate** (user document unchanged). Alpha path
 `merge_visible_layers(CLIP_TO_IMAGE)` + GIMP 3 `file-*-export` only (no `file-*-save`).
 Install must include **`gimp_mcp_export.py`** next to the plugin.
 
-For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).  
+For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).
 Do **not** confuse with `flatten_image`, which mutates the open document.
 
 ### GIMP 3.2 Compatibility Notes

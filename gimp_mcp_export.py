@@ -48,11 +48,14 @@ CODE_ALPHA_LOST = "ALPHA_LOST"
 CODE_ALPHA_UNSUPPORTED_FORMAT = "ALPHA_UNSUPPORTED_FORMAT"
 CODE_POLICY_CONFLICT = "POLICY_CONFLICT"
 CODE_EXPORT_FAILED = "EXPORT_FAILED"
+CODE_UNSUPPORTED_FORMAT = "UNSUPPORTED_FORMAT"
 
 # Formats that can embed an alpha channel.
 ALPHA_CAPABLE_FORMATS: frozenset[str] = frozenset({"png", "webp", "tiff"})
 OPAQUE_ONLY_FORMATS: frozenset[str] = frozenset({"jpeg", "jpg"})
-
+# Normalized formats with a mapped GIMP 3 file-*-export procedure.
+SUPPORTED_EXPORT_FORMATS: frozenset[str] = frozenset({"png", "jpeg", "webp", "tiff"})
+SUPPORTED_EXPORT_FORMATS_DISPLAY = "png/jpeg/webp/tiff"
 # PNG IHDR color types (PNG spec)
 PNG_COLOR_TYPE_GRAY = 0
 PNG_COLOR_TYPE_RGB = 2
@@ -102,9 +105,46 @@ def normalize_format(fmt: str) -> str:
     return f
 
 
+def is_supported_export_format(fmt: str) -> bool:
+    """True when *fmt* maps to a GIMP 3 ``file-*-export`` procedure we support."""
+    return normalize_format(fmt) in SUPPORTED_EXPORT_FORMATS
+
+
 def can_preserve_alpha_for_format(fmt: str) -> bool:
     """True when the container format can store an alpha channel."""
     return normalize_format(fmt) in ALPHA_CAPABLE_FORMATS
+
+
+def coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce TCP/JSON-ish values to bool without ``bool(\"false\") is True``.
+
+    - ``None`` → *default*
+    - ``bool`` → as-is
+    - ``str`` (case-insensitive): ``true``/``1``/``yes`` → True;
+      ``false``/``0``/``no``/``""`` → False; other strings → *default*
+    - ``int`` (and other numbers): ``0`` → False, nonzero → True
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "1", "yes"):
+            return True
+        if s in ("false", "0", "no", ""):
+            return False
+        return default
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    return bool(value)
+
+
+def coerce_optional_bool(value: Any) -> bool | None:
+    """Like :func:`coerce_bool` but ``None`` stays ``None`` (optional tri-state)."""
+    if value is None:
+        return None
+    return coerce_bool(value, default=False)
 
 
 def format_capability_matrix() -> dict[str, bool]:
@@ -139,6 +179,21 @@ def resolve_export_policy(
     fmt = normalize_format(format)
     flatten_b = bool(flatten)
     verify_b = bool(verify)
+
+    # Reject formats with no mapped file-*-export (no silent PNG fallback).
+    if fmt not in SUPPORTED_EXPORT_FORMATS:
+        return ResolvedExportPolicy(
+            preserve_alpha=bool(preserve_alpha) if preserve_alpha is not None else False,
+            flatten=flatten_b,
+            export_method=EXPORT_METHOD_DIRECT,
+            verify=verify_b,
+            error=(
+                f"Unsupported export format {fmt!r} (UNSUPPORTED_FORMAT). "
+                f"Supported formats: {SUPPORTED_EXPORT_FORMATS_DISPLAY}."
+            ),
+            code=CODE_UNSUPPORTED_FORMAT,
+            format=fmt,
+        )
 
     # Explicit conflict: cannot flatten and preserve alpha.
     if flatten_b and preserve_alpha is True:
@@ -221,7 +276,7 @@ def resolve_export_policy(
             format=fmt,
         )
 
-    # JPEG / unknown opaque formats: no alpha.
+    # JPEG (opaque-only supported format): no alpha.
     # Prefer flatten for multi-layer jpeg when caller left defaults.
     return ResolvedExportPolicy(
         preserve_alpha=False,

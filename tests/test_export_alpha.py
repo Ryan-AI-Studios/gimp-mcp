@@ -232,11 +232,12 @@ def test_policy_full_matrix_no_unexpected_errors() -> None:
         for pa in preserves:
             for flat in flattens:
                 p = exp.resolve_export_policy(fmt, pa, flat)
-                # Only two error classes allowed
+                # Only known error classes for supported formats
                 if p.error is not None:
                     assert p.code in (
                         exp.CODE_ALPHA_UNSUPPORTED_FORMAT,
                         exp.CODE_POLICY_CONFLICT,
+                        exp.CODE_UNSUPPORTED_FORMAT,
                     )
                 else:
                     assert p.code is None
@@ -249,6 +250,43 @@ def test_policy_full_matrix_no_unexpected_errors() -> None:
                     if p.preserve_alpha:
                         assert p.flatten is False
                         assert p.export_method == exp.EXPORT_METHOD_MERGE
+
+
+def test_policy_unsupported_format_bmp_gif() -> None:
+    """P1-1: bmp/gif must not resolve as success or silent PNG."""
+    for fmt in ("bmp", "gif", "BMP", "heif", "avif"):
+        p = exp.resolve_export_policy(fmt, None, False)
+        assert p.error is not None
+        assert p.code == exp.CODE_UNSUPPORTED_FORMAT
+        assert "png" in (p.error or "").lower() or "Supported" in (p.error or "")
+        assert exp.pdb_procedure_for_format(fmt) is None
+    assert exp.is_supported_export_format("png") is True
+    assert exp.is_supported_export_format("bmp") is False
+
+
+def test_coerce_bool_stringly_tcp() -> None:
+    """P3-1: bool('false') must not become True."""
+    assert exp.coerce_bool(None, default=False) is False
+    assert exp.coerce_bool(None, default=True) is True
+    assert exp.coerce_bool(True) is True
+    assert exp.coerce_bool(False) is False
+    assert exp.coerce_bool("true") is True
+    assert exp.coerce_bool("TRUE") is True
+    assert exp.coerce_bool("1") is True
+    assert exp.coerce_bool("yes") is True
+    assert exp.coerce_bool("false") is False
+    assert exp.coerce_bool("FALSE") is False
+    assert exp.coerce_bool("0") is False
+    assert exp.coerce_bool("no") is False
+    assert exp.coerce_bool("") is False
+    assert exp.coerce_bool(0) is False
+    assert exp.coerce_bool(1) is True
+    assert exp.coerce_bool(2) is True
+    # Optional tri-state
+    assert exp.coerce_optional_bool(None) is None
+    assert exp.coerce_optional_bool("false") is False
+    assert exp.coerce_optional_bool("true") is True
+    assert exp.coerce_optional_bool(0) is False
 
 
 # ---------------------------------------------------------------------------
@@ -415,10 +453,13 @@ def test_pdb_procedure_map() -> None:
     assert exp.pdb_procedure_for_format("jpg") == "file-jpeg-export"
     assert exp.pdb_procedure_for_format("webp") == "file-webp-export"
     assert exp.pdb_procedure_for_format("tiff") == "file-tiff-export"
+    assert exp.pdb_procedure_for_format("bmp") is None
+    assert exp.pdb_procedure_for_format("gif") is None
     # No -save names
     for v in exp.PDB_EXPORT.values():
         assert v.endswith("-export")
         assert "-save" not in v
+    assert exp.CODE_UNSUPPORTED_FORMAT == "UNSUPPORTED_FORMAT"
 
 
 def test_png_pixel_format_candidates_include_documented() -> None:
@@ -519,9 +560,59 @@ def test_preflight_has_alpha_walks_groups_recursively() -> None:
     assert "get_children" in walker or "_layer_children" in walker
     # visible_only path used for composite-relevant alpha
     assert "visible_only" in preflight
+    # P2-1: selected-layer walk must use visible_only=True (not False)
+    assert "visible_only=True" in preflight
+    assert (
+        re.search(
+            r"_iter_layers_recursive\(\s*selected\s*,\s*visible_only\s*=\s*False",
+            preflight,
+        )
+        is None
+    ), "selected-layer preflight must not use visible_only=False"
+    assert re.search(
+        r"_iter_layers_recursive\(\s*selected\s*,\s*visible_only\s*=\s*True",
+        preflight,
+    ), "selected-layer preflight must use visible_only=True"
     children = _method_body(text, "_layer_children")
     assert "get_children" in children
     assert "is_group" in children
+
+
+def test_export_path_no_silent_png_format_fallback() -> None:
+    """P1-1: never substitute file-png-export when pdb_procedure_for_format returns None."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_export_to_path")
+    # Ban the silent fallback pattern
+    assert not re.search(
+        r'proc_name\s*=\s*["\']file-png-export["\']',
+        body,
+    ), "must not assign file-png-export as silent fallback after None map lookup"
+    assert "CODE_UNSUPPORTED_FORMAT" in body or "UNSUPPORTED_FORMAT" in body
+    assert "pdb_procedure_for_format" in body
+
+
+def test_export_path_rgba8_fail_closed() -> None:
+    """P1-2 / DoD-12: RGBA8 set failure must error before proc.run when alpha-critical."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_export_to_path")
+    assert "_set_png_rgba8_format" in body
+    assert "if not self._set_png_rgba8_format" in body or re.search(
+        r"if not .*_set_png_rgba8_format",
+        body,
+    )
+    assert "Failed to set PNG RGBA8" in body or "RGBA8 pixel format" in body
+    assert "CODE_EXPORT_FAILED" in body or "EXPORT_FAILED" in body
+
+
+def test_batch_export_errors_include_structured_fields() -> None:
+    """P2-2: batch error items must forward left_on_disk and related metadata."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_batch_export")
+    assert "left_on_disk" in body
+    assert "png_color_type" in body or "property_errors" in body
+    assert "preflight_has_alpha" in body
+    # Coercion helpers used for TCP stringly bools
+    assert "coerce_bool" in body or "coerce_optional_bool" in body
 
 
 def test_server_export_defaults() -> None:
