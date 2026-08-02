@@ -19,7 +19,7 @@ dependencies = [
 gimp-mcp-server = "gimp_mcp_server:main"
 
 [tool.setuptools]
-py-modules = ["gimp_mcp_server", "gimp_mcp_security"]
+py-modules = ["gimp_mcp_server", "gimp_mcp_security", "gimp_mcp_snapshot"]
 
 [dependency-groups]
 dev = [
@@ -67,7 +67,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["gimp_mcp_server", "gimp_mcp_security"]
+known-first-party = ["gimp_mcp_server", "gimp_mcp_security", "gimp_mcp_snapshot"]
 
 [tool.ruff.lint.per-file-ignores]
 # GIMP plug-in bootstrap: gi.require_version must precede gi.repository imports.
@@ -89,7 +89,7 @@ typeCheckingMode = "standard"
 # Typed surface: MCP server + unit tests only.
 # Permanent exclude: gimp-mcp-plugin.py (GIMP-embedded gi.repository — no host stubs).
 # Demos / scripts / live GIMP CLIs are runtime-only, not library-typed.
-include = ["gimp_mcp_server.py", "gimp_mcp_security.py", "tests"]
+include = ["gimp_mcp_server.py", "gimp_mcp_security.py", "gimp_mcp_snapshot.py", "tests"]
 exclude = [
     "**/__pycache__",
     ".venv",

@@ -20,13 +20,12 @@ import socket
 import traceback
 import threading
 import base64
-import tempfile
 import os
 import platform
 import signal
 
 # ---------------------------------------------------------------------------
-# Security policy (stdlib module — deploy gimp_mcp_security.py beside this file)
+# Security + snapshot helpers (stdlib modules — deploy beside this file)
 # ---------------------------------------------------------------------------
 _plugin_dir = os.path.dirname(os.path.abspath(__file__))
 if _plugin_dir not in sys.path:
@@ -38,6 +37,13 @@ except ImportError as _sec_imp_err:  # pragma: no cover - fail closed at runtime
         "gimp_mcp_security.py must sit next to gimp-mcp-plugin.py "
         f"(looked in {_plugin_dir}): {_sec_imp_err}"
     ) from _sec_imp_err
+try:
+    import gimp_mcp_snapshot as _snap
+except ImportError as _snap_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_snapshot.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_snap_imp_err}"
+    ) from _snap_imp_err
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
@@ -680,73 +686,55 @@ class MCPPlugin(Gimp.PlugIn):
             return _sec.redact_error(e, code=_sec.CODE_INTERNAL, message=str(e))
 
     def _get_current_image_bitmap(self, params=None):
-        """Get the current image as a base64-encoded bitmap with optional scaling and region selection."""
+        """Export the visible composite of a GIMP image as base64 PNG + mapping metadata.
+
+        Never mutates the user's original image. Works only on a duplicate:
+        Selection.none → merge_visible_layers(CLIP_TO_IMAGE) [or flatten fallback]
+        → optional region crop → optional scale → PNG export.
+        """
+        dup = None
+        temp_path = None
         try:
             if params is None:
                 params = {}
 
             print(f"Getting current image bitmap with params: {params}")
 
-            # Extract parameters
+            image_index = int(params.get("image_index", 0))
             max_width = params.get("max_width")
             max_height = params.get("max_height")
 
-            # Extract region parameters if provided
-            region = params.get("region", {})
+            # Normalize region (accepts x/y or origin_x/origin_y)
+            raw_region = params.get("region")
+            try:
+                region = _snap.normalize_region(raw_region) if raw_region else None
+            except (TypeError, ValueError) as e:
+                return {"status": "error", "error": f"Invalid region: {e!s}"}
 
-            # Validate region parameters if provided
+            origin_x = origin_y = region_width = region_height = None
+            region_max_w = region_max_h = None
+            region_requested = False
             if region:
-                # Validate region parameter types
-                for key, expected_type in [
-                    ("origin_x", int),
-                    ("origin_y", int),
-                    ("width", int),
-                    ("height", int),
-                    ("max_width", int),
-                    ("max_height", int),
-                ]:
-                    if key in region and region[key] is not None:
-                        if not isinstance(region[key], expected_type):
-                            return {
-                                "status": "error",
-                                "error": f"Region parameter '{key}' must be of type {expected_type.__name__}, got {type(region[key]).__name__}",
-                            }
-                        if region[key] < 0:
-                            return {
-                                "status": "error",
-                                "error": f"Region parameter '{key}' must be non-negative, got {region[key]}",
-                            }
+                origin_x = region.get("origin_x")
+                origin_y = region.get("origin_y")
+                region_width = region.get("width")
+                region_height = region.get("height")
+                region_max_w = region.get("max_width")
+                region_max_h = region.get("max_height")
+                region_requested = any(
+                    v is not None for v in (origin_x, origin_y, region_width, region_height)
+                )
 
-            origin_x = region.get("origin_x")
-            origin_y = region.get("origin_y")
-            region_width = region.get("width")
-            region_height = region.get("height")
-            scaled_to_width = region.get("max_width")  # Region scaling uses max_width/max_height
-            scaled_to_height = region.get("max_height")
+            # Select image (rejects negative / OOB)
+            try:
+                original_image = self._get_image(image_index)
+            except RuntimeError as e:
+                return {"status": "error", "error": str(e)}
 
-            # Get the current images
-            images = Gimp.get_images()
-            if not images:
-                return {"status": "error", "error": "No images are currently open in GIMP"}
+            source_width = original_image.get_width()
+            source_height = original_image.get_height()
 
-            # Use the first image (most recently active)
-            original_image = images[0]
-
-            # Get original image dimensions
-            orig_img_width = original_image.get_width()
-            orig_img_height = original_image.get_height()
-
-            # Determine working image and region
-            working_image = None
-            should_delete_working = False
-
-            # Case 1: Region selection
-            if any(
-                param is not None for param in [origin_x, origin_y, region_width, region_height]
-            ):
-                print("Processing region extraction...")
-
-                # Validate region parameters
+            if region_requested:
                 if (
                     origin_x is None
                     or origin_y is None
@@ -755,291 +743,302 @@ class MCPPlugin(Gimp.PlugIn):
                 ):
                     return {
                         "status": "error",
-                        "error": "For region selection, all parameters are required: origin_x, origin_y, width, height",
+                        "error": "For region selection, all parameters are required: "
+                        "origin_x/x, origin_y/y, width, height",
                     }
-
-                # Validate region bounds
                 if (
-                    origin_x < 0
-                    or origin_y < 0
-                    or origin_x + region_width > orig_img_width
-                    or origin_y + region_height > orig_img_height
+                    origin_x + region_width > source_width
+                    or origin_y + region_height > source_height
                 ):
                     return {
                         "status": "error",
-                        "error": f"Region bounds invalid. Image size: {orig_img_width}x{orig_img_height}, "
-                        f"requested region: ({origin_x},{origin_y}) {region_width}x{region_height}",
+                        "error": (
+                            f"Region bounds invalid. Image size: "
+                            f"{source_width}x{source_height}, "
+                            f"requested region: ({origin_x},{origin_y}) "
+                            f"{region_width}x{region_height}"
+                        ),
                     }
 
-                # Create new image with the region
-                working_image = Gimp.Image.new(
-                    region_width, region_height, original_image.get_base_type()
-                )
-                should_delete_working = True
+            # ---- Primary path: duplicate only; never touch original ----
+            dup = original_image.duplicate()
+            try:
+                dup.undo_disable()
+            except (AttributeError, RuntimeError) as e:
+                print(f"Warning: undo_disable on snapshot dup failed: {e}")
 
-                # Copy the region from original image
-                # First, select the region in the original image
-                original_image.select_rectangle(
-                    Gimp.ChannelOps.REPLACE, origin_x, origin_y, region_width, region_height
-                )
+            # Clear inherited selection so merge is not clipped — fail closed.
+            # GIMP Selection.none returns gboolean; treat explicit False as failure.
+            # (Exceptions and False must not proceed; GI None is treated as ok.)
+            self._selection_none_or_fail(dup, "Selection.none on snapshot dup failed")
 
-                # Get the active layer from original image
-                orig_layers = original_image.get_layers()
-                if not orig_layers:
-                    return {"status": "error", "error": "No layers found in original image"}
-
-                # Create a new layer in working image
-                # In GIMP 3.0+, use the image's base type instead of layer.get_image_type()
+            # Capture merge/flatten return layer — do not guess layers[0]
+            # (merge_visible_layers keeps invisible layers; layers[0] may be hidden).
+            composite_method = _snap.COMPOSITE_METHOD_MERGE
+            merged = None
+            try:
+                merged = dup.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
+            except (AttributeError, RuntimeError) as merge_err:
+                print(f"merge_visible_layers failed, trying flatten: {merge_err}")
+                self._selection_none_or_fail(dup, "Selection.none before flatten failed")
                 try:
-                    # Try to get layer type - fallback to image base type
-                    if hasattr(orig_layers[0], "get_type"):
-                        layer_type = orig_layers[0].get_type()
-                    else:
-                        # Use image base type as fallback
-                        layer_type = original_image.get_base_type()
-                except AttributeError:
-                    # Final fallback - use RGB
-                    layer_type = Gimp.ImageBaseType.RGB
-
-                new_layer = Gimp.Layer.new(
-                    working_image,
-                    "Region",
-                    region_width,
-                    region_height,
-                    layer_type,
-                    100,
-                    Gimp.LayerMode.NORMAL,
-                )
-                working_image.insert_layer(new_layer, None, 0)
-
-                # Copy and paste the selection
-                Gimp.edit_copy([orig_layers[0]])
-                floating_sel = Gimp.edit_paste(new_layer, True)[0]
-                Gimp.floating_sel_anchor(floating_sel)
-
-                # Clear selection
-                try:
-                    # Try different methods to clear selection based on GIMP version
-                    if hasattr(original_image, "select_none"):
-                        original_image.select_none()
-                    else:
-                        # Use Gimp.Selection.none() for GIMP 3.0+
-                        Gimp.Selection.none(original_image)
-                except (AttributeError, RuntimeError) as e:
-                    print(f"Warning: Could not clear selection: {e}")
-
+                    merged = dup.flatten()
+                    composite_method = _snap.COMPOSITE_METHOD_FLATTEN
+                except (AttributeError, RuntimeError) as flatten_err:
+                    raise RuntimeError(
+                        f"Composite failed: merge_visible_layers: {merge_err}; "
+                        f"flatten: {flatten_err}"
+                    ) from flatten_err
             else:
-                # Case 2: Full image
-                print("Processing full image...")
-                working_image = original_image
-                should_delete_working = False
+                if merged is None:
+                    print("merge_visible_layers returned None, trying flatten")
+                    self._selection_none_or_fail(dup, "Selection.none before flatten failed")
+                    try:
+                        merged = dup.flatten()
+                        composite_method = _snap.COMPOSITE_METHOD_FLATTEN
+                    except (AttributeError, RuntimeError) as flatten_err:
+                        raise RuntimeError(
+                            "Composite failed: merge_visible_layers returned None; "
+                            f"flatten: {flatten_err}"
+                        ) from flatten_err
 
-            # Now handle scaling if needed
-            final_image = working_image
-            should_delete_final = should_delete_working
+            if merged is None:
+                return {
+                    "status": "error",
+                    "error": "Composite merge/flatten returned no layer",
+                }
 
-            # Calculate target dimensions
-            current_width = working_image.get_width()
-            current_height = working_image.get_height()
+            # Crop region on the composite duplicate only
+            if region_requested:
+                print(
+                    f"Cropping composite region "
+                    f"({origin_x},{origin_y}) {region_width}x{region_height}"
+                )
+                dup.crop(region_width, region_height, origin_x, origin_y)
+
+            # Scale if max dimensions provided (region max_* preferred when set)
+            current_width = dup.get_width()
+            current_height = dup.get_height()
             target_width = current_width
             target_height = current_height
 
-            # Determine scaling target
-            if scaled_to_width is not None and scaled_to_height is not None:
-                # Region scaling - use scaled_to dimensions
-                max_w, max_h = scaled_to_width, scaled_to_height
+            if region_max_w is not None and region_max_h is not None:
+                max_w, max_h = int(region_max_w), int(region_max_h)
             elif max_width is not None and max_height is not None:
-                # Full image scaling - use max dimensions
-                max_w, max_h = max_width, max_height
+                max_w, max_h = int(max_width), int(max_height)
             else:
                 max_w = max_h = None
 
-            # Apply center inside scaling if target dimensions provided
             if max_w is not None and max_h is not None:
-                # Calculate center inside scaling
-                aspect_ratio = current_width / current_height
-                max_aspect_ratio = max_w / max_h
-
-                if aspect_ratio > max_aspect_ratio:
-                    # Width is the limiting factor
-                    target_width = max_w
-                    target_height = int(max_w / aspect_ratio)
-                else:
-                    # Height is the limiting factor
-                    target_height = max_h
-                    target_width = int(max_h * aspect_ratio)
-
-                print(
-                    f"Scaling from {current_width}x{current_height} to {target_width}x{target_height}"
+                target_width, target_height = _snap.compute_fit_scale(
+                    current_width, current_height, max_w, max_h
                 )
-
-                # Scale the image if dimensions changed
                 if target_width != current_width or target_height != current_height:
-                    # Create scaled image
-                    final_image = working_image.duplicate()
-                    should_delete_final = True
-
-                    # Scale the image with timeout consideration for large operations
                     scaling_ratio = (target_width * target_height) / (
                         current_width * current_height
                     )
-                    if scaling_ratio > LARGE_SCALING_THRESHOLD:  # Scaling up significantly
+                    if scaling_ratio > LARGE_SCALING_THRESHOLD:
                         print(
-                            f"Warning: Large scaling operation detected (ratio: {scaling_ratio:.2f}). This may take time."
+                            f"Warning: Large scaling operation detected "
+                            f"(ratio: {scaling_ratio:.2f}). This may take time."
                         )
+                    print(
+                        f"Scaling composite from {current_width}x{current_height} "
+                        f"to {target_width}x{target_height}"
+                    )
+                    dup.scale(target_width, target_height)
 
-                    try:
-                        final_image.scale(target_width, target_height)
-                    except RuntimeError as scale_error:
-                        # Clean up and return error for scaling failures
-                        if should_delete_final:
-                            try:
-                                final_image.delete()
-                            except (AttributeError, RuntimeError):
-                                pass
-                        raise RuntimeError(
-                            f"Failed to scale image from {current_width}x{current_height} to {target_width}x{target_height}: {scale_error}"
-                        )
-
-            # Create a temporary file for export
-            temp_fd, temp_path = tempfile.mkstemp(suffix=".png")
-            os.close(temp_fd)  # Close the file descriptor as GIMP will handle the file
-
-            try:
-                # Export the final image as PNG
-                # Get all layers - we'll export the flattened image
-                layers = final_image.get_layers()
-                if not layers:
-                    return {"status": "error", "error": "No layers found in the processed image"}
-
-                # For PNG export, we can use all layers or the active layer
+            # Export PNG via existing PDB paths (no Pillow).
+            # Prefer the merge/flatten return layer as drawable. Crop/scale may
+            # invalidate the proxy — re-resolve to a single safe layer only.
+            temp_path = str(_snap.snapshot_temp_path())
+            drawable = None
+            if merged is not None:
                 try:
-                    drawable = (
-                        final_image.get_selected_layers() or final_image.get_layers() or [None]
-                    )[0]
+                    _ = merged.get_width()
+                    drawable = merged
                 except (AttributeError, RuntimeError):
-                    # If get_active_layer doesn't exist or fails, use the first layer
-                    drawable = layers[0]
+                    drawable = None
 
-                if not drawable:
-                    drawable = layers[0]
-
-                # Export the image to PNG
+            if drawable is None:
                 try:
-                    # In GIMP 3.0, use the simplified export approach
-                    from gi.repository import Gio
+                    layers = list(dup.get_layers() or [])
+                except (AttributeError, RuntimeError, TypeError):
+                    layers = []
+                visible = []
+                for layer in layers:
+                    try:
+                        if layer.get_visible():
+                            visible.append(layer)
+                    except (AttributeError, RuntimeError):
+                        continue
+                if len(visible) == 1:
+                    drawable = visible[0]
+                elif len(layers) == 1:
+                    drawable = layers[0]
+                else:
+                    return {
+                        "status": "error",
+                        "error": "No drawable for export after composite",
+                    }
 
-                    file_obj = Gio.File.new_for_path(temp_path)
+            if not drawable:
+                return {
+                    "status": "error",
+                    "error": "No drawable for export after composite",
+                }
 
-                    # Use file-png-export with the correct parameters for GIMP 3.0
-                    export_proc = Gimp.get_pdb().lookup_procedure("file-png-export")
-                    if not export_proc:
-                        return {"status": "error", "error": "PNG export procedure not found"}
+            # Export PNG (no Pillow). Fail closed: never return success for empty
+            # or non-PNG bytes (mkstemp pre-creates an empty file).
+            export_errors: list[str] = []
+            try:
+                from gi.repository import Gio
 
+                file_obj = Gio.File.new_for_path(temp_path)
+                export_proc = Gimp.get_pdb().lookup_procedure("file-png-export")
+                if not export_proc:
+                    export_errors.append("PNG export procedure not found")
+                else:
                     export_config = export_proc.create_config()
-                    export_config.set_property("image", final_image)
+                    export_config.set_property("image", dup)
                     export_config.set_property("file", file_obj)
-                    # Try different property names that might exist
+                    drawable_set = False
                     try:
                         export_config.set_property("drawable", drawable)
+                        drawable_set = True
                     except Exception:
                         try:
                             export_config.set_property("drawables", [drawable])
-                        except Exception:
-                            # Some export procedures might not need drawable specification
-                            pass
+                            drawable_set = True
+                        except Exception as prop_err:
+                            # Do not run file-png-export without a drawable —
+                            # image-level fallbacks handle that path.
+                            export_errors.append(
+                                f"file-png-export drawable/drawables property failed: {prop_err}"
+                            )
 
-                    result = export_proc.run(export_config)
-                    print(f"Export result: {result}")
+                    if drawable_set:
+                        result = export_proc.run(export_config)
+                        print(f"Export result: {result}")
+                        if not _snap.validate_png_file(temp_path):
+                            export_errors.append(
+                                f"file-png-export produced empty/invalid PNG (result={result})"
+                            )
+            except Exception as export_error:
+                print(f"Export error: {export_error}")
+                export_errors.append(f"file-png-export error: {export_error}")
 
-                except Exception as export_error:
-                    print(f"Export error: {export_error}")
-                    # Fallback: try using the PDB directly with correct arguments
-                    try:
-                        from gi.repository import Gio
+            # Image-level fallbacks when primary path did not yield a valid PNG
+            if not _snap.validate_png_file(temp_path):
+                try:
+                    from gi.repository import Gio
 
-                        file_obj = Gio.File.new_for_path(temp_path)
+                    file_obj = Gio.File.new_for_path(temp_path)
+                    Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, dup, file_obj)
+                    print("Fallback export (Gimp.file_save) attempted")
+                    if not _snap.validate_png_file(temp_path):
+                        export_errors.append("Gimp.file_save produced empty/invalid PNG")
+                except Exception as fallback_error:
+                    print(f"Fallback export error: {fallback_error}")
+                    export_errors.append(f"Gimp.file_save: {fallback_error}")
 
-                        # Try alternative approach using Gimp.file_save with correct number of arguments
-                        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, final_image, file_obj)
-                        print("Fallback export successful")
-                    except Exception as fallback_error:
-                        print(f"Fallback export error: {fallback_error}")
-                        # Try another fallback using gimp-file-save PDB procedure
-                        try:
-                            pdb = Gimp.get_pdb()
-                            save_proc = pdb.lookup_procedure("gimp-file-save")
-                            if save_proc:
-                                save_config = save_proc.create_config()
-                                save_config.set_property("image", final_image)
-                                save_config.set_property("file", file_obj)
-                                save_result = save_proc.run(save_config)
-                                print(f"PDB save result: {save_result}")
-                            else:
-                                return {
-                                    "status": "error",
-                                    "error": f"All export methods failed: {export_error}, fallback: {fallback_error}",
-                                }
-                        except Exception as pdb_error:
-                            return {
-                                "status": "error",
-                                "error": f"All export methods failed: {export_error}, fallback: {fallback_error}, PDB: {pdb_error}",
-                            }
+            if not _snap.validate_png_file(temp_path):
+                try:
+                    from gi.repository import Gio
 
-                # Read the exported file and encode as base64
-                with open(temp_path, "rb") as f:
-                    image_data = f.read()
-                    encoded_image = base64.b64encode(image_data).decode("utf-8")
+                    file_obj = Gio.File.new_for_path(temp_path)
+                    pdb = Gimp.get_pdb()
+                    save_proc = pdb.lookup_procedure("gimp-file-save")
+                    if save_proc:
+                        save_config = save_proc.create_config()
+                        save_config.set_property("image", dup)
+                        save_config.set_property("file", file_obj)
+                        save_result = save_proc.run(save_config)
+                        print(f"PDB save result: {save_result}")
+                        if not _snap.validate_png_file(temp_path):
+                            export_errors.append(
+                                f"gimp-file-save produced empty/invalid PNG (result={save_result})"
+                            )
+                    else:
+                        export_errors.append("gimp-file-save procedure not found")
+                except Exception as pdb_error:
+                    export_errors.append(f"gimp-file-save: {pdb_error}")
 
-                # Get final image metadata
-                final_width = final_image.get_width()
-                final_height = final_image.get_height()
-
+            # Fail closed: never base64-encode empty mkstemp / garbage bytes
+            if not _snap.validate_png_file(temp_path):
+                detail = "; ".join(export_errors) if export_errors else "unknown"
                 return {
-                    "status": "success",
-                    "results": {
-                        "image_data": encoded_image,
-                        "format": "png",
-                        "width": final_width,
-                        "height": final_height,
-                        "original_width": orig_img_width,
-                        "original_height": orig_img_height,
-                        "encoding": "base64",
-                        "processing_applied": {
-                            "region_extracted": any(
-                                param is not None
-                                for param in [origin_x, origin_y, region_width, region_height]
-                            ),
-                            "scaled": target_width != current_width
-                            or target_height != current_height,
-                            "region_coords": {
-                                "x": origin_x,
-                                "y": origin_y,
-                                "w": region_width,
-                                "h": region_height,
-                            }
-                            if origin_x is not None
-                            else None,
-                        },
-                    },
+                    "status": "error",
+                    "error": (f"PNG export failed or produced empty/invalid file: {detail}"),
                 }
 
-            finally:
-                # Clean up temporary images
-                if should_delete_final and final_image != working_image:
-                    try:
-                        final_image.delete()
-                    except (AttributeError, RuntimeError) as e:
-                        print(f"Warning: Failed to delete final temporary image: {e}")
-                if should_delete_working and working_image != original_image:
-                    try:
-                        working_image.delete()
-                    except (AttributeError, RuntimeError) as e:
-                        print(f"Warning: Failed to delete working temporary image: {e}")
+            with open(temp_path, "rb") as f:
+                image_bytes = f.read()
+            if not _snap.validate_png_bytes(image_bytes):
+                return {
+                    "status": "error",
+                    "error": "PNG export validation failed: empty or non-PNG data",
+                }
+            encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
-                # Clean up the temporary file
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+            rendered_width = dup.get_width()
+            rendered_height = dup.get_height()
+
+            region_for_mapping = None
+            if region_requested:
+                region_for_mapping = {
+                    "origin_x": int(origin_x),
+                    "origin_y": int(origin_y),
+                    "width": int(region_width),
+                    "height": int(region_height),
+                }
+
+            mapping = _snap.build_mapping_metadata(
+                image_index=image_index,
+                source_width=source_width,
+                source_height=source_height,
+                rendered_width=rendered_width,
+                rendered_height=rendered_height,
+                region=region_for_mapping,
+                composite_method=composite_method,
+            )
+
+            return {
+                "status": "success",
+                "results": {
+                    "image_data": encoded_image,
+                    "format": "png",
+                    "width": rendered_width,
+                    "height": rendered_height,
+                    "original_width": source_width,
+                    "original_height": source_height,
+                    "encoding": "base64",
+                    "image_index": image_index,
+                    "mode": mapping["mode"],
+                    "scale_x": mapping["scale_x"],
+                    "scale_y": mapping["scale_y"],
+                    "region": mapping["region"],
+                    "composite_method": mapping["composite_method"],
+                    "source_width": source_width,
+                    "source_height": source_height,
+                    "rendered_width": rendered_width,
+                    "rendered_height": rendered_height,
+                    "processing_applied": {
+                        "region_extracted": region_requested,
+                        "scaled": (
+                            target_width != current_width or target_height != current_height
+                        ),
+                        "region_coords": {
+                            "x": origin_x,
+                            "y": origin_y,
+                            "w": region_width,
+                            "h": region_height,
+                        }
+                        if region_requested
+                        else None,
+                    },
+                },
+            }
 
         except (RuntimeError, AttributeError, OSError, ValueError) as e:
             return {
@@ -1047,6 +1046,17 @@ class MCPPlugin(Gimp.PlugIn):
                 "error": f"Processing error: {e!s}",
                 "traceback": traceback.format_exc(),
             }
+        finally:
+            if dup is not None:
+                try:
+                    dup.delete()
+                except (AttributeError, RuntimeError) as e:
+                    print(f"Warning: Failed to delete snapshot duplicate: {e}")
+            if temp_path is not None and os.path.exists(temp_path):
+                try:
+                    os.unlink(temp_path)
+                except OSError as e:
+                    print(f"Warning: Failed to unlink snapshot temp file: {e}")
 
     def _get_current_image_metadata(self):
         """Get comprehensive metadata about the current image without bitmap data."""
@@ -1691,6 +1701,25 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return _sec.redact_error(e, message=f"Restart failed: {e!s}")
 
+    def _selection_none_or_fail(self, image, context_msg):
+        """Clear selection on *image*; fail closed on exception or explicit False.
+
+        GIMP documents ``Selection.none`` as returning gboolean (TRUE on success).
+        Some GI bindings may return None for void-like wrappers — treat None as
+        success; only explicit False is a failure so merge is not selection-clipped.
+        """
+        try:
+            ok = Gimp.Selection.none(image)
+        except (AttributeError, RuntimeError) as e:
+            raise RuntimeError(
+                f"{context_msg} (cannot safely composite without clearing selection): {e}"
+            ) from e
+        if ok is False:
+            raise RuntimeError(
+                f"{context_msg} (Selection.none returned False; "
+                "cannot safely composite with inherited selection)"
+            )
+
     def _new_canvas(self, params):
         """Create a new blank canvas and open it in a GIMP display window."""
         try:
@@ -1766,6 +1795,8 @@ class MCPPlugin(Gimp.PlugIn):
         images = Gimp.get_images()
         if not images:
             raise RuntimeError("No images are currently open in GIMP")
+        if image_index < 0:
+            raise RuntimeError(f"image_index {image_index} is negative")
         if image_index >= len(images):
             raise RuntimeError(
                 f"image_index {image_index} out of range (only {len(images)} images open)"
