@@ -44,6 +44,13 @@ except ImportError as _snap_imp_err:  # pragma: no cover - fail closed at runtim
         "gimp_mcp_snapshot.py must sit next to gimp-mcp-plugin.py "
         f"(looked in {_plugin_dir}): {_snap_imp_err}"
     ) from _snap_imp_err
+try:
+    import gimp_mcp_export as _exp
+except ImportError as _exp_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_export.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_exp_imp_err}"
+    ) from _exp_imp_err
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
@@ -502,6 +509,8 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._export_image(j.get("params", {}))
             elif "type" in j and j["type"] == "batch_export":
                 return self._batch_export(j.get("params", {}))
+            elif "type" in j and j["type"] == "verify_alpha_channel":
+                return self._verify_alpha_channel(j.get("params", {}))
             # ── Category 2: Image Adjustments ────────────────────────────────
             elif "type" in j and j["type"] == "auto_levels":
                 return self._auto_levels(j.get("params", {}))
@@ -1841,8 +1850,131 @@ class MCPPlugin(Gimp.PlugIn):
             "none": Gimp.InterpolationType.NONE,
         }.get(interp.lower(), Gimp.InterpolationType.CUBIC)
 
-    def _export_to_path(self, image, file_path, fmt, quality, flatten):
-        """Export image to file_path in the given format. Returns file size in bytes.
+    def _layer_children(self, layer):
+        """Return child layers if *layer* is a group, else an empty list.
+
+        GIMP 3 group layers expose children via ``get_children()`` and/or
+        ``get_layers()``; prefer ``is_group()`` when available.
+        """
+        try:
+            if hasattr(layer, "is_group") and callable(layer.is_group):
+                try:
+                    if not layer.is_group():
+                        return []
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+            for attr in ("get_children", "get_layers"):
+                getter = getattr(layer, attr, None)
+                if not callable(getter):
+                    continue
+                try:
+                    kids = getter()
+                    if kids is not None:
+                        return list(kids)
+                except (AttributeError, RuntimeError, TypeError):
+                    continue
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        return []
+
+    def _iter_layers_recursive(self, layers, *, visible_only=False):
+        """Depth-first walk of layers including nested group children.
+
+        Yields every node (leaf and group). When *visible_only* is True, skips
+        invisible layers and does not descend into invisible groups (they do
+        not contribute to the visible composite).
+        """
+        stack = list(layers or [])
+        while stack:
+            layer = stack.pop(0)
+            if visible_only:
+                try:
+                    if not bool(layer.get_visible()):
+                        continue
+                except (AttributeError, RuntimeError, TypeError):
+                    pass
+            yield layer
+            children = self._layer_children(layer)
+            if children:
+                # Preserve document order among siblings (depth-first).
+                stack[0:0] = children
+
+    def _preflight_has_alpha(self, image):
+        """Read-only: True if any visible layer/drawable reports has_alpha().
+
+        Walks nested layer groups recursively (spec §2.3: any visible drawable).
+        """
+        try:
+            layers = list(image.get_layers() or [])
+        except (AttributeError, RuntimeError, TypeError):
+            layers = []
+        for layer in self._iter_layers_recursive(layers, visible_only=True):
+            try:
+                if layer.has_alpha():
+                    return True
+            except (AttributeError, RuntimeError, TypeError):
+                continue
+        # Also check selected drawables (may include items outside top-level walk)
+        try:
+            selected = list(image.get_selected_layers() or [])
+        except (AttributeError, RuntimeError, TypeError):
+            selected = []
+        # Selected layers: only visible ones (invisible selection must not force alpha).
+        for layer in self._iter_layers_recursive(selected, visible_only=True):
+            try:
+                if layer.has_alpha():
+                    return True
+            except (AttributeError, RuntimeError, TypeError):
+                continue
+        return False
+
+    def _set_export_property_critical(self, cfg, name, value, property_errors, required=True):
+        """Set a config property; on failure append to property_errors (no bare pass)."""
+        try:
+            cfg.set_property(name, value)
+            return True
+        except Exception as e:
+            msg = f"set_property({name!r}) failed: {e}"
+            print(f"[MCP] export critical property: {msg}")
+            if required:
+                property_errors.append(msg)
+            return False
+
+    def _set_png_rgba8_format(self, cfg, property_errors):
+        """Force PNG pixel format to RGBA8 via Phase-0 candidate props/values."""
+        last_err = None
+        for prop in _exp.PNG_PIXEL_FORMAT_PROP_CANDIDATES:
+            for val in _exp.PNG_RGBA8_VALUE_CANDIDATES:
+                try:
+                    cfg.set_property(prop, val)
+                    print(f"[MCP] PNG pixel format set: {prop}={val!r}")
+                    return True
+                except Exception as e:
+                    last_err = e
+                    continue
+        msg = (
+            "Failed to set PNG pixel format to RGBA8 "
+            f"(tried props={list(_exp.PNG_PIXEL_FORMAT_PROP_CANDIDATES)}, "
+            f"values={list(_exp.PNG_RGBA8_VALUE_CANDIDATES)}): {last_err}"
+        )
+        print(f"[MCP] {msg}")
+        property_errors.append(msg)
+        return False
+
+    def _export_to_path(
+        self,
+        image,
+        file_path,
+        fmt,
+        quality,
+        flatten=False,
+        preserve_alpha=None,
+        verify=True,
+    ):
+        """Export image to file_path; return rich result dict (success or error).
+
+        Never mutates the caller's original image — prep runs on a duplicate.
+        Internal opaque callers should pass flatten=True (auto preserve_alpha=False).
 
         Defense-in-depth: re-check path jail even if callers already jailed.
         """
@@ -1853,59 +1985,343 @@ class MCPPlugin(Gimp.PlugIn):
             raise _sec.SecurityError(_sec.CODE_PATH_DENIED, err.get("error", "PATH_DENIED"))
         file_path = str(safe)
 
-        if flatten:
-            image = image.duplicate()
-            image.flatten()
-            should_delete = True
-        else:
-            should_delete = False
+        policy = _exp.resolve_export_policy(fmt, preserve_alpha, flatten, verify=verify)
+        if policy.error:
+            return _exp.build_export_error(
+                code=policy.code or _exp.CODE_POLICY_CONFLICT,
+                error=policy.error,
+                file_path=file_path,
+                preserve_alpha=policy.preserve_alpha,
+                format=policy.format,
+                export_method=policy.export_method,
+            )
+
+        preflight_has_alpha = bool(self._preflight_has_alpha(image))
+        property_errors = []
+        pdb_procedure = None
+        export_method = policy.export_method
+        dup = None
+        png_color_type = None
+
         try:
+            # Always prep on a duplicate so the user image is never mutated.
+            dup = image.duplicate()
+            try:
+                dup.undo_disable()
+            except (AttributeError, RuntimeError) as e:
+                print(f"[MCP] export undo_disable on dup failed: {e}")
+
+            drawable = None
+            if policy.preserve_alpha:
+                self._selection_none_or_fail(
+                    dup, "Selection.none before alpha-preserving export merge failed"
+                )
+                try:
+                    merged = dup.merge_visible_layers(Gimp.MergeType.CLIP_TO_IMAGE)
+                except (AttributeError, RuntimeError) as merge_err:
+                    return _exp.build_export_error(
+                        code=_exp.CODE_EXPORT_FAILED,
+                        error=f"merge_visible_layers failed: {merge_err}",
+                        file_path=file_path,
+                        preserve_alpha=True,
+                        preflight_has_alpha=preflight_has_alpha,
+                        format=policy.format,
+                        export_method=export_method,
+                    )
+                if merged is None:
+                    return _exp.build_export_error(
+                        code=_exp.CODE_EXPORT_FAILED,
+                        error="merge_visible_layers returned no layer",
+                        file_path=file_path,
+                        preserve_alpha=True,
+                        preflight_has_alpha=preflight_has_alpha,
+                        format=policy.format,
+                        export_method=export_method,
+                    )
+                drawable = merged
+                export_method = _exp.EXPORT_METHOD_MERGE
+            elif policy.flatten:
+                self._selection_none_or_fail(dup, "Selection.none before flatten export failed")
+                try:
+                    flattened = dup.flatten()
+                except (AttributeError, RuntimeError) as flatten_err:
+                    return _exp.build_export_error(
+                        code=_exp.CODE_EXPORT_FAILED,
+                        error=f"flatten failed: {flatten_err}",
+                        file_path=file_path,
+                        preserve_alpha=False,
+                        preflight_has_alpha=preflight_has_alpha,
+                        format=policy.format,
+                        export_method=_exp.EXPORT_METHOD_FLATTEN,
+                    )
+                drawable = flattened
+                export_method = _exp.EXPORT_METHOD_FLATTEN
+            else:
+                # Direct path — still on dup; pick a drawable for export config.
+                try:
+                    layers = list(dup.get_layers() or [])
+                except (AttributeError, RuntimeError, TypeError):
+                    layers = []
+                try:
+                    selected = list(dup.get_selected_layers() or [])
+                except (AttributeError, RuntimeError, TypeError):
+                    selected = []
+                drawable = (selected or layers or [None])[0]
+                export_method = _exp.EXPORT_METHOD_DIRECT
+
             gio_file = Gio.File.new_for_path(file_path)
             pdb = Gimp.get_pdb()
-            fmt_lower = fmt.lower()
-            proc_name_map = {
-                "png": "file-png-save",
-                "jpeg": "file-jpeg-save",
-                "jpg": "file-jpeg-save",
-                "webp": "file-webp-save",
-                "tiff": "file-tiff-save",
-            }
-            proc_name = proc_name_map.get(fmt_lower, "file-png-save")
-            proc = pdb.lookup_procedure(proc_name)
-            if proc is None:
-                # Fallback: try generic file-png-export
-                proc = pdb.lookup_procedure("file-png-export")
-            if proc is None:
-                Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
-            else:
+            proc_name = _exp.pdb_procedure_for_format(policy.format)
+            if proc_name is None:
+                # Never silently substitute PNG for an unsupported format.
+                return _exp.build_export_error(
+                    code=_exp.CODE_UNSUPPORTED_FORMAT,
+                    error=(
+                        f"Unsupported export format {policy.format!r} "
+                        f"(UNSUPPORTED_FORMAT). Supported formats: "
+                        f"{_exp.SUPPORTED_EXPORT_FORMATS_DISPLAY}."
+                    ),
+                    file_path=file_path,
+                    preserve_alpha=policy.preserve_alpha,
+                    preflight_has_alpha=preflight_has_alpha,
+                    format=policy.format,
+                    export_method=export_method,
+                )
+            proc = pdb.lookup_procedure(proc_name) if proc_name else None
+            used_degraded = False
+
+            if proc is not None:
+                pdb_procedure = proc_name
                 cfg = proc.create_config()
-                cfg.set_property("image", image)
-                cfg.set_property("file", gio_file)
-                try:
-                    layers = image.get_layers()
-                    drawable = (image.get_selected_layers() or layers or [None])[0]
+                # Alpha-critical props: image, file, drawable/drawables, pixel format
+                if not self._set_export_property_critical(
+                    cfg, "image", dup, property_errors, required=True
+                ):
+                    return _exp.build_export_error(
+                        code=_exp.CODE_EXPORT_FAILED,
+                        error="Failed to set export image property",
+                        file_path=file_path,
+                        property_errors=property_errors,
+                        preserve_alpha=policy.preserve_alpha,
+                        preflight_has_alpha=preflight_has_alpha,
+                        format=policy.format,
+                        export_method=export_method,
+                        pdb_procedure=pdb_procedure,
+                    )
+                if not self._set_export_property_critical(
+                    cfg, "file", gio_file, property_errors, required=True
+                ):
+                    return _exp.build_export_error(
+                        code=_exp.CODE_EXPORT_FAILED,
+                        error="Failed to set export file property",
+                        file_path=file_path,
+                        property_errors=property_errors,
+                        preserve_alpha=policy.preserve_alpha,
+                        preflight_has_alpha=preflight_has_alpha,
+                        format=policy.format,
+                        export_method=export_method,
+                        pdb_procedure=pdb_procedure,
+                    )
+
+                drawable_set = False
+                if drawable is not None:
                     try:
                         cfg.set_property("drawable", drawable)
-                    except Exception:
-                        pass
-                    if fmt_lower in ("jpeg", "jpg"):
+                        drawable_set = True
+                    except Exception as drawable_err:
+                        print(f"[MCP] export drawable property failed: {drawable_err}")
                         try:
-                            cfg.set_property("quality", quality / 100.0)
-                        except Exception:
-                            pass
-                    if fmt_lower == "webp":
+                            cfg.set_property("drawables", [drawable])
+                            drawable_set = True
+                        except Exception as prop_err:
+                            property_errors.append(
+                                f"drawable/drawables property failed: {prop_err}"
+                            )
+                if not drawable_set:
+                    if drawable is None:
+                        property_errors.append("No drawable available for export config")
+                    else:
+                        property_errors.append("Could not set drawable/drawables on export config")
+                    # Fail-closed when preserve_alpha (align with snapshot: do not
+                    # run file-*-export without a drawable for alpha-critical path).
+                    if policy.preserve_alpha:
+                        return _exp.build_export_error(
+                            code=_exp.CODE_EXPORT_FAILED,
+                            error=(
+                                "Alpha-preserving export requires a drawable on the "
+                                "export config; drawable/drawables property was not set"
+                            ),
+                            file_path=file_path,
+                            property_errors=property_errors,
+                            preserve_alpha=True,
+                            preflight_has_alpha=preflight_has_alpha,
+                            format=policy.format,
+                            export_method=export_method,
+                            pdb_procedure=pdb_procedure,
+                        )
+
+                # PNG RGBA8 when preserving alpha and preflight saw alpha (DoD-12 fail-closed)
+                if policy.format == "png" and policy.preserve_alpha and preflight_has_alpha:
+                    if not self._set_png_rgba8_format(cfg, property_errors):
+                        return _exp.build_export_error(
+                            code=_exp.CODE_EXPORT_FAILED,
+                            error=(
+                                "Failed to set PNG RGBA8 pixel format (alpha-critical); "
+                                "refusing to run export without guaranteed alpha pixel format"
+                            ),
+                            file_path=file_path,
+                            property_errors=property_errors,
+                            preserve_alpha=True,
+                            preflight_has_alpha=preflight_has_alpha,
+                            format=policy.format,
+                            export_method=export_method,
+                            pdb_procedure=pdb_procedure,
+                        )
+
+                # Best-effort quality knobs (not alpha-critical)
+                if policy.format == "jpeg":
+                    try:
+                        cfg.set_property("quality", float(quality) / 100.0)
+                    except Exception:
                         try:
                             cfg.set_property("quality", float(quality))
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                proc.run(cfg)
-            return os.path.getsize(file_path)
-        finally:
-            if should_delete:
+                        except Exception as qe:
+                            print(f"[MCP] jpeg quality set skipped: {qe}")
+                if policy.format == "webp":
+                    try:
+                        cfg.set_property("quality", float(quality))
+                    except Exception as qe:
+                        print(f"[MCP] webp quality set skipped: {qe}")
+
                 try:
-                    image.delete()
+                    proc.run(cfg)
+                except Exception as run_err:
+                    property_errors.append(f"{proc_name} run failed: {run_err}")
+                    print(f"[MCP] {proc_name} failed: {run_err}; trying degraded path")
+                    proc = None
+
+            if proc is None or not os.path.isfile(file_path) or os.path.getsize(file_path) == 0:
+                # Degraded last resort — log; still verify when preserve_alpha.
+                used_degraded = True
+                print(f"[MCP] DEGRADED export path for {file_path!r} (procedure={proc_name!r})")
+                try:
+                    Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, dup, gio_file)
+                    pdb_procedure = pdb_procedure or "Gimp.file_overwrite"
+                except Exception as ow_err:
+                    try:
+                        Gimp.file_save(Gimp.RunMode.NONINTERACTIVE, dup, gio_file)
+                        pdb_procedure = "Gimp.file_save"
+                    except Exception as save_err:
+                        return _exp.build_export_error(
+                            code=_exp.CODE_EXPORT_FAILED,
+                            error=(
+                                f"Export failed via {proc_name} and degraded "
+                                f"file_overwrite/file_save: {ow_err}; {save_err}"
+                            ),
+                            file_path=file_path,
+                            left_on_disk=os.path.isfile(file_path),
+                            property_errors=property_errors,
+                            preserve_alpha=policy.preserve_alpha,
+                            preflight_has_alpha=preflight_has_alpha,
+                            format=policy.format,
+                            export_method=export_method,
+                            pdb_procedure=pdb_procedure,
+                        )
+
+            if not os.path.isfile(file_path):
+                return _exp.build_export_error(
+                    code=_exp.CODE_EXPORT_FAILED,
+                    error="Export produced no output file",
+                    file_path=file_path,
+                    left_on_disk=False,
+                    property_errors=property_errors,
+                    preserve_alpha=policy.preserve_alpha,
+                    preflight_has_alpha=preflight_has_alpha,
+                    format=policy.format,
+                    export_method=export_method,
+                    pdb_procedure=pdb_procedure,
+                )
+
+            file_size = os.path.getsize(file_path)
+
+            # PNG IHDR verify (fail-closed when preserve_alpha + preflight alpha)
+            if policy.format == "png" and os.path.isfile(file_path):
+                try:
+                    ihdr = _exp.png_ihdr_info(file_path)
+                    png_color_type = int(ihdr["color_type"])
+                except (ValueError, OSError) as ihdr_err:
+                    if policy.preserve_alpha and preflight_has_alpha and policy.verify:
+                        return _exp.build_export_error(
+                            code=_exp.CODE_ALPHA_LOST,
+                            error=f"PNG IHDR unreadable after export: {ihdr_err}",
+                            file_path=file_path,
+                            left_on_disk=True,
+                            preflight_has_alpha=preflight_has_alpha,
+                            preserve_alpha=True,
+                            property_errors=property_errors,
+                            export_method=export_method,
+                            pdb_procedure=pdb_procedure,
+                            format=policy.format,
+                        )
+                    png_color_type = None
+
+            if (
+                policy.verify
+                and policy.preserve_alpha
+                and preflight_has_alpha
+                and policy.format == "png"
+            ):
+                has_alpha_file = False
+                try:
+                    has_alpha_file = _exp.file_has_alpha_channel(file_path)
+                except (ValueError, OSError):
+                    has_alpha_file = False
+                if not has_alpha_file:
+                    return _exp.build_export_error(
+                        code=_exp.CODE_ALPHA_LOST,
+                        error=(
+                            "preserve_alpha=True and preflight had alpha, but "
+                            f"PNG color type is {png_color_type} "
+                            f"(expected 4 or 6). File left on disk for debugging."
+                        ),
+                        file_path=file_path,
+                        left_on_disk=True,
+                        png_color_type=png_color_type,
+                        preflight_has_alpha=True,
+                        preserve_alpha=True,
+                        property_errors=property_errors,
+                        export_method=export_method,
+                        pdb_procedure=pdb_procedure,
+                        format=policy.format,
+                    )
+
+            if policy.preserve_alpha and not preflight_has_alpha:
+                alpha_verified = "not_applicable"
+            elif not policy.preserve_alpha:
+                alpha_verified = "not_applicable"
+            elif policy.format == "png" and policy.verify and preflight_has_alpha:
+                alpha_verified = True
+            else:
+                alpha_verified = "not_applicable"
+
+            result = _exp.build_export_success(
+                file_path=file_path,
+                format=policy.format,
+                file_size_bytes=file_size,
+                preserve_alpha=policy.preserve_alpha,
+                preflight_has_alpha=preflight_has_alpha,
+                alpha_verified=alpha_verified,
+                export_method=export_method,
+                pdb_procedure=pdb_procedure,
+                png_color_type=png_color_type,
+                property_errors=property_errors if property_errors else None,
+                extra={"degraded_path": used_degraded} if used_degraded else None,
+            )
+            return result
+        finally:
+            if dup is not None:
+                try:
+                    dup.delete()
                 except Exception:
                     pass
 
@@ -2030,7 +2446,7 @@ class MCPPlugin(Gimp.PlugIn):
             return _sec.redact_error(e)
 
     def _export_image(self, params):
-        """Export image to raster format."""
+        """Export image to raster format (alpha-preserving defaults for PNG/WEBP/TIFF)."""
         try:
             image_index = int(params.get("image_index", 0))
             file_path = params.get("file_path", "")
@@ -2038,20 +2454,29 @@ class MCPPlugin(Gimp.PlugIn):
             if err is not None:
                 return err
             file_path = str(safe)
-            fmt = params.get("format", "png")
+            # MCP schema uses format; raw TCP/demos may send file_type
+            fmt = params.get("format", params.get("file_type", "png"))
             quality = int(params.get("quality", 90))
-            flatten = bool(params.get("flatten", True))
+            flatten = _exp.coerce_bool(params.get("flatten", False), default=False)
+            preserve_alpha = _exp.coerce_optional_bool(params.get("preserve_alpha", None))
+            verify = _exp.coerce_bool(params.get("verify", True), default=True)
             image = self._get_image(image_index)
-            file_size = self._export_to_path(image, file_path, fmt, quality, flatten)
+            result = self._export_to_path(
+                image,
+                file_path,
+                fmt,
+                quality,
+                flatten=flatten,
+                preserve_alpha=preserve_alpha,
+                verify=verify,
+            )
             Gimp.displays_flush()
+            if result.get("status") == "error":
+                # Preserve structured export errors (ALPHA_LOST, POLICY_CONFLICT, …)
+                return result
             return {
                 "status": "success",
-                "results": {
-                    "status": "success",
-                    "file_path": file_path,
-                    "format": fmt,
-                    "file_size_bytes": file_size,
-                },
+                "results": result,
             }
         except _sec.SecurityError as e:
             return e.as_error()
@@ -2066,10 +2491,13 @@ class MCPPlugin(Gimp.PlugIn):
             if err is not None:
                 return err
             output_dir = str(safe_dir)
-            fmt = params.get("format", "png")
+            fmt = params.get("format", params.get("file_type", "png"))
             quality = int(params.get("quality", 90))
             name_pattern = params.get("name_pattern", "{name}")
             image_index = params.get("image_index", None)
+            flatten = _exp.coerce_bool(params.get("flatten", False), default=False)
+            preserve_alpha = _exp.coerce_optional_bool(params.get("preserve_alpha", None))
+            verify = _exp.coerce_bool(params.get("verify", True), default=True)
 
             images = Gimp.get_images()
             if not images:
@@ -2091,15 +2519,48 @@ class MCPPlugin(Gimp.PlugIn):
                     )
                     filename = name_pattern.format(name=raw_name, index=idx) + f".{fmt}"
                     out_path = os.path.join(output_dir, filename)
-                    self._export_to_path(image, out_path, fmt, quality, True)
-                    exported.append(
-                        {
-                            "file_path": out_path,
-                            "name": raw_name,
-                            "width": image.get_width(),
-                            "height": image.get_height(),
-                        }
+                    result = self._export_to_path(
+                        image,
+                        out_path,
+                        fmt,
+                        quality,
+                        flatten=flatten,
+                        preserve_alpha=preserve_alpha,
+                        verify=verify,
                     )
+                    if result.get("status") == "error":
+                        # Forward full structured export fields (ALPHA_LOST contract).
+                        err_item = {
+                            "index": idx,
+                            "error": result.get("error"),
+                            "code": result.get("code"),
+                            "file_path": result.get("file_path", out_path),
+                        }
+                        for key in (
+                            "left_on_disk",
+                            "png_color_type",
+                            "preflight_has_alpha",
+                            "property_errors",
+                            "format",
+                            "preserve_alpha",
+                            "export_method",
+                            "pdb_procedure",
+                        ):
+                            if key in result:
+                                err_item[key] = result[key]
+                        errors.append(err_item)
+                    else:
+                        exported.append(
+                            {
+                                "file_path": out_path,
+                                "name": raw_name,
+                                "width": image.get_width(),
+                                "height": image.get_height(),
+                                "file_size_bytes": result.get("file_size_bytes"),
+                                "preserve_alpha": result.get("preserve_alpha"),
+                                "alpha_verified": result.get("alpha_verified"),
+                            }
+                        )
                 except Exception as ex:
                     errors.append({"index": idx, "error": str(ex)})
 
@@ -2109,6 +2570,54 @@ class MCPPlugin(Gimp.PlugIn):
             }
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _verify_alpha_channel(self, params):
+        """Read-only preflight: image-level alpha + format capability matrix."""
+        try:
+            image_index = int(params.get("image_index", 0))
+            image = self._get_image(image_index)
+            layers_with_alpha = []
+            try:
+                layers = list(image.get_layers() or [])
+            except (AttributeError, RuntimeError, TypeError):
+                layers = []
+            # Recursive walk so nested group members appear in layers_with_alpha
+            for layer in self._iter_layers_recursive(layers, visible_only=False):
+                try:
+                    if layer.has_alpha():
+                        try:
+                            name = layer.get_name()
+                        except (AttributeError, RuntimeError):
+                            name = str(layer)
+                        layers_with_alpha.append(name)
+                except (AttributeError, RuntimeError, TypeError):
+                    continue
+
+            has_alpha = bool(layers_with_alpha) or self._preflight_has_alpha(image)
+
+            base_type = "unknown"
+            try:
+                bt = image.get_base_type()
+                mode_map = {
+                    Gimp.ImageBaseType.RGB: "RGB",
+                    Gimp.ImageBaseType.GRAY: "Grayscale",
+                    Gimp.ImageBaseType.INDEXED: "Indexed",
+                }
+                base_type = mode_map.get(bt, str(bt))
+            except (AttributeError, RuntimeError, TypeError):
+                pass
+
+            return {
+                "status": "success",
+                "results": {
+                    "has_alpha": has_alpha,
+                    "image_base_type": base_type,
+                    "layers_with_alpha": layers_with_alpha,
+                    "can_preserve_alpha_for_format": _exp.format_capability_matrix(),
+                },
+            }
+        except Exception as e:
+            return _sec.redact_error(e)
 
     # =========================================================================
     # CATEGORY 2 — Image Adjustments
@@ -4000,7 +4509,10 @@ class MCPPlugin(Gimp.PlugIn):
                         new_h = px
                         new_w = max(1, int(px * aspect))
                     dup.scale(new_w, new_h)
-                    self._export_to_path(dup, out_path, fmt, 95, True)
+                    # Opaque bake intentional (icons): flatten=True → preserve_alpha False
+                    exp_r = self._export_to_path(dup, out_path, fmt, 95, flatten=True)
+                    if exp_r.get("status") == "error":
+                        raise RuntimeError(exp_r.get("error", "icon export failed"))
                     exported.append({"size": px, "file_path": out_path})
                 finally:
                     dup.delete()
@@ -4045,8 +4557,15 @@ class MCPPlugin(Gimp.PlugIn):
                 raw_name = gio_file.get_basename().rsplit(".", 1)[0] if gio_file else "image"
                 jpeg_path = os.path.join(output_dir, f"{raw_name}.jpg")
                 png_path = os.path.join(output_dir, f"{raw_name}.png")
-                jpeg_size = self._export_to_path(dup, jpeg_path, "jpeg", jpeg_quality, True)
-                png_size = self._export_to_path(dup, png_path, "png", 95, True)
+                # Opaque bake for size compare (flatten=True → preserve_alpha False)
+                jpeg_r = self._export_to_path(dup, jpeg_path, "jpeg", jpeg_quality, flatten=True)
+                png_r = self._export_to_path(dup, png_path, "png", 95, flatten=True)
+                if jpeg_r.get("status") == "error":
+                    raise RuntimeError(jpeg_r.get("error", "jpeg export failed"))
+                if png_r.get("status") == "error":
+                    raise RuntimeError(png_r.get("error", "png export failed"))
+                jpeg_size = int(jpeg_r.get("file_size_bytes") or 0)
+                png_size = int(png_r.get("file_size_bytes") or 0)
             finally:
                 dup.delete()
 
@@ -4186,7 +4705,15 @@ class MCPPlugin(Gimp.PlugIn):
                 pasted.set_offsets(dest_x, dest_y)
                 Gimp.floating_sel_anchor(pasted)
 
-            self._export_to_path(sheet, output_path, "png", 95, True)
+            # Sprite sheet is pre-composited; flatten bake is intentional
+            exp_r = self._export_to_path(sheet, output_path, "png", 95, flatten=True)
+            if exp_r.get("status") == "error":
+                sheet.delete()
+                return {
+                    "status": "error",
+                    "error": exp_r.get("error", "sprite sheet export failed"),
+                    "code": exp_r.get("code"),
+                }
             sheet.delete()
             return {
                 "status": "success",
@@ -4244,7 +4771,10 @@ class MCPPlugin(Gimp.PlugIn):
                     crop_y = (scaled_h - target_h) // 2
                     dup.crop(target_w, target_h, crop_x, crop_y)
                     out_path = os.path.join(output_dir, f"{platform_name}.png")
-                    self._export_to_path(dup, out_path, "png", 95, True)
+                    # Social media kit: opaque bake (flatten=True)
+                    exp_r = self._export_to_path(dup, out_path, "png", 95, flatten=True)
+                    if exp_r.get("status") == "error":
+                        raise RuntimeError(exp_r.get("error", f"export failed for {platform_name}"))
                     exported.append(
                         {
                             "platform": platform_name,

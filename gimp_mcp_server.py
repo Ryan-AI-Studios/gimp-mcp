@@ -826,20 +826,43 @@ def export_image(
     file_path: str,
     format: str = "png",
     quality: int = 90,
-    flatten: bool = True,
+    flatten: bool = False,
+    preserve_alpha: bool | None = None,
+    verify: bool = True,
     image_index: int = 0,
 ) -> dict:
     """Export the current image to a raster file (PNG, JPEG, WEBP, TIFF).
 
+    **Breaking change (Issue 16):** ``flatten`` default is **False**. Transparent
+    PNG/WEBP/TIFF exports use merge-on-duplicate (alpha preserved) and fail closed
+    with code ``ALPHA_LOST`` if the artifact loses alpha after a source that had it.
+
     Parameters:
-    - file_path: Absolute path for the output file
+    - file_path: Absolute path for the output file (workspace-jailed)
     - format: Output format — "png" (default), "jpeg", "webp", "tiff"
     - quality: JPEG/WEBP quality 1-100 (default 90; ignored for PNG/TIFF)
-    - flatten: Flatten all layers before export (default True)
+    - flatten: Flatten layers on a **duplicate** before export (default **False**).
+      Flatten **strips alpha**. For opaque bake set flatten=True (auto preserve_alpha=False).
+    - preserve_alpha: None (auto), True, or False. Auto=True for png/webp/tiff when
+      flatten is False; False for jpeg. JPEG+preserve_alpha=True → ALPHA_UNSUPPORTED_FORMAT.
+      flatten=True + preserve_alpha=True → POLICY_CONFLICT error.
+    - verify: Fail-closed PNG IHDR alpha check when preserve_alpha and preflight had alpha
+      (default True)
     - image_index: Index of the image to export (default 0)
 
-    Returns:
-    - status, file_path, format, file_size_bytes
+    Notes:
+    - Never mutates the open document for export prep (works on a duplicate).
+    - ``flatten_image`` is an explicit mutator of the open document — different tool.
+    - Opaque multi-layer bake: pass flatten=True (or preserve_alpha=False).
+
+    Returns (success): file_path, format, file_size_bytes, preserve_alpha,
+    preflight_has_alpha, alpha_verified (true|false|"not_applicable"), export_method,
+    pdb_procedure, optional png_color_type.
+
+    Structured errors (returned as a dict with ``status="error"``, not raised):
+    ALPHA_LOST (``left_on_disk=true``, optional ``png_color_type`` /
+    ``property_errors``), ALPHA_UNSUPPORTED_FORMAT, POLICY_CONFLICT, EXPORT_FAILED.
+    Agents should inspect ``code`` / ``left_on_disk`` on the return value.
     """
     try:
         file_path = _jail_path_or_raise(file_path, "file_path")
@@ -851,13 +874,26 @@ def export_image(
                 "format": format,
                 "quality": quality,
                 "flatten": flatten,
+                "preserve_alpha": preserve_alpha,
+                "verify": verify,
                 "image_index": image_index,
             },
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
+        # Structured export errors (ALPHA_LOST, POLICY_CONFLICT, …): return the
+        # full plugin payload so agents can machine-read left_on_disk,
+        # png_color_type, property_errors, code (DoD-5 / §2.7). Do not raise —
+        # raising would drop those fields and double-wrap the message.
+        if isinstance(result, dict) and result.get("status") == "error" and result.get("code"):
+            return result
+        # Generic / unknown errors: keep Exception path for host convention
+        err = result.get("error", "Unknown error") if isinstance(result, dict) else str(result)
+        raise Exception(err)
     except Exception as e:
+        # Avoid double-wrapping if we re-raise a non-structured failure
+        if isinstance(e, Exception) and str(e).startswith("export_image failed:"):
+            raise
         traceback.print_exc()
         raise Exception(f"export_image failed: {e}")
 
@@ -870,8 +906,13 @@ def batch_export(
     quality: int = 90,
     name_pattern: str = "{name}",
     image_index: int | None = None,
+    flatten: bool = False,
+    preserve_alpha: bool | None = None,
+    verify: bool = True,
 ) -> dict:
     """Export all open images (or a specific one) to a directory.
+
+    Same alpha/flatten policy as ``export_image`` (defaults preserve alpha for PNG).
 
     Parameters:
     - output_dir: Directory to write exported files into
@@ -879,9 +920,12 @@ def batch_export(
     - quality: JPEG/WEBP quality (default 90)
     - name_pattern: Filename template — use {name} for image name, {index} for position
     - image_index: If set, export only that image; omit to export all open images
+    - flatten: Flatten on duplicate before export (default False; strips alpha if True)
+    - preserve_alpha: None (auto), True, or False — same rules as export_image
+    - verify: PNG IHDR alpha verify when applicable (default True)
 
     Returns:
-    - exported: list of {file_path, name, width, height}
+    - exported: list of {file_path, name, width, height, ...}
     - count: number of files written
     - errors: list of any export errors
     """
@@ -892,6 +936,9 @@ def batch_export(
             "format": format,
             "quality": quality,
             "name_pattern": name_pattern,
+            "flatten": flatten,
+            "preserve_alpha": preserve_alpha,
+            "verify": verify,
         }
         if image_index is not None:
             params["image_index"] = image_index
@@ -903,6 +950,36 @@ def batch_export(
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"batch_export failed: {e}")
+
+
+@mcp.tool()
+def verify_alpha_channel(ctx: Context, image_index: int = 0) -> dict:
+    """Read-only preflight: does the image have alpha, and which formats can keep it?
+
+    Cheaper than full metadata when an agent only needs image-level alpha status
+    and format prediction before export.
+
+    Parameters:
+    - image_index: Index of the open image (default 0)
+
+    Returns:
+    - has_alpha: True if any layer reports an alpha channel
+    - image_base_type: e.g. RGB, Grayscale, Indexed
+    - layers_with_alpha: list of layer names that have alpha
+    - can_preserve_alpha_for_format: {png: true, jpeg: false, webp: true, tiff: true}
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command(
+            "verify_alpha_channel",
+            {"image_index": image_index},
+        )
+        if result["status"] == "success":
+            return result["results"]
+        raise Exception(result.get("error", "Unknown error"))
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"verify_alpha_channel failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

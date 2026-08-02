@@ -32,10 +32,11 @@ path is shown in **Edit > Preferences > Folders > Plug-ins**. Base dirs per plat
 BASE="$HOME/snap/gimp/current/.config/GIMP"
 GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
+cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py gimp_mcp_export.py \
+  "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 ```
-Copy all three files (`gimp-mcp-plugin.py`, `gimp_mcp_security.py`, `gimp_mcp_snapshot.py`) into the plug-ins folder; missing either helper fails closed at plugin import. Then start it from **Tools > MCP > Start MCP Server** in GIMP.
+Copy all four files (`gimp-mcp-plugin.py`, `gimp_mcp_security.py`, `gimp_mcp_snapshot.py`, `gimp_mcp_export.py`) into the plug-ins folder; missing any helper fails closed at plugin import. Then start it from **Tools > MCP > Start MCP Server** in GIMP.
 
 ### MCP Server Configuration
 Add to Claude Desktop config (`~/.config/Claude/claude_desktop_config.json`):

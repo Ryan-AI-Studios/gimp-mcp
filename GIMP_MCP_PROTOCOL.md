@@ -34,6 +34,25 @@ Authenticated replacement:
 
 See [SECURITY.md](SECURITY.md) for env vars, start order, and residuals.
 
+## Export alpha contract (Issue 16 / 0005)
+
+| Tool | Mutates open image? | Alpha |
+|---|---|---|
+| `export_image` | **No** (prep on duplicate) | Default `flatten=False`; auto `preserve_alpha` for png/webp/tiff; PNG IHDR verify fail-closed |
+| `batch_export` | **No** | Same params: `flatten`, `preserve_alpha`, `verify` |
+| `flatten_image` | **Yes** (explicit) | Strips alpha on the open document |
+| `merge_visible_layers` | **Yes** (explicit) | Can preserve alpha on the open document |
+| `verify_alpha_channel` | **No** (read-only) | Image-level `has_alpha` + format capability matrix |
+
+**Policy:**
+- `flatten=True` + `preserve_alpha=None` → opaque bake (`preserve_alpha` forced false) — safe for icons/sprites.
+- `flatten=True` + `preserve_alpha=True` → `POLICY_CONFLICT` error.
+- JPEG + `preserve_alpha=True` → `ALPHA_UNSUPPORTED_FORMAT`.
+- Preflight had alpha + `preserve_alpha` + verify + PNG without alpha → `ALPHA_LOST` (`left_on_disk=true`).
+- Opaque source + default preserve_alpha → success with `alpha_verified="not_applicable"`.
+
+PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `file-tiff-export`.
+
 ## Available MCP Tools
 
 ### 1. Image Export Tools
