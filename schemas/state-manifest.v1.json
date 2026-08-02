@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:gimp-agent:state-manifest:1",
+  "title": "GIMP Agent State Manifest v1",
+  "description": "Workspace orientation contract for gimp-mcp orient_workspace (schema_version 1.0.0). Capabilities object intentionally allows additionalProperties so later tracks may add honest flags (alpha_preserving_export, state_manifest_orientation, stable_handle_registry, coordinate_exif_normalized, …) without a hard schema break.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "captured_at",
+    "session",
+    "gimp",
+    "images",
+    "context",
+    "capabilities"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "session": {
+      "type": "object",
+      "required": ["session_id", "epoch", "transport", "authenticated"],
+      "properties": {
+        "session_id": { "type": "string" },
+        "epoch": { "type": "integer", "minimum": 1 },
+        "transport": { "enum": ["local-socket", "stdio-proxy", "batch"] },
+        "authenticated": { "type": "boolean" },
+        "pid": { "type": "integer" },
+        "port": { "type": ["integer", "null"] },
+        "host": { "type": ["string", "null"] },
+        "started_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": true
+    },
+    "gimp": {
+      "type": "object",
+      "required": ["version", "api_version", "os", "executable"],
+      "properties": {
+        "version": { "type": "string" },
+        "api_version": { "type": "string" },
+        "os": { "type": "string" },
+        "executable": { "type": "string" },
+        "config_directory": { "type": "string" },
+        "plugin_version": { "type": "string" },
+        "batch_interpreters": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "images": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/imageManifest" }
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "foreground_rgba": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "number" }
+        },
+        "background_rgba": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "type": "number" }
+        },
+        "brush_name": { "type": ["string", "null"] },
+        "brush_size": { "type": ["number", "null"] },
+        "opacity": { "type": ["number", "null"] },
+        "paint_mode": { "type": ["string", "null"] },
+        "displays_open": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "Honest product capability matrix. Design-required keys must be present; additional extension flags are allowed (no additionalProperties:false).",
+      "required": [
+        "visible_composite_snapshot",
+        "isolated_layer_snapshot",
+        "alpha_snapshot",
+        "atomic_xcf_save",
+        "atomic_export"
+      ],
+      "properties": {
+        "visible_composite_snapshot": { "type": "boolean" },
+        "isolated_layer_snapshot": { "type": "boolean" },
+        "alpha_snapshot": { "type": "boolean" },
+        "atomic_xcf_save": { "type": "boolean" },
+        "atomic_export": { "type": "boolean" },
+        "mcp_image_visible_to_model": { "type": "boolean" },
+        "filesystem_image_attachment": { "type": "boolean" },
+        "batch_interpreter": { "type": "boolean" },
+        "alpha_preserving_export": { "type": "boolean" },
+        "state_manifest_orientation": { "type": "boolean" },
+        "stable_handle_registry": { "type": "boolean" },
+        "coordinate_exif_normalized": { "type": "boolean" }
+      }
+    }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "imageHandle": {
+      "type": "object",
+      "required": ["image_id", "generation", "session_epoch"],
+      "properties": {
+        "image_id": { "type": "integer" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "session_epoch": { "type": "integer", "minimum": 1 },
+        "fingerprint": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "itemHandle": {
+      "type": "object",
+      "required": ["item_id", "generation", "image_id", "session_epoch"],
+      "properties": {
+        "item_id": { "type": "integer" },
+        "generation": { "type": "integer", "minimum": 1 },
+        "image_id": { "type": "integer" },
+        "session_epoch": { "type": "integer", "minimum": 1 },
+        "fingerprint": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "itemSummary": {
+      "type": "object",
+      "required": ["handle", "name"],
+      "properties": {
+        "handle": { "$ref": "#/$defs/itemHandle" },
+        "name": { "type": "string" },
+        "visible": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "layerNode": {
+      "type": "object",
+      "required": [
+        "handle",
+        "name",
+        "kind",
+        "parent_handle",
+        "visible",
+        "opacity",
+        "blend_mode",
+        "offset",
+        "size",
+        "children"
+      ],
+      "properties": {
+        "handle": { "$ref": "#/$defs/itemHandle" },
+        "name": { "type": "string" },
+        "kind": {
+          "enum": ["raster", "group", "text", "link", "vector"]
+        },
+        "parent_handle": {
+          "oneOf": [
+            { "$ref": "#/$defs/itemHandle" },
+            { "type": "null" }
+          ]
+        },
+        "visible": { "type": "boolean" },
+        "opacity": { "type": "number", "minimum": 0, "maximum": 100 },
+        "blend_mode": { "type": "string" },
+        "offset": {
+          "type": "object",
+          "required": ["x", "y"],
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" }
+          }
+        },
+        "size": {
+          "type": "object",
+          "required": ["width", "height"],
+          "properties": {
+            "width": { "type": "integer" },
+            "height": { "type": "integer" }
+          }
+        },
+        "has_alpha": { "type": "boolean" },
+        "mask": { "type": ["object", "null"] },
+        "filters": { "type": "array", "items": { "type": "object" } },
+        "text": { "type": ["object", "null"] },
+        "link": { "type": ["object", "null"] },
+        "vector": { "type": ["object", "null"] },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/layerNode" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "imageManifest": {
+      "type": "object",
+      "required": [
+        "handle",
+        "name",
+        "source_path",
+        "width",
+        "height",
+        "base_type",
+        "precision",
+        "dirty",
+        "selected",
+        "selection",
+        "alpha_present",
+        "color_profile",
+        "metadata",
+        "active_layer_handles",
+        "layers",
+        "channels",
+        "paths"
+      ],
+      "properties": {
+        "handle": { "$ref": "#/$defs/imageHandle" },
+        "selected": { "type": "boolean" },
+        "name": { "type": "string" },
+        "source_path": { "type": ["string", "null"] },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "base_type": { "enum": ["RGB", "GRAY", "INDEXED"] },
+        "precision": { "type": "string" },
+        "dirty": { "type": "boolean" },
+        "alpha_present": { "type": "boolean" },
+        "color_profile": {
+          "type": ["object", "null"],
+          "properties": {
+            "name": { "type": "string" },
+            "description": { "type": "string" },
+            "icc_md5": { "type": "string" },
+            "embedded": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "metadata": {
+          "type": "object",
+          "required": [
+            "exif_orientation_original",
+            "pixel_orientation_normalized"
+          ],
+          "properties": {
+            "exif_orientation_original": {
+              "type": ["integer", "null"],
+              "minimum": 1,
+              "maximum": 8
+            },
+            "pixel_orientation_normalized": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "selection": {
+          "type": "object",
+          "required": ["empty"],
+          "properties": {
+            "empty": { "type": "boolean" },
+            "bounds": {
+              "type": ["object", "null"],
+              "required": ["x", "y", "width", "height"],
+              "properties": {
+                "x": { "type": "integer" },
+                "y": { "type": "integer" },
+                "width": { "type": "integer" },
+                "height": { "type": "integer" }
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "active_layer_handles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/itemHandle" }
+        },
+        "layers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/layerNode" }
+        },
+        "channels": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/itemSummary" }
+        },
+        "paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/itemSummary" }
+        },
+        "layer_count": { "type": "integer" },
+        "canvas_bounds": {
+          "type": "object",
+          "required": ["x", "y", "width", "height"],
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" },
+            "width": { "type": "integer" },
+            "height": { "type": "integer" }
+          }
+        },
+        "undo_available": { "type": "boolean" },
+        "view": {
+          "type": "object",
+          "properties": {
+            "zoom": { "type": ["number", "null"] },
+            "rotation_degrees": { "type": ["number", "null"] }
+          }
+        },
+        "intended_working_xcf": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

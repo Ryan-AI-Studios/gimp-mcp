@@ -20,6 +20,7 @@ from mcp.types import Annotations
 
 import gimp_mcp_security as sec
 import gimp_mcp_snapshot as snap
+from gimp_mcp_state import finalize_manifest
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("GimpMCPServer")
@@ -457,28 +458,22 @@ def get_image_bitmap(
 
 
 @mcp.tool()
-def get_image_metadata(ctx: Context) -> dict:
-    """Get metadata about the current open image in GIMP without the bitmap data.
+def get_image_metadata(ctx: Context, image_index: int = 0) -> dict:
+    """Get metadata about an open image in GIMP without the bitmap data.
 
-    Returns detailed information about the currently active image including:
-    - Image dimensions (width, height)
-    - Color mode and base type
-    - Number of layers and channels
-    - File information if available
-    - Layer structure and properties
+    Prefer ``orient_workspace`` for agent orientation (schema-versioned SoT).
 
-    This is much faster than get_image_bitmap() since it doesn't export the actual image data.
-    Perfect for when you only need to know image properties for decision making.
+    Parameters:
+    - image_index: Target image index (default 0)
 
-    Returns:
-    - Dictionary containing comprehensive image metadata
-    - Raises exception if no images are open
+    Returns detailed information including dimensions, color mode, layers,
+    channels, paths, and file info. Faster than get_image_bitmap().
     """
     try:
         print("Requesting current image metadata from GIMP...")
 
         conn = get_gimp_connection()
-        result = conn.send_command("get_image_metadata")
+        result = conn.send_command("get_image_metadata", {"image_index": image_index})
         if result["status"] == "success":
             return result["results"]
         else:
@@ -486,6 +481,53 @@ def get_image_metadata(ctx: Context) -> dict:
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Failed to get image metadata: {e}")
+
+
+@mcp.tool()
+def orient_workspace(
+    ctx: Context,
+    image_index: int | None = None,
+    summary_only: bool = False,
+) -> dict:
+    """Full workspace state manifest (schema v1.0.0) — orientation source of truth.
+
+    Prefer this before edits and re-run after structural mutations (create/delete/
+    reorder/merge/rasterize layers, open/close images). Read-only; does not
+    change selection, dirty state, or displays.
+
+    Handles are provisional (generation=1) until stable-handle registry (0007).
+    For large workspaces, pass image_index and/or summary_only=True.
+
+    Parameters:
+    - image_index: If set, only that open image is included; default is all images
+    - summary_only: If True, omit full recursive layer trees (lightweight summary)
+
+    Returns:
+    - Schema-versioned state manifest with session, gimp, images (recursive layer
+      trees + kinds), selection, color profile, EXIF orientation fields, paint
+      context, and honest capability flags. Transport is agent-facing stdio-proxy.
+    """
+    try:
+        params: dict[str, Any] = {"summary_only": bool(summary_only)}
+        if image_index is not None:
+            params["image_index"] = int(image_index)
+        conn = get_gimp_connection()
+        result = conn.send_command("orient_workspace", params)
+        if result["status"] != "success":
+            raise Exception(result.get("error", "Unknown error"))
+        raw = result["results"]
+        if not isinstance(raw, dict):
+            raise Exception("orient_workspace returned non-object results")
+        return finalize_manifest(
+            raw,
+            authenticated=True,
+            host=GIMP_HOST,
+            port=GIMP_PORT,
+            transport="stdio-proxy",
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"orient_workspace failed: {e}")
 
 
 @mcp.tool()
@@ -2064,7 +2106,10 @@ def merge_visible_layers(ctx: Context, image_index: int = 0) -> dict:
 
 @mcp.tool()
 def list_layers(ctx: Context, image_index: int = 0) -> dict:
-    """List all layers in an image with their properties.
+    """List layers in an image (flat root list — group children not expanded).
+
+    Prefer ``orient_workspace`` for nested groups, layer kinds, handles, and
+    full workspace orientation (schema-versioned SoT).
 
     Parameters:
     - image_index: Target image index (default 0)
