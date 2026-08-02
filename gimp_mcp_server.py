@@ -495,7 +495,10 @@ def orient_workspace(
     reorder/merge/rasterize layers, open/close images). Read-only; does not
     change selection, dirty state, or displays.
 
-    Handles are provisional (generation=1) until stable-handle registry (0007).
+    Handles are session-stable under generation rules: each image has a structural
+    generation counter; after create/delete/duplicate/reorder/flatten/merge/text/
+    drop-shadow (etc.) the generation advances and prior handles become STALE_HANDLE.
+    Re-orient or use the generation/handle returned by the last structural mutator.
     For large workspaces, pass image_index and/or summary_only=True.
 
     Parameters:
@@ -528,6 +531,83 @@ def orient_workspace(
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"orient_workspace failed: {e}")
+
+
+def _raise_plugin_error(result: dict[str, Any], tool_name: str) -> None:
+    """Raise with code string in message when plugin returns structured error."""
+    err = result.get("error", "Unknown error")
+    code = result.get("code")
+    if code:
+        raise Exception(f"{tool_name} failed: {code}: {err}")
+    raise Exception(f"{tool_name} failed: {err}")
+
+
+@mcp.tool()
+def select_image(ctx: Context, handle: dict) -> dict:
+    """Select/bind the active document by stable image handle (handles only).
+
+    Resolves ``handle`` against the live session registry. Does **not** create a
+    new GIMP display window — reports ``display: true`` only if one already shows
+    the image.
+
+    Parameters:
+    - handle: Image handle object from orient_workspace or a structural mutator
+      (``{image_id, generation, session_epoch, fingerprint?}``). Not a bare int
+      or name.
+
+    Returns: ``{handle, image_id, generation, selected: true, display: bool}``
+
+    Errors (code embedded in exception text until 0011 envelope):
+    - STALE_HANDLE: re-orient_workspace or use generation from last mutator
+    - FOREIGN_SESSION: plugin process restarted — restart MCP flow and orient
+    - HANDLE_NOT_FOUND / INVALID_HANDLE: closed image or malformed handle
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("select_image", {"handle": handle})
+        if result.get("status") == "success":
+            return result["results"]
+        _raise_plugin_error(result, "select_image")
+        raise AssertionError("unreachable")  # pragma: no cover
+    except Exception as e:
+        traceback.print_exc()
+        if str(e).startswith("select_image failed:"):
+            raise
+        raise Exception(f"select_image failed: {e}")
+
+
+@mcp.tool()
+def select_layers(ctx: Context, handles: list) -> dict:
+    """Select layers by stable item handles (handles only; max 64).
+
+    All handles must share the same image_id, session_epoch, and current
+    generation. Nested layers require item_id handles (name-only resolve remains
+    root-only on low-level tools).
+
+    Parameters:
+    - handles: List of 1..64 item handle objects from orient_workspace / mutators
+
+    Returns: ``{selected_handles, image_id, generation}`` (generation unchanged)
+
+    Errors (code embedded in exception text until 0011 envelope):
+    - STALE_HANDLE: re-orient or use last mutator generation
+    - FOREIGN_SESSION: restart plugin + orient
+    - SELECTION_CONFLICT: floating selection present — anchor or remove it first
+    - INVALID_HANDLE: empty list, >64, mixed images, bad shape
+    - HANDLE_NOT_FOUND: invalid/closed item or wrong image membership
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("select_layers", {"handles": handles})
+        if result.get("status") == "success":
+            return result["results"]
+        _raise_plugin_error(result, "select_layers")
+        raise AssertionError("unreachable")  # pragma: no cover
+    except Exception as e:
+        traceback.print_exc()
+        if str(e).startswith("select_layers failed:"):
+            raise
+        raise Exception(f"select_layers failed: {e}")
 
 
 @mcp.tool()
