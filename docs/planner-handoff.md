@@ -95,14 +95,15 @@ minting. Track IDs are creation order, not execution order.
   → 0003 SecurityHardening — Completed
   → 0004 VisibleCompositeSnapshot — Completed
   → 0005 AlphaExportCorrectness — Completed
-  → 0006 … through 0028 Final product polish (v1)
+  → 0006 StateManifestOrientation — Completed
+  → 0007 StableHandleRegistry … through 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. Most remaining tracks are **Proposed placeholders**
-until a full planning pass. **0001–0005 Completed.** Issue 16 fixed in **0005** (merge-on-dup +
-IHDR fail-closed + `gimp_mcp_export.py`). Issue 17 fixed in **0004**. EXIF remains **0008**.
-Authoritative table: `conductor/conductor.md`.
+recipes → packaging → golden path → v1 polish. **0001–0006 Completed.** Orientation SoT is
+`orient_workspace` (state-manifest v1). Issue 16 fixed in **0005**. Issue 17 fixed in **0004**.
+EXIF **normalize** remains **0008**; handle **STALE_HANDLE** remains **0007**. Authoritative table:
+`conductor/conductor.md`.
 
 ---
 
@@ -194,14 +195,17 @@ Known upstream defects (must remain visible until fixed by tracks):
 |---|---|---|
 | #17 composite | Snapshot must be visible canvas composite (not top layer) | **0004** (dup+merge+structuredContent; residual NDE/color-mgmt) |
 | #16 alpha | “Success” export without transparency | **0005** (Completed: flatten default False; merge-on-dup; file-*-export; PNG IHDR ALPHA_LOST; verify_alpha_channel) |
+| Orientation | Agents need schema-versioned workspace model before edit | **0006** (Completed: `orient_workspace` state-manifest v1; provisional handles) |
 | Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
 Hard rules for product work:
 
 - Prefer **MCP** for interactive orient/edit/snapshot loops; **CLI sidecar** for atomic XCF/export/batch.
+- **Orient first:** after 0006, `orient_workspace` is the orientation SoT (not flat `list_layers` alone).
+  Re-orient after create/delete/reorder/merge/rasterize/relink. Manifest is **read-only**.
 - Never trust `status: success` alone — require composite/alpha/objective checks when vision matters.
-- Track layers by **stable handles**, not names (once 0007 lands; until then prefer IDs over names).
+- Track layers by **stable handles**, not names (provisional handle *shape* in 0006; STALE_HANDLE in **0007**).
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
@@ -269,8 +273,9 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0006-StateManifestOrientation** (placeholder — needs full plan) after **0005 Completed** |
+| Active focus | **0007-StableHandleRegistry** (placeholder — needs full plan) after **0006 Completed** |
 | Track count | 0001–0028 (see conductor.md) |
+| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep) |
 
 ### 0005 completion notes (planners)
 
@@ -280,12 +285,27 @@ If indexes are empty: `ledgerful index --incremental`.
 - Residuals: live GIMP matrix (ops); NDE bake on dup → **0016**; SSIM → **0014**; no Pillow.
 - Codex final: **PASS WITH DEFERRED P3** (live matrix).
 
+### 0006 completion notes (planners)
+
+- **Completed (PR #5 / main@718b2bb):** `orient_workspace` → state-manifest **v1.0.0**.
+- **Architecture:** plugin raw dump → host `finalize_manifest` (transport **`stdio-proxy`**); no fifth install file (plugin does not import `gimp_mcp_state`).
+- **Recursive** tree via `_layer_children` (`MAX_LAYER_DEPTH=32` + visited); kinds via **isinstance/gtype**; provisional handles (`generation=1`).
+- **selected:** `displays[0]` only; no displays → all `selected: false`.
+- **Hygiene:** `get_image_metadata(image_index)` three coordinated edits (server + dispatcher + plugin).
+- **Guards:** summary_only count + `_iter_layers_recursive` also depth/visited (Codex P1).
+- **OOS still:** STALE_HANDLE (**0007**), EXIF normalize (**0008**), CLI orient (**0012**).
+- Residuals: live GIMP matrix (ops); large manifest size → **0023**.
+- Codex final: **PASS WITH DEFERRED P3** (live matrix).
+
 ---
 
 ## Changelog (handoff only)
 
 | Date | Change |
 |---|---|
+| 2026-08-02 | **0006 Completed:** orient_workspace state-manifest v1; PR #5; Codex PASS WITH DEFERRED P3; next=0007 |
+| 2026-08-02 | Folded AI-review into **0006**: H1–H5 selected/metadata/session/recursive validate/jsonschema lock; host-finalize; stdio-proxy transport |
+| 2026-08-02 | Full plan **0006** StateManifestOrientation: orient_workspace manifest v1 Ready — not started |
 | 2026-08-02 | **0005 Completed:** Issue 16 alpha export; `gimp_mcp_export.py`; Codex PASS WITH DEFERRED P3; next=0006 |
 | 2026-08-02 | Folded AI-review into **0005**: H1–H5 PDB/batch/set_property/internal callers; preflight-gated ALPHA_LOST; force RGBA8; ResolvedExportPolicy |
 | 2026-08-02 | Full plan for **0005** AlphaExportCorrectness: Issue 16 root cause = flatten strips alpha; Ready — not started |
