@@ -422,3 +422,8 @@ def test_coerce_bool_rejects_stringly_false() -> None:
     # bare bool() would wrongly treat these as True:
     assert bool("false") is True
     assert exp.coerce_bool("false", default=False) is not bool("false")
+    # Fail-closed on non-scalar JSON (lists/dicts must not satisfy safety gates)
+    assert exp.coerce_bool([0], default=False) is False
+    assert exp.coerce_bool({}, default=False) is False
+    assert exp.coerce_bool([1], default=False) is False
+    assert exp.coerce_bool({"ok": True}, default=True) is True  # default when unknown type

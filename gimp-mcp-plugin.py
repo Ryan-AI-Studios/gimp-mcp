@@ -5432,6 +5432,14 @@ class MCPPlugin(Gimp.PlugIn):
             raise RuntimeError(f"Source_Immutable group set_lock_content failed: {e}") from e
         return group
 
+    def _group_has_children(self, group):
+        """True if group layer has at least one child (prior ensure applied)."""
+        try:
+            kids = self._layer_children(group) if group is not None else []
+            return bool(kids)
+        except Exception:
+            return False
+
     def _layer_under_policy_group(self, layer, policy_group):
         """True if layer is already a descendant of the marked policy group."""
         try:
@@ -5566,12 +5574,16 @@ class MCPPlugin(Gimp.PlugIn):
                     if lid in working_set:
                         skipped.append({"item_id": lid, "reason": "working_copy"})
                         continue
-                    # Name-based defense if session state was lost / restarted mid-doc
+                    # Name-based defense only after policy group already has
+                    # children (prior ensure). Avoids first-run skip of a
+                    # source intentionally/accidentally named "... (working)".
                     try:
                         lname = str(layer.get_name() or "")
                     except Exception:
                         lname = ""
-                    if _policy.is_working_layer_name(lname):
+                    if _policy.is_working_layer_name(lname) and (
+                        protected_set or self._group_has_children(group)
+                    ):
                         skipped.append(
                             {"item_id": lid, "reason": "working_copy_name", "name": lname}
                         )
@@ -5954,9 +5966,9 @@ class MCPPlugin(Gimp.PlugIn):
             except ValueError as e:
                 return _sec.make_error(_sec.CODE_POLICY_DENIED, str(e))
 
-            close_prior = bool(params.get("close_prior", False))
+            close_prior = _exp.coerce_bool(params.get("close_prior", False), default=False)
             prior_index = params.get("image_index", None)
-            verify_hash = bool(params.get("verify_hash", True))
+            verify_hash = _exp.coerce_bool(params.get("verify_hash", True), default=True)
 
             intended_dir = Path(str(self.workspace_root)) / _policy.CHECKPOINT_DIR_NAME / label
             intended_xcf = intended_dir / _policy.CHECKPOINT_XCF_NAME
