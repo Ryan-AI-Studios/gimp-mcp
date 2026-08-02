@@ -265,7 +265,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0003-SecurityHardening** — secure defaults in progress (exec off, 127.0.0.1, token, path jail); 0002 Completed |
+| Active focus | **0003 Completed** → **0004-VisibleCompositeSnapshot** next |
 | Track count | 0001–0028 (see conductor.md) |
 
 ---
@@ -283,3 +283,4 @@ If indexes are empty: `ledgerful index --incremental`.
 | 2026-08-02 | 0002 quality surface policy: full product ruff; plugin type exclude; uv.lock SoT; lint.yml retired; scripts/ layout |
 | 2026-08-02 | 0002 Completed: full surface green; conductor + deferred updated; next=0003 |
 | 2026-08-02 | 0003 secure defaults: exec off, 127.0.0.1 AF_INET, token auth, path jail, SECURITY.md |
+| 2026-08-02 | 0003 Completed: Class A/B gates, auth-first, path jail, token rotate, Codex final PASS WITH DEFERRED P3; next=0004 |
