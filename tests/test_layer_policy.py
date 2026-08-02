@@ -48,6 +48,16 @@ def test_windows_reserved_names_cover_devices() -> None:
     assert "LPT0" not in policy.WINDOWS_RESERVED_NAMES
 
 
+def test_is_working_layer_name() -> None:
+    assert policy.is_working_layer_name("Background (working)") is True
+    assert policy.is_working_layer_name("Background (working) 2") is True
+    assert policy.is_working_layer_name("foo (working) 99") is True
+    assert policy.is_working_layer_name("Background") is False
+    assert policy.is_working_layer_name("working") is False
+    assert policy.is_working_layer_name("x (working) extra") is False
+    assert policy.is_working_layer_name("") is False
+
+
 # ---------------------------------------------------------------------------
 # sanitize_checkpoint_label
 # ---------------------------------------------------------------------------
@@ -285,8 +295,17 @@ def test_wiring_plugin_imports_policy() -> None:
     assert "checkpoint_restore" in text
     assert "_resolve_mutable_layer" in text
     assert "_protected_item_ids" in text
+    assert "_working_item_ids" in text
+    assert "is_working_layer_name" in text
     assert "confirm_destructive" in text
     assert "CODE_CONFIRM_REQUIRED" in text or "CONFIRM_REQUIRED" in text
+    # Codex P1: policy gates use coerce_bool (not bare bool on those params)
+    assert "_exp.coerce_bool" in text
+    assert "def _require_confirm_destructive" in text
+    assert "def _allow_source_mutation_from_params" in text
+    # Checkpoint XCF: partial + replace so failed overwrite cannot keep stale XCF
+    assert ".partial" in text
+    assert "os.replace" in text
 
 
 def test_wiring_server_tools() -> None:
@@ -388,3 +407,18 @@ def test_wiring_confirm_destructive_sites() -> None:
     conf_pos = resize.find("_require_confirm_destructive")
     assert flag_pos != -1 and conf_pos != -1 and flag_pos < conf_pos
     assert "if will_flatten:" in resize
+
+
+def test_coerce_bool_rejects_stringly_false() -> None:
+    """Policy gates must use export.coerce_bool semantics (Codex P1)."""
+    import gimp_mcp_export as exp
+
+    assert exp.coerce_bool("false", default=False) is False
+    assert exp.coerce_bool("FALSE", default=False) is False
+    assert exp.coerce_bool("0", default=False) is False
+    assert exp.coerce_bool("true", default=False) is True
+    assert exp.coerce_bool(True, default=False) is True
+    assert exp.coerce_bool(False, default=False) is False
+    # bare bool() would wrongly treat these as True:
+    assert bool("false") is True
+    assert exp.coerce_bool("false", default=False) is not bool("false")

@@ -147,6 +147,8 @@ class MCPPlugin(Gimp.PlugIn):
         # Per-image protected Source_Immutable item ids (track 0009).
         # item_id → denied for mutators unless allow_source_mutation=true.
         self._protected_item_ids: dict[int, set[int]] = {}
+        # Working copies created by ensure_source_immutable (skip on re-ensure).
+        self._working_item_ids: dict[int, set[int]] = {}
 
         print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
         if not _sec.is_loopback_host(self.host):
@@ -2547,6 +2549,7 @@ class MCPPlugin(Gimp.PlugIn):
         self._orientation_normalized.pop(iid, None)
         # Protected Source_Immutable set must not survive close / id recycle (0009 M1).
         self._protected_item_ids.pop(iid, None)
+        self._working_item_ids.pop(iid, None)
 
     def _sync_image_generations(self, open_images=None):
         """Prune generation map to currently open images. Does not reseed closed ids.
@@ -2578,7 +2581,7 @@ class MCPPlugin(Gimp.PlugIn):
                 continue
             if iid not in open_ids:
                 self._orientation_normalized.pop(key, None)
-        # Drop protected item sets for pruned / non-open ids (0009 M1).
+        # Drop protected/working item sets for pruned / non-open ids (0009 M1).
         for key in list(self._protected_item_ids.keys()):
             try:
                 iid = int(key)
@@ -2587,6 +2590,14 @@ class MCPPlugin(Gimp.PlugIn):
                 continue
             if iid not in open_ids:
                 self._protected_item_ids.pop(key, None)
+        for key in list(self._working_item_ids.keys()):
+            try:
+                iid = int(key)
+            except (TypeError, ValueError):
+                self._working_item_ids.pop(key, None)
+                continue
+            if iid not in open_ids:
+                self._working_item_ids.pop(key, None)
         return dropped
 
     def _pixel_orientation_normalized(self, image_id, tag=None):
@@ -2882,12 +2893,16 @@ class MCPPlugin(Gimp.PlugIn):
         return layer
 
     def _allow_source_mutation_from_params(self, params):
-        """Coerce allow_source_mutation param (default False)."""
-        return bool((params or {}).get("allow_source_mutation", False))
+        """Coerce allow_source_mutation without bool(\"false\")==True (0009 Codex P1)."""
+        return _exp.coerce_bool((params or {}).get("allow_source_mutation", False), default=False)
 
     def _require_confirm_destructive(self, params, action):
-        """Require confirm_destructive=true for live flatten/merge paths."""
-        if not bool((params or {}).get("confirm_destructive", False)):
+        """Require confirm_destructive=true for live flatten/merge paths.
+
+        Uses :func:`gimp_mcp_export.coerce_bool` so stringly ``\"false\"`` / ``\"0\"``
+        cannot satisfy the gate (authenticated TCP JSON safety).
+        """
+        if not _exp.coerce_bool((params or {}).get("confirm_destructive", False), default=False):
             raise _sec.SecurityError(
                 _sec.CODE_CONFIRM_REQUIRED,
                 f"{action} requires confirm_destructive=true (destroys the live layer stack)",
@@ -5520,6 +5535,7 @@ class MCPPlugin(Gimp.PlugIn):
             protected_out = []
             working_out = []
             skipped = []
+            noop = False
 
             image.undo_group_start()
             try:
@@ -5528,6 +5544,8 @@ class MCPPlugin(Gimp.PlugIn):
                 # Snapshot root candidates (root stack changes as we process)
                 roots = list(image.get_layers() or [])
                 targets = []
+                working_set = self._working_item_ids.get(image_id) or set()
+                protected_set = self._protected_item_ids.get(image_id) or set()
                 for layer in roots:
                     try:
                         lid = int(layer.get_id())
@@ -5541,77 +5559,107 @@ class MCPPlugin(Gimp.PlugIn):
                     if self._layer_under_policy_group(layer, group):
                         skipped.append({"item_id": lid, "reason": "already_under_policy_group"})
                         continue
-                    # already protected in session set → still re-lock path idempotent skip
-                    if lid in (self._protected_item_ids.get(image_id) or set()):
-                        if self._layer_under_policy_group(layer, group):
-                            skipped.append({"item_id": lid, "reason": "already_protected"})
-                            continue
+                    if lid in protected_set:
+                        skipped.append({"item_id": lid, "reason": "already_protected"})
+                        continue
+                    # Session working copies from a prior ensure (idempotent)
+                    if lid in working_set:
+                        skipped.append({"item_id": lid, "reason": "working_copy"})
+                        continue
+                    # Name-based defense if session state was lost / restarted mid-doc
+                    try:
+                        lname = str(layer.get_name() or "")
+                    except Exception:
+                        lname = ""
+                    if _policy.is_working_layer_name(lname):
+                        skipped.append(
+                            {"item_id": lid, "reason": "working_copy_name", "name": lname}
+                        )
+                        continue
                     targets.append(layer)
 
-                if explicit_ids is not None:
-                    found = {int(t.get_id()) for t in targets}
-                    for wanted in explicit_ids:
-                        if wanted not in found and wanted not in {s["item_id"] for s in skipped}:
-                            # may already be under group
+                # True no-op: nothing to protect → no gen bump (idempotent)
+                if not targets:
+                    noop = True
+                else:
+                    for layer in targets:
+                        try:
+                            orig_id = int(layer.get_id())
+                            orig_name = str(layer.get_name() or f"layer-{orig_id}")
+                        except Exception as e:
+                            raise RuntimeError(f"cannot read layer for protect: {e}") from e
+
+                        # original_index among current root layers
+                        roots_now = list(image.get_layers() or [])
+                        try:
+                            original_index = roots_now.index(layer)
+                        except ValueError:
+                            # not at root anymore
+                            skipped.append({"item_id": orig_id, "reason": "not_root"})
+                            continue
+
+                        # 1. copy working
+                        working = layer.copy()
+                        # 2. insert working into original slot (working takes the slot)
+                        image.insert_layer(working, None, original_index)
+                        try:
+                            wname = self._unique_working_name(image, orig_name)
+                            working.set_name(wname)
+                        except Exception:
                             pass
+                        # 3. reparent original into policy group
+                        if not hasattr(image, "reorder_item"):
+                            raise RuntimeError("image.reorder_item unavailable")
+                        image.reorder_item(layer, group, -1)
+                        # 4. hide + lock original
+                        self._lock_source_layer(layer)
 
-                for layer in targets:
-                    try:
-                        orig_id = int(layer.get_id())
-                        orig_name = str(layer.get_name() or f"layer-{orig_id}")
-                    except Exception as e:
-                        raise RuntimeError(f"cannot read layer for protect: {e}") from e
+                        # register protected + working for session idempotency
+                        self._protected_item_ids.setdefault(image_id, set()).add(orig_id)
 
-                    # original_index among current root layers
-                    roots_now = list(image.get_layers() or [])
-                    try:
-                        original_index = roots_now.index(layer)
-                    except ValueError:
-                        # not at root anymore
-                        skipped.append({"item_id": orig_id, "reason": "not_root"})
-                        continue
-
-                    # 1. copy working
-                    working = layer.copy()
-                    # 2. insert working into original slot (working takes the slot)
-                    image.insert_layer(working, None, original_index)
-                    try:
-                        wname = self._unique_working_name(image, orig_name)
-                        working.set_name(wname)
-                    except Exception:
-                        pass
-                    # 3. reparent original into policy group
-                    if not hasattr(image, "reorder_item"):
-                        raise RuntimeError("image.reorder_item unavailable")
-                    image.reorder_item(layer, group, -1)
-                    # 4. hide + lock original
-                    self._lock_source_layer(layer)
-
-                    # register protected
-                    self._protected_item_ids.setdefault(image_id, set()).add(orig_id)
-
-                    protected_out.append(
-                        {
-                            "item_id": orig_id,
-                            "name": orig_name,
-                            "handle": self._emit_item_handle(layer, image_id),
-                        }
-                    )
-                    try:
-                        wid = int(working.get_id())
-                        working_out.append(
+                        protected_out.append(
                             {
-                                "item_id": wid,
-                                "name": working.get_name(),
-                                "handle": self._emit_item_handle(working, image_id),
+                                "item_id": orig_id,
+                                "name": orig_name,
+                                "handle": self._emit_item_handle(layer, image_id),
                             }
                         )
-                    except Exception:
-                        working_out.append({"item_id": None, "name": None})
+                        try:
+                            wid = int(working.get_id())
+                            self._working_item_ids.setdefault(image_id, set()).add(wid)
+                            working_out.append(
+                                {
+                                    "item_id": wid,
+                                    "name": working.get_name(),
+                                    "handle": self._emit_item_handle(working, image_id),
+                                }
+                            )
+                        except Exception:
+                            working_out.append({"item_id": None, "name": None})
             finally:
                 image.undo_group_end()
 
-            # Single generation bump after ALL layers (AI2 BS3)
+            if noop:
+                gen = self._image_generation(image_id)
+                return {
+                    "status": "success",
+                    "results": {
+                        "status": "success",
+                        "image_id": image_id,
+                        "generation": gen,
+                        "handle": self._emit_image_handle(image),
+                        "protected": [],
+                        "working": [],
+                        "skipped": skipped,
+                        "group_name": _policy.SOURCE_IMMUTABLE_GROUP_NAME,
+                        "protected_item_ids": sorted(
+                            self._protected_item_ids.get(image_id) or set()
+                        ),
+                        "noop": True,
+                    },
+                }
+
+            # Single generation bump after ALL layers (AI2 BS3) — only if work done
             gen = self._bump_image_generation(image_id)
             Gimp.displays_flush()
 
@@ -5642,6 +5690,7 @@ class MCPPlugin(Gimp.PlugIn):
                     "skipped": skipped,
                     "group_name": _policy.SOURCE_IMMUTABLE_GROUP_NAME,
                     "protected_item_ids": sorted(self._protected_item_ids.get(image_id) or set()),
+                    "noop": False,
                 },
             }
         except _sec.SecurityError as e:
@@ -5690,22 +5739,76 @@ class MCPPlugin(Gimp.PlugIn):
             walk(root, None, 0, visited)
         return out
 
+    def _pdb_status_is_success(self, result):
+        """Best-effort: True if *result* looks like PDB SUCCESS (or unknown)."""
+        if result is None:
+            return True  # no status surface — rely on file checks
+        try:
+            status = result.index(0)
+        except Exception:
+            try:
+                status = result[0]
+            except Exception:
+                return True
+        try:
+            success = Gimp.PDBStatusType.SUCCESS
+            if status == success:
+                return True
+            # Some builds return int enum values
+            if int(status) == int(success):
+                return True
+            # Explicit non-success statuses fail closed
+            for name in ("EXECUTION_ERROR", "CALLING_ERROR", "PASS_THROUGH", "CANCEL"):
+                if hasattr(Gimp.PDBStatusType, name) and status == getattr(
+                    Gimp.PDBStatusType, name
+                ):
+                    return False
+            return False
+        except Exception:
+            return True
+
     def _save_xcf_to_path(self, image, file_path):
-        """Save image as XCF to an already-jailed absolute path."""
+        """Save image as XCF to an already-jailed absolute path.
+
+        Writes to a ``.partial`` sibling first, verifies non-empty bytes, then
+        ``os.replace`` into the final path so a failed overwrite cannot pair a
+        stale XCF with a fresh sidecar (Codex P1). Full atomic product semantics
+        remain **0013**.
+        """
         from gi.repository import Gio
 
         xcf_path = os.fspath(file_path)
-        gio_file = Gio.File.new_for_path(xcf_path)
-        pdb = Gimp.get_pdb()
-        proc = pdb.lookup_procedure("gimp-xcf-save")
-        if proc:
-            cfg = proc.create_config()
-            cfg.set_property("image", image)
-            cfg.set_property("file", gio_file)
-            proc.run(cfg)
-        else:
-            Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
-        return xcf_path
+        tmp_path = xcf_path + ".partial"
+        try:
+            if os.path.isfile(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            gio_file = Gio.File.new_for_path(tmp_path)
+            pdb = Gimp.get_pdb()
+            proc = pdb.lookup_procedure("gimp-xcf-save")
+            if proc:
+                cfg = proc.create_config()
+                cfg.set_property("image", image)
+                cfg.set_property("file", gio_file)
+                result = proc.run(cfg)
+                if not self._pdb_status_is_success(result):
+                    raise RuntimeError(f"gimp-xcf-save failed (status={result!r})")
+            else:
+                Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
+            if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) <= 0:
+                raise RuntimeError(f"XCF save produced empty/missing file: {tmp_path}")
+            os.replace(tmp_path, xcf_path)
+            if not os.path.isfile(xcf_path) or os.path.getsize(xcf_path) <= 0:
+                raise RuntimeError(f"XCF replace did not yield file: {xcf_path}")
+            return xcf_path
+        finally:
+            if os.path.isfile(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def _checkpoint_create(self, params):
         """Create a workspace-jailed XCF checkpoint + JSON sidecar.
@@ -5725,8 +5828,10 @@ class MCPPlugin(Gimp.PlugIn):
             except ValueError as e:
                 return _sec.make_error(_sec.CODE_POLICY_DENIED, str(e))
 
-            overwrite = bool(params.get("overwrite", False))
-            include_orient = bool(params.get("include_orient_snapshot", False))
+            overwrite = _exp.coerce_bool(params.get("overwrite", False), default=False)
+            include_orient = _exp.coerce_bool(
+                params.get("include_orient_snapshot", False), default=False
+            )
             image_index = int(params.get("image_index", 0))
             image = self._get_image(image_index)
             image_id = int(image.get_id())

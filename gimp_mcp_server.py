@@ -2493,9 +2493,11 @@ def ensure_source_immutable(
     2. reparent the original into ``Source_Immutable``
     3. hide + lock content/position/visibility on the original
 
-    Mutating a protected item_id returns ``POLICY_DENIED`` unless the plugin
-    receives ``allow_source_mutation=true``. Idempotent for layers already under
-    the marked group. Single generation bump after all layers.
+    Mutating a protected item_id returns ``POLICY_DENIED``. The plugin accepts a
+    raw-TCP recovery flag ``allow_source_mutation=true`` (not exposed on MCP
+    mutator tools — intentional fail-closed surface). Idempotent: working copies
+    and layers already under the marked group are skipped; no generation bump
+    when nothing changes. Single generation bump only after actual protect work.
 
     Agent intake order: orient_workspace → ensure_source_immutable →
     checkpoint_create before destructive ops → confirm_destructive for flatten.

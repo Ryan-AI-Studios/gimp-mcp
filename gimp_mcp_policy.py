@@ -40,6 +40,9 @@ CHECKPOINT_JSON_NAME = "checkpoint.json"
 _LABEL_MAX_LEN = 64
 _LABEL_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# Working-layer name suffix from ensure_source_immutable (idempotency skip)
+_WORKING_NAME_RE = re.compile(r" \(working\)(?: \d+)?$")
+
 # Windows reserved basenames (case-insensitive, without extension)
 WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset(
     {
@@ -58,6 +61,17 @@ _ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]
 # ---------------------------------------------------------------------------
 # Labels
 # ---------------------------------------------------------------------------
+
+
+def is_working_layer_name(name: str) -> bool:
+    """True if *name* looks like an ensure_source_immutable working copy.
+
+    Matches ``"{base} (working)"`` and ``"{base} (working) {n}"`` (n >= 2).
+    Used so a second ensure call does not re-protect working layers.
+    """
+    if not isinstance(name, str) or not name:
+        return False
+    return bool(_WORKING_NAME_RE.search(name))
 
 
 def sanitize_checkpoint_label(label: str) -> str:
