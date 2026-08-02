@@ -20,8 +20,8 @@ output/
 # Claude Code working directory
 /.claude/
 
-# Generated test artifacts
-/tests/continuous_edit_test/output/
+# Generated live-script artifacts
+/scripts/continuous_edit_test/output/
 
 # --- Local agent / governance (not committed; personal orchestration) ---
 .agents/

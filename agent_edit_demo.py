@@ -10,20 +10,22 @@ Pipeline:
 Usage:
     python agent_edit_demo.py --input path/to/portrait.png --output-dir path/to/output/
 """
+
 import argparse
-import socket
-import json
 import base64
+import json
+import socket
 import sys
 
 # ── low-level transport ─────────────────────────────────────────────────────
 
+
 def _send(msg, parse_truncate):
     s = socket.socket()
     s.settimeout(30)
-    s.connect(('127.0.0.1', 9877))
-    s.send(json.dumps(msg).encode() + b'\n')
-    r = b''
+    s.connect(("127.0.0.1", 9877))
+    s.send(json.dumps(msg).encode() + b"\n")
+    r = b""
     while True:
         try:
             d = s.recv(8192)
@@ -35,63 +37,77 @@ def _send(msg, parse_truncate):
                 break
             except json.JSONDecodeError:
                 continue
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     try:
         return json.loads(r.decode().strip())
     except json.JSONDecodeError:
-        return {'status': 'error', 'error': 'parse: ' + r.decode()[:parse_truncate]}
+        return {"status": "error", "error": "parse: " + r.decode()[:parse_truncate]}
+
 
 def cmd(t, params=None):
-    return _send({'type': t, 'params': params or {}}, 120)
+    return _send({"type": t, "params": params or {}}, 120)
+
 
 def exec_gimp(code):
     """Run Python code inside GIMP via the cmds exec path."""
-    return _send({'cmds': [code]}, 200)
+    return _send({"cmds": [code]}, 200)
+
 
 def snapshot(image_index=0, max_size=512, region=None, label=""):
     """Get visual state snapshot — core AI feedback loop mechanism."""
-    params = {'image_index': image_index, 'max_width': max_size, 'max_height': max_size}
+    params = {"image_index": image_index, "max_width": max_size, "max_height": max_size}
     if region:
-        params['region'] = {
-            'origin_x': region['x'], 'origin_y': region['y'],
-            'width': region['w'],    'height':   region['h'],
+        params["region"] = {
+            "origin_x": region["x"],
+            "origin_y": region["y"],
+            "width": region["w"],
+            "height": region["h"],
         }
-    r = cmd('get_image_bitmap', params)
-    if r.get('status') == 'success':
-        b64 = r['results']['image_data']
+    r = cmd("get_image_bitmap", params)
+    if r.get("status") == "success":
+        b64 = r["results"]["image_data"]
         raw = base64.b64decode(b64)
         label_str = f" [{label}]" if label else ""
-        print(f"  Snapshot{label_str}: {len(raw)//1024}KB  "
-              f"{r['results']['width']}x{r['results']['height']}px")
+        print(
+            f"  Snapshot{label_str}: {len(raw) // 1024}KB  "
+            f"{r['results']['width']}x{r['results']['height']}px"
+        )
         return raw
     else:
-        print(f"  Snapshot FAILED: {r.get('error','')}")
+        print(f"  Snapshot FAILED: {r.get('error', '')}")
         return None
 
+
 def save_png(raw_bytes, path):
-    with open(path, 'wb') as f:
+    with open(path, "wb") as f:
         f.write(raw_bytes)
     print(f"  Saved: {path}")
 
+
 parser = argparse.ArgumentParser(description="AI agent editing demo via GIMP MCP")
-parser.add_argument("--input",      required=True, help="Path to input portrait image")
-parser.add_argument("--output-dir", required=True, dest="output_dir", help="Directory to save snapshots and final result")
+parser.add_argument("--input", required=True, help="Path to input portrait image")
+parser.add_argument(
+    "--output-dir",
+    required=True,
+    dest="output_dir",
+    help="Directory to save snapshots and final result",
+)
 args = parser.parse_args()
 
-OUT = args.output_dir.rstrip('/\\')
+OUT = args.output_dir.rstrip("/\\")
 
 # ── STEP 0: close previous images, open original ────────────────────────────
-print("="*60)
+print("=" * 60)
 print("STEP 0: Open original image")
-r = cmd('list_images', {})
-for _ in r.get('results', {}).get('images', []):
-    cmd('close_image', {'image_index': 0})
+r = cmd("list_images", {})
+for _ in r.get("results", {}).get("images", []):
+    cmd("close_image", {"image_index": 0})
 
-r = cmd('open_image', {'file_path': args.input})
-print(f"  Opened: {r.get('status')}  id={r.get('results',{}).get('image_id')}")
-if r.get('status') != 'success':
+r = cmd("open_image", {"file_path": args.input})
+print(f"  Opened: {r.get('status')}  id={r.get('results', {}).get('image_id')}")
+if r.get("status") != "success":
     print(f"ERROR: Could not open {args.input}: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)
 
@@ -100,7 +116,7 @@ print()
 print("STEP 1: Snapshot BEFORE edits (original)")
 raw = snapshot(label="original")
 if raw:
-    save_png(raw, f'{OUT}/snap_01_original.png')
+    save_png(raw, f"{OUT}/snap_01_original.png")
 
 # ── STEP 2: Remove background ───────────────────────────────────────────────
 print()
@@ -151,12 +167,12 @@ except Exception as e:
     print(_tb.format_exc())
 """
 r = exec_gimp(bg_code)
-if r.get('status') != 'success':
+if r.get("status") != "success":
     print(f"ERROR: Background removal transport failed: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)
-output = (r.get('results') or [''])[0]
+output = (r.get("results") or [""])[0]
 print(f"  GIMP: {output.strip()}")
-if 'BG_REMOVED' not in output:
+if "BG_REMOVED" not in output:
     print(f"ERROR: Background removal failed: {output[:200]}", file=sys.stderr)
     sys.exit(1)
 
@@ -165,13 +181,13 @@ print()
 print("STEP 3: Snapshot AFTER background removal (agent verifies BG gone)")
 raw = snapshot(label="no-bg")
 if raw:
-    save_png(raw, f'{OUT}/snap_02_nobg.png')
+    save_png(raw, f"{OUT}/snap_02_nobg.png")
 
 # Also zoom into face area for the agent to check
 print("  Zooming into face region for detail check...")
-raw_face = snapshot(region={'x': 140, 'y': 80, 'w': 240, 'h': 300}, label="face-region")
+raw_face = snapshot(region={"x": 140, "y": 80, "w": 240, "h": 300}, label="face-region")
 if raw_face:
-    save_png(raw_face, f'{OUT}/snap_03_face_detail.png')
+    save_png(raw_face, f"{OUT}/snap_03_face_detail.png")
 
 # ── STEP 4: Smile edit — paint smile over neutral mouth ─────────────────────
 print()
@@ -283,12 +299,12 @@ except Exception as e:
     print(_tb.format_exc())
 """
 r = exec_gimp(smile_code)
-if r.get('status') != 'success':
+if r.get("status") != "success":
     print(f"ERROR: Smile edit transport failed: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)
-output = (r.get('results') or [''])[0]
+output = (r.get("results") or [""])[0]
 print(f"  GIMP: {output.strip()}")
-if 'SMILE_DONE' not in output:
+if "SMILE_DONE" not in output:
     print(f"ERROR: Smile edit failed: {output[:200]}", file=sys.stderr)
     sys.exit(1)
 
@@ -297,28 +313,31 @@ print()
 print("STEP 5: Snapshot AFTER smile paint (agent verifies expression change)")
 raw = snapshot(label="with-smile")
 if raw:
-    save_png(raw, f'{OUT}/snap_04_smile.png')
+    save_png(raw, f"{OUT}/snap_04_smile.png")
 
-raw_mouth = snapshot(region={'x': 170, 'y': 310, 'w': 180, 'h': 100}, label="mouth-zoom")
+raw_mouth = snapshot(region={"x": 170, "y": 310, "w": 180, "h": 100}, label="mouth-zoom")
 if raw_mouth:
-    save_png(raw_mouth, f'{OUT}/snap_05_mouth_zoom.png')
+    save_png(raw_mouth, f"{OUT}/snap_05_mouth_zoom.png")
 
 # ── STEP 6: Export final ─────────────────────────────────────────────────────
 print()
 print("STEP 6: Export final result")
-final_out = f'{OUT}/result_smile_nobg.png'
-r = cmd('export_image', {
-    'image_index': 0,
-    'file_path':   final_out,
-    'file_type':   'png',
-})
+final_out = f"{OUT}/result_smile_nobg.png"
+r = cmd(
+    "export_image",
+    {
+        "image_index": 0,
+        "file_path": final_out,
+        "file_type": "png",
+    },
+)
 print(f"  Export: {r.get('status')} -> {final_out}")
-if r.get('status') != 'success':
+if r.get("status") != "success":
     print(f"ERROR: Export failed: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)
 
 print()
-print("="*60)
+print("=" * 60)
 print(f"DONE. Snapshots saved to {OUT}/")
 print("  snap_01_original.png    <- before any edits")
 print("  snap_02_nobg.png        <- after BG removal (agent checkpoint)")

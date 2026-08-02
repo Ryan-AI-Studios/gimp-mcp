@@ -1,8 +1,9 @@
 # Ruff rev must stay aligned with pyproject.toml / CI (ruff==0.16.1 as of 2026-08-02)
+# Local: ruff-check may --fix; CI runs check-only (no --fix) via ci.yml.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.1
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format

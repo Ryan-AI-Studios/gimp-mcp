@@ -91,13 +91,14 @@ minting. Track IDs are creation order, not execution order.
 
 ```
 0001 Quality gates bootstrap — Completed (87bc111)
-  → 0002 Quality surface stabilization — NEXT (full clean lint/format/types/tests)
-  → 0003 Security … through 0028 Final product polish (v1)
+  → 0002 Quality surface stabilization — Completed
+  → 0003 Security … through 0028 Final product polish (v1) — NEXT
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. Most are **Proposed placeholders** until a full
-planning pass. **0002 is Ready.** Authoritative table: `conductor/conductor.md`.
+recipes → packaging → golden path → v1 polish. Most remaining tracks are **Proposed placeholders**
+until a full planning pass. **0002 is Completed.** Next focus: **0003 SecurityHardening**.
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -137,24 +138,47 @@ Pinned tools (as of 2026-08 bootstrap; re-check PyPI when bumping):
 | pre-commit | ≥4.6.1 |
 | Python | ≥3.11 (CI: 3.13 via uv) |
 
-CI: `.github/workflows/ci.yml` — `actions/checkout@v7`, `astral-sh/setup-uv@v9`,
-`FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` (Node 20 deprecated on Actions runners).
+CI: **`.github/workflows/ci.yml` is the sole quality SoT** (`actions/checkout@v7`,
+`astral-sh/setup-uv@v9`, `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`). Legacy `lint.yml` was
+retired in 0002 (no branch protection required the Lint job name). Pre-commit uses
+`ruff-check` then `ruff-format` at rev `v0.16.1` (local may `--fix`; CI is check-only).
 
-### Lint surface policy
+### Quality surface policy (post-0002)
 
-- **In scope:** `gimp_mcp_server.py`, offline unit tests (e.g. `tests/test_quality_smoke.py`).
-- **Deferred / excluded for now:** `gimp-mcp-plugin.py`, demos (`agent_edit_demo.py`, `bg_remove*.py`),
-  live scripts under `tests/continuous_edit_test/`, markdown. Expand coverage in dedicated cleanup
-  tracks rather than drive-by reformatting upstream bulk files.
+| Gate | Surface |
+|---|---|
+| **Ruff lint + format** | Full product Python: `gimp_mcp_server.py`, `gimp-mcp-plugin.py`, demos, `run_tests.py`, `scripts/**`, `tests/**` |
+| **basedpyright** | `gimp_mcp_server.py` + `tests/` only |
+| **pytest offline** | `tests/` unit tests only (`testpaths = ["tests"]`) |
+
+**Excludes / ignores (justified):**
+
+- **Ruff `extend-exclude`:** `.agents`, `conductor`, `.ledgerful`, `docs`, `*.md` — governance dirs; markdown excluded because `ruff format` rewrites fenced code blocks and we do not format docs via ruff.
+- **Plugin per-file:** `E402`, `I`, `RUF001`, `RUF002` on `gimp-mcp-plugin.py` — GIMP bootstrap (`gi.require_version` before `gi.repository`); do **not** reorder imports to silence E402; do **not** bulk-ASCII-ize plugin unicode.
+- **Global ruff ignores (deferred cleanup):** `B904` (~79 raise-without-from in server wrappers), `E501` (long tool docstrings). See `conductor/deferred.md`.
+- **basedpyright permanent exclude:** `gimp-mcp-plugin.py` (GIMP-embedded `gi.repository` — no host stubs), plus demos/`scripts/**`/`run_tests.py`.
+- **Type-hardening dials (load-bearing, not 0002):** `reportAny` / `reportUnknown*` = false for usable `standard` mode with mcp/fastmcp; candidate for a later type-hardening track — do **not** flip to basedpyright `recommended`/`all` casually.
+
+**Runtime deps:** `mcp` / `fastmcp` are unpinned in `pyproject.toml` `dependencies`; **`uv.lock` is the pin SoT**. Optional lower bounds later — do not treat open ranges as unpinned chaos.
+
+**Live scripts** live under `scripts/` (not pytest-collected):
+
+- `scripts/add_text_metadata.py`
+- `scripts/continuous_edit_test/` (+ `files/` fixtures)
 
 ### Live GIMP (integration only)
 
 1. Restart GIMP after plug-in install.
 2. Open an image.
 3. **Tools → MCP → Start MCP Server** (loopback `:9877`).
-4. Then: `pytest -m integration` or `python run_tests.py` / MCP tools.
+4. Then: `pytest -m integration` or `python run_tests.py` / MCP tools / `scripts/*`.
 
 Offline CI must not require GIMP GUI.
+
+### Ledgerful policy notes
+
+- `.ledgerful/` is **gitignored** (local-only). `rules.toml` must have a **single** `required_verifications` under `[global]` (duplicate keys cause parse fail). Operational verify SoT is `config.toml` `[verify].steps` — keep in sync with CI.
+- After editing rules: `ledgerful config verify` and `ledgerful change-context --json` must not show rules TOML parse failures.
 
 ---
 
@@ -164,18 +188,18 @@ Known upstream defects (must remain visible until fixed by tracks):
 
 | Issue | Symptom | Track |
 |---|---|---|
-| #17 composite | Snapshot/top-layer buffer ≠ visible canvas | 0003 |
-| #16 alpha | “Success” export without transparency | 0004 |
-| Trust boundary | Unauthenticated TCP + arbitrary `cmds`/exec | 0002 |
-| Tests | Exception-only “pass” without pixel truth | 0009 / 0013 |
+| #17 composite | Snapshot/top-layer buffer ≠ visible canvas | 0004 |
+| #16 alpha | “Success” export without transparency | 0005 |
+| Trust boundary | Unauthenticated TCP + arbitrary `cmds`/exec | 0003 |
+| Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
 Hard rules for product work:
 
 - Prefer **MCP** for interactive orient/edit/snapshot loops; **CLI sidecar** for atomic XCF/export/batch.
 - Never trust `status: success` alone — require composite/alpha/objective checks when vision matters.
-- Track layers by **stable handles**, not names (once 0006 lands; until then prefer IDs over names).
+- Track layers by **stable handles**, not names (once 0007 lands; until then prefer IDs over names).
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
-- Disable arbitrary Python exec in production plugin paths (0002).
+- Disable arbitrary Python exec in production plugin paths (0003).
 - Bind TCP to `127.0.0.1` only; confine paths to workspace roots.
 - Max **3** automatic refine loops; escalate subjective failures to humans.
 
@@ -231,15 +255,15 @@ If indexes are empty: `ledgerful index --incremental`.
 
 ---
 
-## 10. Snapshot (bootstrap)
+## 10. Snapshot
 
 | Item | Value |
 |---|---|
 | Date | 2026-08-02 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | synced from upstream at bootstrap; origin = Ryan-AI-Studios |
-| Quality gates | ruff / format / basedpyright / pytest / ledgerful verify green offline |
-| Active focus | **0002-QualitySurfaceStabilization** (then 0003 security → … → 0028 v1 polish) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
+| Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
+| Active focus | **0002 Completed** → **0003 SecurityHardening** next |
 | Track count | 0001–0028 (see conductor.md) |
 
 ---
@@ -250,3 +274,7 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | 2026-08-02 | Initial planner handoff for gimp-mcp full-product program |
 | 2026-08-02 | Expanded conductor to 28 placeholder tracks; 0001 Completed; 0002 stabilization Ready |
+| 2026-08-02 | Full plan for 0002: pins ruff 0.16.1 / basedpyright 1.39.9 / pytest 9.1.1; roll-in rules.toml + script layout |
+| 2026-08-02 | Folded AI-review.md into 0002: ruff-check hooks, unicode policy, rules apply check, CI dedupe, dead T201, DoD-8 ignores |
+| 2026-08-02 | 0002 quality surface policy: full product ruff; plugin type exclude; uv.lock SoT; lint.yml retired; scripts/ layout |
+| 2026-08-02 | 0002 Completed: full surface green; conductor + deferred updated; next=0003 |

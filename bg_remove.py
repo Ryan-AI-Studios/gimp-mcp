@@ -4,17 +4,19 @@
 Usage:
     python bg_remove.py --input path/to/image.png --output path/to/output.png
 """
+
 import argparse
-import socket
 import json
+import socket
 import sys
+
 
 def _send(msg, parse_truncate=120):
     s = socket.socket()
     s.settimeout(30)
-    s.connect(('127.0.0.1', 9877))
-    s.send(json.dumps(msg).encode() + b'\n')
-    r = b''
+    s.connect(("127.0.0.1", 9877))
+    s.send(json.dumps(msg).encode() + b"\n")
+    r = b""
     while True:
         try:
             d = s.recv(8192)
@@ -26,35 +28,38 @@ def _send(msg, parse_truncate=120):
                 break
             except json.JSONDecodeError:
                 continue
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     try:
         return json.loads(r.decode().strip())
     except json.JSONDecodeError:
-        return {'status': 'error', 'error': 'parse: ' + r.decode()[:parse_truncate]}
+        return {"status": "error", "error": "parse: " + r.decode()[:parse_truncate]}
+
 
 def cmd(t, params=None):
-    return _send({'type': t, 'params': params if params is not None else {}}, 120)
+    return _send({"type": t, "params": params if params is not None else {}}, 120)
+
 
 def exec_cmds(code_list):
-    return _send({'cmds': code_list}, 200)
+    return _send({"cmds": code_list}, 200)
+
 
 parser = argparse.ArgumentParser(description="Remove background from an image via GIMP MCP")
-parser.add_argument("--input",  required=True, help="Path to input image")
+parser.add_argument("--input", required=True, help="Path to input image")
 parser.add_argument("--output", required=True, help="Path to save result PNG")
 args = parser.parse_args()
 
 # Close everything and start fresh
-r = cmd('list_images', {})
-imgs = r.get('results', {}).get('images', [])
+r = cmd("list_images", {})
+imgs = r.get("results", {}).get("images", [])
 for _ in imgs:
-    cmd('close_image', {'image_index': 0})
+    cmd("close_image", {"image_index": 0})
 
 # Open original
-r = cmd('open_image', {'file_path': args.input})
+r = cmd("open_image", {"file_path": args.input})
 print(f"Opened: {r.get('status')}")
-if r.get('status') != 'success':
+if r.get("status") != "success":
     print(f"ERROR: Could not open {args.input}: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)
 
@@ -134,17 +139,17 @@ except Exception as _e:
 
 print("Running background removal...")
 r = exec_cmds([bg_removal_code])
-if r.get('status') != 'success':
+if r.get("status") != "success":
     print(f"ERROR: Background removal transport failed: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)
-output = (r.get('results') or [''])[0]
+output = (r.get("results") or [""])[0]
 print(f"GIMP output: {output}")
-if 'BG_REMOVAL_SUCCESS' not in output:
+if "BG_REMOVAL_SUCCESS" not in output:
     print(f"ERROR: Background removal failed: {output[:200]}", file=sys.stderr)
     sys.exit(1)
 
-r = cmd('export_image', {'image_index': 0, 'file_path': args.output, 'file_type': 'png'})
+r = cmd("export_image", {"image_index": 0, "file_path": args.output, "file_type": "png"})
 print(f"Export: {r.get('status')} -> {args.output}")
-if r.get('status') != 'success':
+if r.get("status") != "success":
     print(f"ERROR: Export failed: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)

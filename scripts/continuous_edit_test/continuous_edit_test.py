@@ -16,11 +16,11 @@ only THEN is the new background image set and the composite built.
      image — B&W darkness, blue-hue dominance, low saturation, low
      local gradient, near-border spatial prior, etc. — and each filter
      contributes up to 50 NESTED closed regions ("paths") at rising
-     strictness into a combined pool (9 × 50 = up to 450 paths total).
+     strictness into a combined pool (9 x 50 = up to 450 paths total).
      A pixel gets +1 vote for every path it falls inside; deeply-bg
      pixels land inside many paths per filter, subject pixels land
      inside few. Phase 1: pixels with ≥ 1100 votes (out of a pool
-     of 9 filters × 200 paths = 1800 paths total) have their alpha
+     of 9 filters x 200 paths = 1800 paths total) have their alpha
      rewritten to 0 (genuinely transparent — the alpha channel is
      added to the layer if absent). Phase 2 computes a cumulative
      4-direction sqrt-damped score per pixel and then runs strict
@@ -45,7 +45,7 @@ only THEN is the new background image set and the composite built.
        - Select by color seeded on a golden-yellow hair tone. Since
          the bg is already transparent, the selection can only touch
          hair pixels (alpha-zero pixels are skipped by the tool).
-       - Rotate the YELLOW hue range by −60° (yellow → red) preserving
+       - Rotate the YELLOW hue range by -60° (yellow → red) preserving
          per-pixel luminance, then deepen the resulting RED range so
          shadow strands go deep crimson.
        - Push extra red into highlights and shadows via color-balance
@@ -60,13 +60,14 @@ only THEN is the new background image set and the composite built.
   5. Export the final composite PNG.
 
 Usage:
-    python tests/continuous_edit_test/continuous_edit_test.py
-    python tests/continuous_edit_test/continuous_edit_test.py \\
+    python scripts/continuous_edit_test/continuous_edit_test.py
+    python scripts/continuous_edit_test/continuous_edit_test.py \\
         --character PATH --background PATH --out DIR
 
 Requires the GIMP MCP plugin to be running (GIMP open, server on :9877).
 Exits 0 on success, 1 on any transport or GIMP-side failure.
 """
+
 import argparse
 import base64
 import json
@@ -74,17 +75,18 @@ import os
 import socket
 import sys
 
-HOST, PORT = '127.0.0.1', 9877
+HOST, PORT = "127.0.0.1", 9877
 
 
 # ── transport ────────────────────────────────────────────────────────────────
+
 
 def _send(msg, timeout=60, recv_size=65536, parse_truncate=200):
     s = socket.socket()
     s.settimeout(timeout)
     s.connect((HOST, PORT))
-    s.send(json.dumps(msg).encode() + b'\n')
-    buf = b''
+    s.send(json.dumps(msg).encode() + b"\n")
+    buf = b""
     while True:
         try:
             chunk = s.recv(recv_size)
@@ -96,44 +98,48 @@ def _send(msg, timeout=60, recv_size=65536, parse_truncate=200):
                 break
             except json.JSONDecodeError:
                 continue
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     try:
         return json.loads(buf.decode().strip())
     except json.JSONDecodeError:
-        return {'status': 'error', 'error': 'parse: ' + buf.decode()[:parse_truncate]}
+        return {"status": "error", "error": "parse: " + buf.decode()[:parse_truncate]}
 
 
 def cmd(t, params=None):
-    return _send({'type': t, 'params': params or {}})
+    return _send({"type": t, "params": params or {}})
 
 
 def exec_gimp(code):
-    return _send({'cmds': [code]})
+    return _send({"cmds": [code]})
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
+
 def snapshot(path, image_index=0, max_size=640):
     """Pull a PNG snapshot of the current image and save it."""
-    r = cmd('get_image_bitmap', {
-        'image_index': image_index,
-        'max_width':   max_size,
-        'max_height':  max_size,
-    })
-    if r.get('status') != 'success':
+    r = cmd(
+        "get_image_bitmap",
+        {
+            "image_index": image_index,
+            "max_width": max_size,
+            "max_height": max_size,
+        },
+    )
+    if r.get("status") != "success":
         print(f"    Snapshot FAILED: {r.get('error', '')}", file=sys.stderr)
         return False
-    raw = base64.b64decode(r['results']['image_data'])
-    with open(path, 'wb') as f:
+    raw = base64.b64decode(r["results"]["image_data"])
+    with open(path, "wb") as f:
         f.write(raw)
-    print(f"    Snapshot saved: {path}  ({len(raw)//1024}KB)")
+    print(f"    Snapshot saved: {path}  ({len(raw) // 1024}KB)")
     return True
 
 
 def require_success(label, r):
-    if r.get('status') != 'success':
+    if r.get("status") != "success":
         print(f"ERROR: {label}: {r.get('error', '')}", file=sys.stderr)
         sys.exit(1)
     return r
@@ -142,13 +148,13 @@ def require_success(label, r):
 def run_gimp(label, code):
     """Run a Python block inside GIMP, fail fast on transport or script error."""
     r = exec_gimp(code)
-    if r.get('status') != 'success':
+    if r.get("status") != "success":
         print(f"ERROR: {label} transport failed: {r.get('error', '')}", file=sys.stderr)
         sys.exit(1)
-    out = (r.get('results') or [''])[0]
+    out = (r.get("results") or [""])[0]
     for line in out.strip().splitlines():
         print(f"    GIMP: {line}")
-    if 'ERROR' in out or 'Traceback' in out:
+    if "ERROR" in out or "Traceback" in out:
         print(f"ERROR: {label} plugin error:\n{out}", file=sys.stderr)
         sys.exit(1)
     return out
@@ -158,14 +164,22 @@ def run_gimp(label, code):
 
 _here = os.path.dirname(os.path.abspath(__file__))
 parser = argparse.ArgumentParser(description="Continuous editing regression test via GIMP MCP")
-parser.add_argument('--character',  default=os.path.join(_here, 'files', 'winry_joy.png'),     help='Character portrait PNG')
-parser.add_argument('--background', default=os.path.join(_here, 'files', 'bg_night_2048.png'), help='Background landscape PNG')
-parser.add_argument('--out',        default=os.path.join(_here, 'output'),                      help='Output directory')
+parser.add_argument(
+    "--character",
+    default=os.path.join(_here, "files", "winry_joy.png"),
+    help="Character portrait PNG",
+)
+parser.add_argument(
+    "--background",
+    default=os.path.join(_here, "files", "bg_night_2048.png"),
+    help="Background landscape PNG",
+)
+parser.add_argument("--out", default=os.path.join(_here, "output"), help="Output directory")
 args = parser.parse_args()
 
 char_path = os.path.abspath(args.character)
-bg_path   = os.path.abspath(args.background)
-out_dir   = os.path.abspath(args.out)
+bg_path = os.path.abspath(args.background)
+out_dir = os.path.abspath(args.out)
 
 for p in (char_path, bg_path):
     if not os.path.isfile(p):
@@ -182,7 +196,9 @@ print("STEP 0: Reset GIMP workspace")
 # dispatch uses `Gimp.display_list()` which was removed in GIMP 3.2,
 # so on plugins loaded before that fix lands it leaks ghost images
 # across runs.
-run_gimp('reset workspace', r"""
+run_gimp(
+    "reset workspace",
+    r"""
 from gi.repository import Gimp
 before = len(Gimp.get_images())
 gd = getattr(Gimp, "get_displays", None)
@@ -206,16 +222,17 @@ for img in list(Gimp.get_images()):
         pass
 remaining = len(Gimp.get_images())
 print("RESET_OK before=" + str(before) + " remaining=" + str(remaining))
-""")
+""",
+)
 
 
 # ── STEP 1: open character, capture original state ──────────────────────────
 
 print("\nSTEP 1: Open character portrait")
-r_open = require_success('open character', cmd('open_image', {'file_path': char_path}))
-char_image_id = r_open.get('results', {}).get('image_id')
+r_open = require_success("open character", cmd("open_image", {"file_path": char_path}))
+char_image_id = r_open.get("results", {}).get("image_id")
 print(f"    char image_id = {char_image_id}")
-snapshot(f'{out_dir}/01_character_original.png')
+snapshot(f"{out_dir}/01_character_original.png")
 
 
 # ── STEP 2: 9-filter per-pixel voting bg removal ────────────────────────────
@@ -402,7 +419,7 @@ try:
             votes[i] += c
             fc[9] += c
 
-    print("  path pool size: %d (9 filters × %d paths)" % (TOTAL_PATHS, PATHS_PER_FILTER))
+    print("  path pool size: %d (9 filters x %d paths)" % (TOTAL_PATHS, PATHS_PER_FILTER))
     print("  total path-hits per filter (summed across all pixels):")
     for k in range(1, 10):
         print("    f%d: %d" % (k, fc[k]))
@@ -733,8 +750,10 @@ except Exception as e:
     print("ERROR: " + str(e))
     print(_tb.format_exc())
 """
-run_gimp('bg removal (9×200 paths, threshold=1100, biggest-CC + score>p1, fuzzy border r=2)', bg_removal)
-snapshot(f'{out_dir}/02_character_nobg.png')
+run_gimp(
+    "bg removal (9x200 paths, threshold=1100, biggest-CC + score>p1, fuzzy border r=2)", bg_removal
+)
+snapshot(f"{out_dir}/02_character_nobg.png")
 
 
 # ── STEP 3: recolor hair on the cutout BEFORE compositing ──────────────────
@@ -829,39 +848,44 @@ except Exception as e:
     print("ERROR: " + str(e))
     print(_tb.format_exc())
 """
-run_gimp('hair recolor', hair_recolor)
-snapshot(f'{out_dir}/03_hair_red.png')
+run_gimp("hair recolor", hair_recolor)
+snapshot(f"{out_dir}/03_hair_red.png")
 
 # Export the recolored cutout so we can re-open it as a layer on top of
 # the new background image.
-cutout_path = f'{out_dir}/_character_cutout.png'
-require_success('export cutout', cmd('export_image', {
-    'image_index': 0,
-    'file_path':   cutout_path,
-    'file_type':   'png',
-}))
+cutout_path = f"{out_dir}/_character_cutout.png"
+require_success(
+    "export cutout",
+    cmd(
+        "export_image",
+        {
+            "image_index": 0,
+            "file_path": cutout_path,
+            "file_type": "png",
+        },
+    ),
+)
 
 
 # ── STEP 4: composite the recolored cutout onto the night background ──────
 
 print("\nSTEP 4: Open background and composite recolored character")
-r_open_bg = require_success('open background', cmd('open_image', {'file_path': bg_path}))
-bg_image_id = r_open_bg.get('results', {}).get('image_id')
+r_open_bg = require_success("open background", cmd("open_image", {"file_path": bg_path}))
+bg_image_id = r_open_bg.get("results", {}).get("image_id")
 print(f"    bg image_id = {bg_image_id}, char image_id = {char_image_id}")
 
 # Locate the bg image's current index (needed by MCP tools that take
 # image_index rather than image_id — e.g. export_image, snapshot).
-ls = require_success('list images', cmd('list_images', {}))
+ls = require_success("list images", cmd("list_images", {}))
 bg_basename = os.path.basename(bg_path)
 bg_index = next(
-    (img['index'] for img in ls['results']['images']
-     if img.get('image_id') == bg_image_id),
+    (img["index"] for img in ls["results"]["images"] if img.get("image_id") == bg_image_id),
     None,
 )
 if bg_index is None:
     print(f"ERROR: could not find bg image id={bg_image_id} in open images: {ls}", file=sys.stderr)
     sys.exit(1)
-snapshot(f'{out_dir}/04_background_only.png', image_index=bg_index)
+snapshot(f"{out_dir}/04_background_only.png", image_index=bg_index)
 
 composite_code = r"""
 from gi.repository import Gimp, Gegl
@@ -967,22 +991,29 @@ try:
 except Exception as e:
     print("ERROR: " + str(e))
     print(_tb.format_exc())
-""".replace('%BG_IMAGE_ID%', json.dumps(bg_image_id)) \
-   .replace('%CHAR_IMAGE_ID%', json.dumps(char_image_id))
+""".replace("%BG_IMAGE_ID%", json.dumps(bg_image_id)).replace(
+    "%CHAR_IMAGE_ID%", json.dumps(char_image_id)
+)
 
-run_gimp('composite', composite_code)
-snapshot(f'{out_dir}/05_composited.png', image_index=bg_index)
+run_gimp("composite", composite_code)
+snapshot(f"{out_dir}/05_composited.png", image_index=bg_index)
 
 
 # ── STEP 5: export final composite ──────────────────────────────────────────
 
 print("\nSTEP 5: Export final composite")
-final_path = f'{out_dir}/final_composite.png'
-require_success('export final', cmd('export_image', {
-    'image_index': bg_index,
-    'file_path':   final_path,
-    'file_type':   'png',
-}))
+final_path = f"{out_dir}/final_composite.png"
+require_success(
+    "export final",
+    cmd(
+        "export_image",
+        {
+            "image_index": bg_index,
+            "file_path": final_path,
+            "file_type": "png",
+        },
+    ),
+)
 
 print("\n" + "=" * 72)
 print(f"SUCCESS: continuous edit test complete -> {final_path}")

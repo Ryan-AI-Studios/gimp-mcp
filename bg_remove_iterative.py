@@ -11,20 +11,22 @@ Loop:
 Usage:
     python bg_remove_iterative.py --input path/to/image.png --output-dir path/to/output/
 """
+
 import argparse
-import socket
-import json
 import base64
+import json
+import socket
 import sys
 
 # ── transport ───────────────────────────────────────────────────────────────
 
+
 def _send(msg, timeout, recv_size, parse_truncate):
     s = socket.socket()
     s.settimeout(timeout)
-    s.connect(('127.0.0.1', 9877))
-    s.send(json.dumps(msg).encode() + b'\n')
-    r = b''
+    s.connect(("127.0.0.1", 9877))
+    s.send(json.dumps(msg).encode() + b"\n")
+    r = b""
     while True:
         try:
             d = s.recv(recv_size)
@@ -36,39 +38,50 @@ def _send(msg, timeout, recv_size, parse_truncate):
                 break
             except json.JSONDecodeError:
                 continue
-        except socket.timeout:
+        except TimeoutError:
             break
     s.close()
     try:
         return json.loads(r.decode().strip())
     except json.JSONDecodeError:
-        return {'status': 'error', 'error': 'parse: ' + r.decode()[:parse_truncate]}
+        return {"status": "error", "error": "parse: " + r.decode()[:parse_truncate]}
+
 
 def cmd(t, params=None):
-    return _send({'type': t, 'params': params or {}}, 30, 8192, 120)
+    return _send({"type": t, "params": params or {}}, 30, 8192, 120)
+
 
 def exec_gimp(code):
-    return _send({'cmds': [code]}, 60, 65536, 200)
+    return _send({"cmds": [code]}, 60, 65536, 200)
+
 
 def snapshot(label="", region=None, max_size=512):
-    params = {'image_index': 0, 'max_width': max_size, 'max_height': max_size}
+    params = {"image_index": 0, "max_width": max_size, "max_height": max_size}
     if region:
-        params['region'] = {'origin_x': region['x'], 'origin_y': region['y'],
-                            'width': region['w'], 'height': region['h']}
-    r = cmd('get_image_bitmap', params)
-    if r.get('status') == 'success':
-        raw = base64.b64decode(r['results']['image_data'])
+        params["region"] = {
+            "origin_x": region["x"],
+            "origin_y": region["y"],
+            "width": region["w"],
+            "height": region["h"],
+        }
+    r = cmd("get_image_bitmap", params)
+    if r.get("status") == "success":
+        raw = base64.b64decode(r["results"]["image_data"])
         tag = f" [{label}]" if label else ""
-        print(f"  Snapshot{tag}: {len(raw)//1024}KB  "
-              f"{r['results']['width']}x{r['results']['height']}px")
+        print(
+            f"  Snapshot{tag}: {len(raw) // 1024}KB  "
+            f"{r['results']['width']}x{r['results']['height']}px"
+        )
         return raw
-    print(f"  Snapshot FAILED: {r.get('error','')}")
+    print(f"  Snapshot FAILED: {r.get('error', '')}")
     return None
 
+
 def save_png(raw, path):
-    with open(path, 'wb') as f:
+    with open(path, "wb") as f:
         f.write(raw)
     print(f"  Saved: {path}")
+
 
 # ── GIMP helpers (run inside GIMP) ──────────────────────────────────────────
 
@@ -174,11 +187,16 @@ except Exception as e:
 # ── main ────────────────────────────────────────────────────────────────────
 
 parser = argparse.ArgumentParser(description="Iterative background removal via GIMP MCP")
-parser.add_argument("--input",      required=True, help="Path to input image")
-parser.add_argument("--output-dir", required=True, dest="output_dir", help="Directory to save snapshots and final result")
+parser.add_argument("--input", required=True, help="Path to input image")
+parser.add_argument(
+    "--output-dir",
+    required=True,
+    dest="output_dir",
+    help="Directory to save snapshots and final result",
+)
 args = parser.parse_args()
 
-OUT = args.output_dir.rstrip('/\\')
+OUT = args.output_dir.rstrip("/\\")
 SRC = args.input
 
 print("=" * 60)
@@ -187,24 +205,24 @@ print("=" * 60)
 
 # ── Step 0: open fresh image ────────────────────────────────────────────────
 print("\nStep 0: Open original")
-r = cmd('list_images', {})
-for _ in r.get('results', {}).get('images', []):
-    cmd('close_image', {'image_index': 0})
-r = cmd('open_image', {'file_path': SRC})
-print(f"  Opened: {r.get('status')}  id={r.get('results',{}).get('image_id')}")
-if r.get('status') != 'success':
+r = cmd("list_images", {})
+for _ in r.get("results", {}).get("images", []):
+    cmd("close_image", {"image_index": 0})
+r = cmd("open_image", {"file_path": SRC})
+print(f"  Opened: {r.get('status')}  id={r.get('results', {}).get('image_id')}")
+if r.get("status") != "success":
     print(f"ERROR: Could not open {SRC}: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)
 
 r = exec_gimp(INIT_CODE)
-out = (r.get('results') or [''])[0]
+out = (r.get("results") or [""])[0]
 print(f"  Init: {out.strip()}")
 
 # ── Step 1: snapshot original ───────────────────────────────────────────────
 print("\nStep 1: Original snapshot (before any removal)")
 raw = snapshot(label="original")
 if raw:
-    save_png(raw, f'{OUT}/iter_00_original.png')
+    save_png(raw, f"{OUT}/iter_00_original.png")
 
 # ── Step 2: initial broad BG removal (edge-seed pass) ──────────────────────
 print("\nStep 2: Initial broad removal from image edges")
@@ -259,11 +277,11 @@ except Exception as e:
 """
 
 r = exec_gimp(INIT_REMOVE)
-out = (r.get('results') or [''])[0]
+out = (r.get("results") or [""])[0]
 print(f"  GIMP: {out.strip()}")
 raw = snapshot(label="after-init")
 if raw:
-    save_png(raw, f'{OUT}/iter_01_init.png')
+    save_png(raw, f"{OUT}/iter_01_init.png")
 
 # ── Step 3: iterative refinement loop ───────────────────────────────────────
 print("\nStep 3: Iterative refinement")
@@ -280,33 +298,34 @@ SCHEDULES = [
     (15, 20, 1.0),
     (12, 18, 1.0),
     (10, 15, 0.8),
-    (8,  12, 0.8),
-    (6,  10, 0.5),
-    (5,   8, 0.5),
-    (4,   7, 0.3),
-    (3,   6, 0.3),
-    (2,   5, 0.3),
-    (2,   4, 0.2),
+    (8, 12, 0.8),
+    (6, 10, 0.5),
+    (5, 8, 0.5),
+    (4, 7, 0.3),
+    (3, 6, 0.3),
+    (2, 5, 0.3),
+    (2, 4, 0.2),
 ]
 
 for iteration, (step_px, thresh, feather) in enumerate(SCHEDULES[:MAX_ITERS]):
-    print(f"\n  Iteration {iteration+1}/{MAX_ITERS}: "
-          f"grid={step_px}px  threshold={thresh}  feather={feather}px")
+    print(
+        f"\n  Iteration {iteration + 1}/{MAX_ITERS}: "
+        f"grid={step_px}px  threshold={thresh}  feather={feather}px"
+    )
 
     # Scan for remaining BG pixels
-    scan_code = SCAN_CODE_TEMPLATE.replace('{step}', str(step_px)) \
-                                   .replace('{thresh}', str(thresh))
+    scan_code = SCAN_CODE_TEMPLATE.replace("{step}", str(step_px)).replace("{thresh}", str(thresh))
     r = exec_gimp(scan_code)
-    if r.get('status') != 'success':
+    if r.get("status") != "success":
         print(f"ERROR: Scan transport failed: {r.get('error', '')}", file=sys.stderr)
         sys.exit(1)
-    out_lines = (r.get('results') or [''])[0]
+    out_lines = (r.get("results") or [""])[0]
 
     # Parse BGPTS from output
     bg_pts = []
     saw_bgpts = False
     for line in out_lines.strip().splitlines():
-        if line.startswith('BGPTS:'):
+        if line.startswith("BGPTS:"):
             saw_bgpts = True
             try:
                 bg_pts = json.loads(line[6:])
@@ -314,7 +333,10 @@ for iteration, (step_px, thresh, feather) in enumerate(SCHEDULES[:MAX_ITERS]):
                 pass
 
     if not saw_bgpts:
-        print(f"ERROR: Scan produced no BGPTS marker — GIMP output: {out_lines[:200]}", file=sys.stderr)
+        print(
+            f"ERROR: Scan produced no BGPTS marker — GIMP output: {out_lines[:200]}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(f"    Found {len(bg_pts)} BG candidate pixels")
@@ -327,18 +349,18 @@ for iteration, (step_px, thresh, feather) in enumerate(SCHEDULES[:MAX_ITERS]):
     # from N seeds is O(N*pixels), so cap per-pass at 80 seeds)
     MAX_SEEDS = 80
     seeds = bg_pts[:MAX_SEEDS]
-    remove_code = REMOVE_CODE_TEMPLATE \
-        .replace('{pts}', repr(seeds)) \
-        .replace('{feather}', str(feather))
+    remove_code = REMOVE_CODE_TEMPLATE.replace("{pts}", repr(seeds)).replace(
+        "{feather}", str(feather)
+    )
     r = exec_gimp(remove_code)
-    out_rm = (r.get('results') or [''])[0]
+    out_rm = (r.get("results") or [""])[0]
     print(f"    GIMP: {out_rm.strip()[:80]}")
 
     # Snapshot every other iteration as agent checkpoint
     if iteration % 2 == 0 or len(bg_pts) < 20:
-        raw = snapshot(label=f"iter-{iteration+1}")
+        raw = snapshot(label=f"iter-{iteration + 1}")
         if raw:
-            save_png(raw, f'{OUT}/iter_{iteration+2:02d}_pass{iteration+1}.png')
+            save_png(raw, f"{OUT}/iter_{iteration + 2:02d}_pass{iteration + 1}.png")
 
 # ── Step 4: despeckle — catch isolated green pixels contiguous can't reach ───
 print("\nStep 4: Despeckle pass (by-color-select on remaining green speckles)")
@@ -373,7 +395,7 @@ try:
             print("SPECKLE_CAPPED:" + str(MAX_SPECKLES))
             green_pts = green_pts[:MAX_SPECKLES]
 
-        # Build selection from individual 1×1 rectangles — works on isolated pixels
+        # Build selection from individual 1x1 rectangles — works on isolated pixels
         # that contiguous-select cannot reach.
         sel_proc = pdb.lookup_procedure("gimp-image-select-rectangle")
         for i, (bx, by) in enumerate(green_pts):
@@ -403,48 +425,51 @@ except Exception as e:
 """
 
 r = exec_gimp(DESPECKLE_CODE)
-out = (r.get('results') or [''])[0]
+out = (r.get("results") or [""])[0]
 for line in out.strip().splitlines():
     print(f"  GIMP: {line}")
 
 raw = snapshot(label="post-despeckle")
 if raw:
-    save_png(raw, f'{OUT}/iter_despeckle.png')
+    save_png(raw, f"{OUT}/iter_despeckle.png")
 
 # Corner checks after despeckle
 for zone_name, region in [
-    ("top-left",  {'x':   0, 'y':   0, 'w': 150, 'h': 150}),
-    ("top-right", {'x': 360, 'y':   0, 'w': 150, 'h': 150}),
-    ("bot-left",  {'x':   0, 'y': 360, 'w': 150, 'h': 150}),
+    ("top-left", {"x": 0, "y": 0, "w": 150, "h": 150}),
+    ("top-right", {"x": 360, "y": 0, "w": 150, "h": 150}),
+    ("bot-left", {"x": 0, "y": 360, "w": 150, "h": 150}),
 ]:
     raw_z = snapshot(label=zone_name, region=region, max_size=256)
     if raw_z:
-        save_png(raw_z, f'{OUT}/despeckle_{zone_name}.png')
+        save_png(raw_z, f"{OUT}/despeckle_{zone_name}.png")
 
 # ── Step 5: final snapshot + export ─────────────────────────────────────────
 print("\nStep 5: Final snapshot and export")
 raw = snapshot(label="final", max_size=512)
 if raw:
-    save_png(raw, f'{OUT}/iter_final.png')
+    save_png(raw, f"{OUT}/iter_final.png")
 
 # Zoom into a few critical zones to verify cleanliness
 for zone_name, region in [
-    ("top-left",  {'x':   0, 'y':   0, 'w': 150, 'h': 150}),
-    ("top-right", {'x': 360, 'y':   0, 'w': 150, 'h': 150}),
-    ("bot-left",  {'x':   0, 'y': 360, 'w': 150, 'h': 150}),
+    ("top-left", {"x": 0, "y": 0, "w": 150, "h": 150}),
+    ("top-right", {"x": 360, "y": 0, "w": 150, "h": 150}),
+    ("bot-left", {"x": 0, "y": 360, "w": 150, "h": 150}),
 ]:
     raw_z = snapshot(label=zone_name, region=region, max_size=256)
     if raw_z:
-        save_png(raw_z, f'{OUT}/iter_final_{zone_name}.png')
+        save_png(raw_z, f"{OUT}/iter_final_{zone_name}.png")
 
-final_out = f'{OUT}/result_clean_final.png'
-r = cmd('export_image', {
-    'image_index': 0,
-    'file_path':   final_out,
-    'file_type':   'png',
-})
+final_out = f"{OUT}/result_clean_final.png"
+r = cmd(
+    "export_image",
+    {
+        "image_index": 0,
+        "file_path": final_out,
+        "file_type": "png",
+    },
+)
 print(f"\nExport: {r.get('status')} -> {final_out}")
-if r.get('status') != 'success':
+if r.get("status") != "success":
     print(f"ERROR: Export failed: {r.get('error', '')}", file=sys.stderr)
     sys.exit(1)
 print("\n" + "=" * 60)
