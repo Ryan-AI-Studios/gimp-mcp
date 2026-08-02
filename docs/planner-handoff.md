@@ -94,15 +94,15 @@ minting. Track IDs are creation order, not execution order.
   → 0002 Quality surface stabilization — Completed
   → 0003 SecurityHardening — Completed
   → 0004 VisibleCompositeSnapshot — Completed
-  → 0005 AlphaExportCorrectness — Ready (full plan; Issue 16)
+  → 0005 AlphaExportCorrectness — Completed
   → 0006 … through 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
 recipes → packaging → golden path → v1 polish. Most remaining tracks are **Proposed placeholders**
-until a full planning pass. **0001–0004 Completed.** **0005 Ready** (Issue 16: flatten strips alpha).
-Issue 17 fixed in **0004** (dup+merge + structuredContent); EXIF remains **0008**. Authoritative
-table: `conductor/conductor.md`.
+until a full planning pass. **0001–0005 Completed.** Issue 16 fixed in **0005** (merge-on-dup +
+IHDR fail-closed + `gimp_mcp_export.py`). Issue 17 fixed in **0004**. EXIF remains **0008**.
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -193,7 +193,7 @@ Known upstream defects (must remain visible until fixed by tracks):
 | Issue | Symptom | Track |
 |---|---|---|
 | #17 composite | Snapshot must be visible canvas composite (not top layer) | **0004** (dup+merge+structuredContent; residual NDE/color-mgmt) |
-| #16 alpha | “Success” export without transparency | **0005** (implementing: default flatten False; merge-on-dup + PNG IHDR verify + `gimp_mcp_export.py`) |
+| #16 alpha | “Success” export without transparency | **0005** (Completed: flatten default False; merge-on-dup; file-*-export; PNG IHDR ALPHA_LOST; verify_alpha_channel) |
 | Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
@@ -269,18 +269,16 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0005-AlphaExportCorrectness** — Ready (full plan); implement when asked |
+| Active focus | **0006-StateManifestOrientation** (placeholder — needs full plan) after **0005 Completed** |
 | Track count | 0001–0028 (see conductor.md) |
 
-### 0005 planning notes (planners)
+### 0005 completion notes (planners)
 
-- **Root cause (verified):** `export_image` defaulted `flatten=True` → `Gimp.Image.flatten()` **strips alpha** ([API](https://developer.gimp.org/api/3.0/libgimp/method.Image.flatten.html)).
-- Fix shape: `preserve_alpha` + **always merge-on-dup** when preserve_alpha + **only** `file-*-export` (delete `-save` map) + force PNG RGBA8 + preflight-gated IHDR fail-closed; host module `gimp_mcp_export.py`.
-- **Breaking default:** `flatten` → `False`. JPEG cannot preserve alpha. Opaque bake: `flatten=True` (auto preserve_alpha False).
-- **ALPHA_LOST** only if preflight had alpha and file lost it; opaque source → `alpha_verified=not_applicable`.
-- AI-review fold-in (H1–H5 + M1–M6/M8): batch_export server params; no bare try/except on critical set_property; richer `verify_alpha_channel`; MCP schema keeps single `format` (plugin accepts raw `file_type`).
-- Do **not** major-bump mcp/fastmcp; **no Pillow** in 0005 tests.
-- Full spec/plan: `conductor/0005-AlphaExportCorrectness/`.
+- **Issue 16 fixed:** default `flatten=False`; auto `preserve_alpha` for png/webp/tiff; always merge-on-dup when preserve_alpha; only `file-*-export`; PNG RGBA8 fail-closed + IHDR `ALPHA_LOST` with `left_on_disk`; host module `gimp_mcp_export.py` + install fourth plug-in file.
+- **Breaking:** agents that relied on default flatten for opaque bake must pass `flatten=True`.
+- **New tool:** `verify_alpha_channel` (image-level + format capability matrix).
+- Residuals: live GIMP matrix (ops); NDE bake on dup → **0016**; SSIM → **0014**; no Pillow.
+- Codex final: **PASS WITH DEFERRED P3** (live matrix).
 
 ---
 
@@ -288,6 +286,7 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-02 | **0005 Completed:** Issue 16 alpha export; `gimp_mcp_export.py`; Codex PASS WITH DEFERRED P3; next=0006 |
 | 2026-08-02 | Folded AI-review into **0005**: H1–H5 PDB/batch/set_property/internal callers; preflight-gated ALPHA_LOST; force RGBA8; ResolvedExportPolicy |
 | 2026-08-02 | Full plan for **0005** AlphaExportCorrectness: Issue 16 root cause = flatten strips alpha; Ready — not started |
 | 2026-08-02 | 0004 Completed: Issue 17 composite + ToolResult mapping; PR #3 squash-merged; Codex PASS WITH DEFERRED P3; next=0005 |
