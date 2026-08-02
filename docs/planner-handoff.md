@@ -96,14 +96,15 @@ minting. Track IDs are creation order, not execution order.
   → 0004 VisibleCompositeSnapshot — Completed
   → 0005 AlphaExportCorrectness — Completed
   → 0006 StateManifestOrientation — Completed
-  → 0007 StableHandleRegistry … through 0028 Final product polish (v1)
+  → 0007 StableHandleRegistry — Completed
+  → 0008 CoordinateModelAndExif … through 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. **0001–0006 Completed.** Orientation SoT is
-`orient_workspace` (state-manifest v1). Issue 16 fixed in **0005**. Issue 17 fixed in **0004**.
-EXIF **normalize** remains **0008**; handle **STALE_HANDLE** remains **0007**. Authoritative table:
-`conductor/conductor.md`.
+recipes → packaging → golden path → v1 polish. **0001–0007 Completed.** Orientation SoT is
+`orient_workspace` (state-manifest v1). Stable handles + STALE_HANDLE + `select_*` in **0007**.
+Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF **normalize** remains **0008**.
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -195,7 +196,8 @@ Known upstream defects (must remain visible until fixed by tracks):
 |---|---|---|
 | #17 composite | Snapshot must be visible canvas composite (not top layer) | **0004** (dup+merge+structuredContent; residual NDE/color-mgmt) |
 | #16 alpha | “Success” export without transparency | **0005** (Completed: flatten default False; merge-on-dup; file-*-export; PNG IHDR ALPHA_LOST; verify_alpha_channel) |
-| Orientation | Agents need schema-versioned workspace model before edit | **0006** (Completed: `orient_workspace` state-manifest v1; provisional handles) |
+| Orientation | Agents need schema-versioned workspace model before edit | **0006** (Completed: `orient_workspace` state-manifest v1) |
+| Handles | Track by handle not name; STALE after structural mutation | **0007** (Completed: gen registry, select_*, STALE_HANDLE) |
 | Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
@@ -205,7 +207,7 @@ Hard rules for product work:
 - **Orient first:** after 0006, `orient_workspace` is the orientation SoT (not flat `list_layers` alone).
   Re-orient after create/delete/reorder/merge/rasterize/relink. Manifest is **read-only**.
 - Never trust `status: success` alone — require composite/alpha/objective checks when vision matters.
-- Track layers by **stable handles**, not names (provisional handle *shape* in 0006; STALE_HANDLE in **0007**).
+- Track layers by **stable handles**, not names (`orient_workspace` + `select_*`; re-orient or use mutator gen after structural ops; STALE_HANDLE on stale gen).
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
@@ -273,9 +275,9 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0007-StableHandleRegistry** (placeholder — needs full plan) after **0006 Completed** |
+| Active focus | **0008-CoordinateModelAndExif** — Proposed placeholder (needs full plan pass); prior **0007 Completed** PR #6 / main@33df2b5 |
 | Track count | 0001–0028 (see conductor.md) |
-| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep) |
+| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep). PyPI has mcp 2.x / fastmcp 3.4+ — **do not major-bump** casually. |
 
 ### 0005 completion notes (planners)
 
@@ -293,9 +295,22 @@ If indexes are empty: `ledgerful index --incremental`.
 - **selected:** `displays[0]` only; no displays → all `selected: false`.
 - **Hygiene:** `get_image_metadata(image_index)` three coordinated edits (server + dispatcher + plugin).
 - **Guards:** summary_only count + `_iter_layers_recursive` also depth/visited (Codex P1).
-- **OOS still:** STALE_HANDLE (**0007**), EXIF normalize (**0008**), CLI orient (**0012**).
+- **OOS still:** EXIF normalize (**0008**), CLI orient (**0012**). Handles/STALE → **0007 Completed**.
 - Residuals: live GIMP matrix (ops); large manifest size → **0023**.
 - Codex final: **PASS WITH DEFERRED P3** (live matrix).
+
+### 0007 completion notes (planners)
+
+- **Completed (PR #6 / main@33df2b5):** stable handle registry with live generation + select_*.
+- **Ship:** `gimp_mcp_handles.py` as 6th plug-in file (host + plugin same module; no mirror).
+- **Session:** process-unique `session_epoch` (from `session_id`); FOREIGN_SESSION after plugin restart.
+- **Generation:** per-image map; tombstones on close/prune (ID-recycle seed = floor+1); orient syncs open set.
+- **Precedence (locked):** shape → epoch → id valid → generation → fingerprint → membership; select_layers pure require before layer-kind.
+- **Tools:** `select_image` / `select_layers` (handles only; MAX=64; no Display.new; float → SELECTION_CONFLICT).
+- **Mutators:** structural success returns `generation` + `handle`; never bump snapshot/export dups.
+- **Capability:** `stable_handle_registry: true`.
+- **OOS residuals:** full name ban (**0010**), error envelope (**0011**), CLI exit 5 (**0012**), tattoos (**0009/0013**), EXIF (**0008**).
+- Codex final: **PASS WITH DEFERRED P3** (live matrix waiver).
 
 ---
 
@@ -303,6 +318,9 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-02 | **0007 Completed:** stable handles, STALE_HANDLE, select_*; PR #6; Codex PASS WITH DEFERRED P3; next=0008 |
+| 2026-08-02 | Folded AI-review into **0007**: H1–H5, ship handles module, SELECTION_CONFLICT, immutable fingerprint, no Display.new |
+| 2026-08-02 | Full plan **0007** StableHandleRegistry: generation registry, STALE_HANDLE, select_*; Ready — not started |
 | 2026-08-02 | **0006 Completed:** orient_workspace state-manifest v1; PR #5; Codex PASS WITH DEFERRED P3; next=0007 |
 | 2026-08-02 | Folded AI-review into **0006**: H1–H5 selected/metadata/session/recursive validate/jsonschema lock; host-finalize; stdio-proxy transport |
 | 2026-08-02 | Full plan **0006** StateManifestOrientation: orient_workspace manifest v1 Ready — not started |
