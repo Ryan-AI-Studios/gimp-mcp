@@ -113,15 +113,19 @@ class MCPPlugin(Gimp.PlugIn):
         self._last_peer = None
 
         # Session identity for stable handles / state-manifest (tracks 0006/0007).
-        # session_epoch is a process-bound constant (typically 1); changes only on
-        # plugin process restart — not a mono-increment within a process.
+        # session_epoch is process-bound (stable for this process lifetime, not
+        # always 1). Derived from session_id so each plugin restart gets a new
+        # epoch >= 1 and FOREIGN_SESSION fires for pre-restart handles.
         self.session_id = str(uuid.uuid4())
-        self.session_epoch = 1
+        self.session_epoch = (uuid.UUID(self.session_id).int % 2_000_000_000) + 1
         self.session_started_at = (
             datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         )
         # Per-image structural generation counters (stable handle registry, 0007).
         self._image_generations: dict = {}
+        # Last generation when closed/pruned — ID-recycle defense (never reseed at 1
+        # if this GIMP id was seen before in this process).
+        self._retired_generations: dict = {}
 
         print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
         if not _sec.is_loopback_host(self.host):
@@ -2432,35 +2436,52 @@ class MCPPlugin(Gimp.PlugIn):
 
     # ── Stable handle registry (track 0007) ──────────────────────────────────
 
+    def _seed_floor(self, image_id):
+        """Minimum generation for first-seen image_id (respects retired tombstone)."""
+        return _handles.next_seed_generation(self._retired_generations.get(int(image_id)))
+
     def _image_generation(self, image_id):
-        """Return live structural generation for image_id; seed 1 if first seen."""
+        """Return live structural generation for image_id; seed via retired floor if new."""
         iid = int(image_id)
         if iid not in self._image_generations:
-            self._image_generations[iid] = 1
+            self._image_generations[iid] = self._seed_floor(iid)
         return self._image_generations[iid]
 
-    def _seed_image_generation(self, image_id, gen=1):
-        """Register image_id at generation gen (default 1)."""
-        self._image_generations[int(image_id)] = int(gen)
+    def _seed_image_generation(self, image_id, gen=None):
+        """Register image_id at generation gen (default/max with retired floor)."""
+        iid = int(image_id)
+        floor = self._seed_floor(iid)
+        if gen is None:
+            gen = floor
+        else:
+            gen = max(int(gen), floor)
+        self._image_generations[iid] = int(gen)
         return int(gen)
 
     def _bump_image_generation(self, image_id):
         """Increment structural generation after successful live mutation; return new."""
         iid = int(image_id)
-        cur = self._image_generations.get(iid, 1)
+        cur = self._image_generations.get(iid)
+        if cur is None:
+            cur = self._seed_floor(iid)
         new = int(cur) + 1
         self._image_generations[iid] = new
         return new
 
     def _drop_image_generation(self, image_id):
-        """Drop registry entry when image is closed."""
-        self._image_generations.pop(int(image_id), None)
+        """Drop registry entry when image is closed; keep retired floor for recycle."""
+        iid = int(image_id)
+        if iid in self._image_generations:
+            prev = int(self._image_generations.pop(iid))
+            floor = int(self._retired_generations.get(iid, 0) or 0)
+            self._retired_generations[iid] = max(floor, prev)
 
     def _sync_image_generations(self, open_images=None):
         """Prune generation map to currently open images. Does not reseed closed ids.
 
         Call at orient start (and anytime the open set is known). Keys for
-        closed/invalid image ids are dropped; open ids keep their counters.
+        closed/invalid image ids are tombstoned into ``_retired_generations`` then
+        dropped; open ids keep their counters.
         """
         if open_images is None:
             try:
@@ -2473,7 +2494,9 @@ class MCPPlugin(Gimp.PlugIn):
                 open_ids.add(int(img.get_id()))
             except Exception:
                 continue
-        return _handles.prune_image_generations(self._image_generations, open_ids)
+        return _handles.prune_image_generations(
+            self._image_generations, open_ids, retired=self._retired_generations
+        )
 
     def _emit_image_handle_id(self, image_id):
         gen = self._image_generation(image_id)
@@ -2524,13 +2547,15 @@ class MCPPlugin(Gimp.PlugIn):
                     id_valid = bool(Gimp.Image.id_is_valid(image_id))
                 except Exception:
                     id_valid = False
-            live_gen = (
-                self._image_generation(image_id)
-                if id_valid and image_id is not None
-                else self._image_generations.get(image_id, 1)
-                if image_id is not None
-                else 0
-            )
+            if image_id is None:
+                live_gen = 0
+            elif id_valid:
+                live_gen = self._image_generation(image_id)
+            else:
+                # Do not seed closed images; still respect retired floor for STALE checks
+                live_gen = self._image_generations.get(image_id)
+                if live_gen is None:
+                    live_gen = self._seed_floor(image_id)
             return _handles.require_image_handle(
                 handle,
                 live_epoch=int(self.session_epoch),
@@ -2585,7 +2610,9 @@ class MCPPlugin(Gimp.PlugIn):
             if id_valid:
                 live_gen = self._image_generation(live_image_id)
             else:
-                live_gen = self._image_generations.get(live_image_id, 1)
+                live_gen = self._image_generations.get(live_image_id)
+                if live_gen is None:
+                    live_gen = self._seed_floor(live_image_id)
 
         return _handles.require_item_handle(
             handle,
@@ -2708,7 +2735,13 @@ class MCPPlugin(Gimp.PlugIn):
         return False
 
     def _select_image(self, params):
-        """Select/focus an image by stable handle (no Display.new)."""
+        """Validate image handle and report display presence (no Display.new).
+
+        ``selected: true`` means the handle is bound for agent targeting — not
+        that a new window was created. ``display`` is true only if an existing
+        display already shows the image. GIMP has no reliable public focus API
+        without Display.new; we never invent a window here.
+        """
         try:
             handle = params.get("handle")
             validated = self._validate_request_handle(handle, kind="image")
@@ -2775,8 +2808,10 @@ class MCPPlugin(Gimp.PlugIn):
                     _sec.CODE_INVALID_HANDLE, "handles must all share the same image_id"
                 )
             image_id = image_ids[0]
-            # Do not seed closed images during validation — .get only until open confirmed
-            live_gen = self._image_generations.get(image_id, 1)
+            # Do not seed closed images during validation; respect retired floor
+            live_gen = self._image_generations.get(image_id)
+            if live_gen is None:
+                live_gen = self._seed_floor(image_id)
 
             id_valid_flags = []
             belongs_flags = []
@@ -2789,13 +2824,45 @@ class MCPPlugin(Gimp.PlugIn):
                 item = None
                 valid = False
                 try:
+                    id_ok = True
                     if hasattr(Gimp.Item, "id_is_valid"):
-                        valid = bool(Gimp.Item.id_is_valid(item_id))
-                    if valid or not hasattr(Gimp.Item, "id_is_valid"):
+                        id_ok = bool(Gimp.Item.id_is_valid(item_id))
+                    if id_ok:
+                        # Spec: each id must be a layer — do not fall through to bare Item
                         if hasattr(Gimp, "Layer") and hasattr(Gimp.Layer, "get_by_id"):
                             item = Gimp.Layer.get_by_id(item_id)
-                        if item is None:
-                            item = Gimp.Item.get_by_id(item_id)
+                        if item is None and hasattr(Gimp.Item, "id_is_layer"):
+                            if bool(Gimp.Item.id_is_layer(item_id)):
+                                item = Gimp.Item.get_by_id(item_id)
+                            else:
+                                # Valid non-layer item (channel/path/etc.)
+                                if hasattr(Gimp.Item, "get_by_id"):
+                                    probe = Gimp.Item.get_by_id(item_id)
+                                    if probe is not None:
+                                        return _sec.make_error(
+                                            _sec.CODE_INVALID_HANDLE,
+                                            f"item_id {item_id} is not a layer",
+                                        )
+                        if item is None and hasattr(Gimp.Item, "get_by_id"):
+                            candidate = Gimp.Item.get_by_id(item_id)
+                            if candidate is not None:
+                                is_layer = False
+                                if hasattr(Gimp, "Layer") and isinstance(candidate, Gimp.Layer):
+                                    is_layer = True
+                                elif hasattr(candidate, "is_layer") and callable(
+                                    candidate.is_layer
+                                ):
+                                    try:
+                                        is_layer = bool(candidate.is_layer())
+                                    except Exception:
+                                        is_layer = False
+                                if is_layer:
+                                    item = candidate
+                                else:
+                                    return _sec.make_error(
+                                        _sec.CODE_INVALID_HANDLE,
+                                        f"item_id {item_id} is not a layer",
+                                    )
                         valid = item is not None
                 except Exception:
                     valid = False

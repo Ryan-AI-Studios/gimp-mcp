@@ -428,9 +428,67 @@ def test_prune_image_generations_pure() -> None:
     assert gens == {}
 
 
+def test_prune_image_generations_records_retired() -> None:
+    """Tombstone last gen when pruning so ID recycle can seed above floor."""
+    gens = {1: 3, 9: 5}
+    retired: dict[int, int] = {9: 2}
+    dropped = handles.prune_image_generations(gens, {1}, retired=retired)
+    assert set(dropped) == {9}
+    assert gens == {1: 3}
+    assert retired[9] == 5  # max(existing 2, dropped 5)
+
+
+def test_next_seed_generation_after_retire() -> None:
+    """ID recycle: retired floor 5 → next seed 6; gen=1 fails STALE vs live 6."""
+    assert handles.next_seed_generation(None) == 1
+    assert handles.next_seed_generation(0) == 1
+    assert handles.next_seed_generation(5) == 6
+    seed = handles.next_seed_generation(5)
+    h = handles.image_handle(42, session_epoch=1, generation=1)
+    with pytest.raises(handles.HandleError) as ei:
+        handles.require_image_handle(h, live_epoch=1, live_generation=seed, id_valid=True)
+    assert ei.value.code == sec.CODE_STALE_HANDLE
+    # Live seed itself is accepted
+    h_live = handles.image_handle(42, session_epoch=1, generation=seed)
+    out = handles.require_image_handle(h_live, live_epoch=1, live_generation=seed, id_valid=True)
+    assert out["generation"] == 6
+
+
+def test_foreign_epoch_rejects_after_restart_semantics() -> None:
+    """Process-unique epoch: foreign session_epoch rejects (FOREIGN_SESSION)."""
+    h = handles.image_handle(5, session_epoch=1, generation=1)
+    with pytest.raises(handles.HandleError) as ei:
+        handles.require_image_handle(h, live_epoch=1_234_567, live_generation=1, id_valid=True)
+    assert ei.value.code == sec.CODE_FOREIGN_SESSION
+
+
+def test_wiring_session_epoch_from_session_id() -> None:
+    """session_epoch must be derived from session_id, not hardcoded 1 only."""
+    text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    body = _method_body(text, "def __init__")
+    assert "self.session_id" in body
+    assert "self.session_epoch" in body
+    # Not the old constant-only assignment as the sole epoch source
+    assert "self.session_epoch = 1" not in body
+    assert "uuid.UUID" in body or "2_000_000_000" in body
+    assert "_retired_generations" in body
+
+
+def test_wiring_select_layers_checks_layer_ness() -> None:
+    """select_layers must verify layer-ness (Layer.get_by_id / id_is_layer)."""
+    text = (ROOT / "gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    body = _method_body(text, "def _select_layers")
+    assert "Layer.get_by_id" in body or "id_is_layer" in body
+    assert "not a layer" in body
+    # Must not unconditionally accept bare Item before layer check
+    # (Layer path / id_is_layer present; wrong-kind → INVALID_HANDLE)
+    assert "INVALID_HANDLE" in body or "CODE_INVALID_HANDLE" in body
+
+
 def test_wiring_security_codes_in_handles_module() -> None:
     text = (ROOT / "gimp_mcp_handles.py").read_text(encoding="utf-8")
     assert "CODE_STALE_HANDLE" in text
     assert "CODE_FOREIGN_SESSION" in text
     assert "CODE_SELECTION_CONFLICT" in sec.__dict__ or hasattr(sec, "CODE_SELECTION_CONFLICT")
     assert "def prune_image_generations" in text
+    assert "def next_seed_generation" in text

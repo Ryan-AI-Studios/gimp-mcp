@@ -98,16 +98,16 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 
 #### Stable handles (track 0007)
 
-Image handle: `{image_id, generation, session_epoch, fingerprint?}`.  
-Item handle: `{item_id, image_id, generation, session_epoch, fingerprint?}`.
+- Image handle: `{image_id, generation, session_epoch, fingerprint?}`
+- Item handle: `{item_id, image_id, generation, session_epoch, fingerprint?}`
 
 | Event | Effect |
 |---|---|
-| Open / new canvas / first orient | seed `generation=1` for that `image_id` |
+| Open / new canvas / first orient | seed `generation` (1, or retired floor + 1 on ID recycle) |
 | Structural success on **live** image | `generation += 1`; response includes `generation` + `handle` |
 | Rename / opacity / paint / export / orient | **no** bump |
 | Snapshot/export merge on **temp dup** | **no** bump of live image |
-| Close image | drop registry entry |
+| Close image | drop live entry; keep retired floor for ID recycle |
 
 **Structural mutators (bump):** `create_layer`, `duplicate_layer`, `delete_layer`,
 `reorder_layer`, `flatten_image`, `merge_visible_layers`, `add_text`, `apply_drop_shadow`,
@@ -120,7 +120,7 @@ and live `flatten` paths inside `rotate_image` / `resize_canvas` when they flatt
 | `STALE_HANDLE` | `orient_workspace` **or** use `generation`/`handle` from last structural mutator |
 | `FOREIGN_SESSION` | Plugin process restarted — restart MCP flow and re-orient (new epoch) |
 | `HANDLE_NOT_FOUND` | Closed/invalid id or item not on claimed image |
-| `INVALID_HANDLE` | Bad shape, empty/>64 select list, mixed `image_id`s |
+| `INVALID_HANDLE` | Bad shape, empty/>64 select list, mixed `image_id`s, non-layer id in `select_layers` |
 | `SELECTION_CONFLICT` | Floating selection blocks `set_selected_layers` — anchor or remove float first |
 
 #### `select_image(handle)` / `select_layers(handles)`

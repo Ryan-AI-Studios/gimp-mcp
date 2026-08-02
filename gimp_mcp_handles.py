@@ -23,14 +23,28 @@ from gimp_mcp_security import (
 MAX_SELECT_LAYERS = 64
 
 
+def next_seed_generation(retired_floor: int | None) -> int:
+    """Next generation when first-seeding an image_id after close/prune.
+
+    If a retired floor exists (>= 1), seed at floor + 1 so old gen=1 handles
+    cannot pass after GIMP reuses the numeric id. No history → seed 1.
+    """
+    floor = int(retired_floor or 0)
+    return floor + 1 if floor >= 1 else 1
+
+
 def prune_image_generations(
     generations: dict[Any, Any],
     open_ids: set[int] | list[int] | tuple[int, ...],
+    retired: dict[Any, Any] | None = None,
 ) -> list[int]:
     """Drop generation-map keys not in the open-id set. Does not reseed.
 
     Mutates ``generations`` in place. Returns the list of dropped image ids.
     Closed ids are removed only — never re-inserted at generation 1.
+
+    When ``retired`` is provided, each dropped id's last generation is recorded
+    as a tombstone (max with any existing retired floor) for ID-recycle defense.
     """
     open_set = {int(i) for i in open_ids}
     dropped: list[int] = []
@@ -41,8 +55,18 @@ def prune_image_generations(
             generations.pop(key, None)
             continue
         if iid not in open_set:
-            generations.pop(key, None)
+            prev = generations.pop(key, None)
             dropped.append(iid)
+            if retired is not None and prev is not None:
+                try:
+                    prev_i = int(prev)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    floor = int(retired.get(iid, 0) or 0)
+                except (TypeError, ValueError):
+                    floor = 0
+                retired[iid] = max(floor, prev_i)
     return dropped
 
 

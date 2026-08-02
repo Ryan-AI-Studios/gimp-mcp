@@ -544,11 +544,13 @@ def _raise_plugin_error(result: dict[str, Any], tool_name: str) -> None:
 
 @mcp.tool()
 def select_image(ctx: Context, handle: dict) -> dict:
-    """Select/bind the active document by stable image handle (handles only).
+    """Validate/bind an image handle for agent targeting (handles only).
 
     Resolves ``handle`` against the live session registry. Does **not** create a
-    new GIMP display window — reports ``display: true`` only if one already shows
-    the image.
+    new GIMP display window (never ``Display.new``). ``selected: true`` means the
+    handle is bound for subsequent agent ops — not that a window was focused or
+    created. ``display: true`` only if an existing display already shows the image
+    (``display: false`` is still success when the handle is valid).
 
     Parameters:
     - handle: Image handle object from orient_workspace or a structural mutator
