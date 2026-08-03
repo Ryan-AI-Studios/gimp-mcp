@@ -100,15 +100,16 @@ minting. Track IDs are creation order, not execution order.
   → 0008 CoordinateModelAndExif — Completed
   → 0009 LayerPolicyAndCheckpoints — Completed
   → 0010 HighLevelMcpSurface — Completed
-  → 0011 StructuredErrorsAndAudit … through 0028 Final product polish (v1)
+  → 0011 StructuredErrorsAndAudit — Completed
+  → 0012 DeterministicCliSidecar … through 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. **0001–0010 Completed.** Orientation SoT is
+recipes → packaging → golden path → v1 polish. **0001–0011 Completed.** Orientation SoT is
 `orient_workspace` (state-manifest v1). Stable handles + STALE_HANDLE + `select_*` in **0007**.
 Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF normalize + coordinate math in **0008**.
 Source_Immutable + checkpoints in **0009**. Default high-level MCP surface (~18 tools) in **0010**.
-Authoritative table: `conductor/conductor.md`.
+Structured error envelope + request_id audit in **0011**. Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -205,6 +206,7 @@ Known upstream defects (must remain visible until fixed by tracks):
 | Coords / EXIF | Preview map + normalize | **0008** (Completed) |
 | Source integrity | Source_Immutable + checkpoints + destructive confirm | **0009** (Completed) |
 | Default MCP surface | ~18 HL tools; advanced env for full set | **0010** (Completed) |
+| Structured errors | Uniform codes, request_id, partial-mutation honesty | **0011** (Completed) |
 | Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
@@ -218,6 +220,7 @@ Hard rules for product work:
 - Spatial edits: use snapshot **mapping** + **0008** coordinate helpers; normalize EXIF before phase-sensitive work.
 - **Source integrity (0009):** `ensure_source_immutable` before first mutation; `checkpoint_create`; flatten/live-merge need `confirm_destructive`; restore → re-orient.
 - **Default MCP surface (0010):** ~18 high-level tools via real FastMCP `include_tags={"hl"}`; design names (`session_probe`, `render_visible_composite`, `create_selection`); full ~90 tools only with `GIMP_MCP_ADVANCED_TOOLS=1` (restart MCP **and** LLM client). Prefer HL tools; do not major-bump mcp/fastmcp for 3.x visibility API.
+- **Structured errors (0011):** product failures → FastMCP `ToolError` **single-line** text (`CODE: msg (request_id=…) | {json}`); never return error dicts as success. Split audit `audit-server.jsonl` / `audit-plugin.jsonl`. `rollback_available` false until **0017**. Parse helper: `parse_tool_error_text`.
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
@@ -281,11 +284,11 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Item | Value |
 |---|---|
-| Date | 2026-08-02 |
+| Date | 2026-08-03 |
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0011-StructuredErrorsAndAudit** — Proposed (needs full plan); prior **0010 Completed** PR #12 / main@ee606bc |
+| Active focus | **0012-DeterministicCliSidecar** — Proposed (needs full plan); prior **0011 Completed** PR #14 / main@b9d1d23 |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
@@ -362,7 +365,22 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Capability:** `high_level_mcp_surface: true`. Pins: `mcp>=1.10,<2`, `fastmcp>=2.10,<3`.
 - **Honesty:** save/export non-atomic until **0013**; no HL undo until **0017** (checkpoint_restore / advanced).
 - **Codex final:** **PASS**. Live GIMP matrix waived offline (operator checklist in track review/spec).
-- **Next:** **0011-StructuredErrorsAndAudit** (placeholder — needs full plan).
+- **Next:** **0011 Completed** — then **0012** CLI sidecar.
+
+### 0011 completion notes (planners / implementers)
+
+- **Completed (PR #14 / main@b9d1d23):** structured error envelope v1 + request_id audit correlation.
+- **Wire:** FastMCP `ToolError` single-line `CODE: msg (request_id=…) | {json}`; `parse_tool_error_text` multi-candidate (messages may contain ` | `).
+- **Helpers:** `tool_fail` / `raise_from_plugin_result` / `raise_from_exception` / `@with_structured_error` on all 94 tools.
+- **H1 fixed:** `export_image` raises ToolError on ALPHA_LOST (details.left_on_disk etc.); never success dict.
+- **call_api:** EXEC_DISABLED / plugin errors raise ToolError (no false-green string return).
+- **request_id:** host contextvar mint; params **copy** + `_request_id`; plugin **pop** → `threading.local`; errors-only on agent wire.
+- **Audit split:** `audit-server.jsonl` (host start/end) + `audit-plugin.jsonl` (plugin); join by request_id.
+- **M5:** harvest `handle`/`handles` kwargs into `affected_handles` on INTERNAL.
+- **Capability:** `structured_errors: true`. Pins hold (mcp/fastmcp no major).
+- **Codex final:** **PASS WITH DEFERRED P3** (bare Exception residuals + plugin TCP body without rid).
+- **Residuals:** CLI exit map → **0012**; `rollback_available` true → **0017**; InputRequiredResult/traceparent → post major.
+- **Next:** **0012** DeterministicCliSidecar (placeholder — needs full plan).
 
 ---
 
@@ -370,6 +388,9 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-03 | **0011 Completed:** structured errors envelope, ToolError wire, request_id, split audit; PR #14 / main@b9d1d23; Codex PASS WITH DEFERRED P3; next=0012 |
+| 2026-08-03 | Full plan **0011** StructuredErrorsAndAudit: envelope v1, ToolError wire, request_id, audit; Ready — not started |
+| 2026-08-03 | Folded AI-review into **0011**: H1 export false-green; single-line wire; split audit; thread-local rid; CONNECTION_FAILED; InputRequiredResult/traceparent deferred |
 | 2026-08-02 | **0009 Completed:** Source_Immutable, durable guard, confirm_destructive, checkpoints; PR #10 / main@25e93ba; Codex PASS WITH DEFERRED P3; next=0010 |
 | 2026-08-02 | Folded AI-review into **0009**: live flatten inventory, central guard, lock_visibility, CONFIRM_REQUIRED, integrity hash |
 | 2026-08-02 | Full plan **0009** LayerPolicyAndCheckpoints: Source_Immutable, checkpoints, confirm_destructive; Ready — not started |
