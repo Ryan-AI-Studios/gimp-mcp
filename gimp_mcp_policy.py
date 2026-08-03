@@ -1,6 +1,6 @@
 """Pure stdlib layer-policy + checkpoint helpers (track 0009).
 
-Shipped next to ``gimp-mcp-plugin.py`` as one of the six shared plug-in install files.
+Shipped next to ``gimp-mcp-plugin.py`` as one of the seven shared plug-in install files.
 No third-party imports; no GIMP/gi dependency.
 
 Provides:

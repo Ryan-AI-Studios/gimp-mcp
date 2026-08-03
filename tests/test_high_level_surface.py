@@ -368,7 +368,19 @@ def test_save_xcf_forwards_handle_only(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Conn:
         def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
             captured.append({"cmd": cmd, "params": params or {}})
-            return {"status": "success", "results": {"status": "success", "file_path": "x.xcf"}}
+            return {
+                "status": "success",
+                "results": {
+                    "file_path": "x.xcf",
+                    "bytes": 1,
+                    "sha256": "a" * 64,
+                    "collision": "fail",
+                    "collision_resolved": False,
+                    "backup_path": None,
+                    "atomic": True,
+                    "reopen_verified": True,
+                },
+            }
 
     monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
     monkeypatch.setattr(srv, "_jail_path_or_raise", lambda p, label="path": p)
@@ -378,6 +390,104 @@ def test_save_xcf_forwards_handle_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured and captured[0]["cmd"] == "save_xcf"
     assert captured[0]["params"].get("handle") == handle
     assert "image_index" not in captured[0]["params"]
+    assert captured[0]["params"].get("collision") == "fail"
+    assert captured[0]["params"].get("verify_reopen") is True
+
+
+def test_save_xcf_forwards_collision(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    captured: list[dict[str, Any]] = []
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            captured.append({"cmd": cmd, "params": params or {}})
+            return {
+                "status": "success",
+                "results": {
+                    "file_path": "out-1.xcf",
+                    "bytes": 2,
+                    "sha256": "b" * 64,
+                    "collision": "version",
+                    "collision_resolved": True,
+                    "backup_path": None,
+                    "atomic": True,
+                    "reopen_verified": False,
+                },
+            }
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    monkeypatch.setattr(srv, "_jail_path_or_raise", lambda p, label="path": p)
+    _tool_fn(srv.save_xcf)(  # type: ignore[arg-type]
+        _Ctx(),
+        file_path="out.xcf",
+        image_index=0,
+        collision="version",
+        verify_reopen=False,
+    )
+    assert captured[0]["params"]["collision"] == "version"
+    assert captured[0]["params"]["verify_reopen"] is False
+
+
+def test_save_xcf_invalid_collision_policy_denied(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    monkeypatch.setattr(srv, "_jail_path_or_raise", lambda p, label="path": p)
+    with pytest.raises(ToolError) as ei:
+        _tool_fn(srv.save_xcf)(  # type: ignore[arg-type]
+            _Ctx(),
+            file_path="out.xcf",
+            image_index=0,
+            collision="overwrite",
+        )
+    text = str(ei.value)
+    assert "POLICY_DENIED" in text or "invalid collision" in text
+
+
+def test_export_image_forwards_collision(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    captured: list[dict[str, Any]] = []
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            captured.append({"cmd": cmd, "params": params or {}})
+            return {
+                "status": "success",
+                "results": {
+                    "file_path": "out.png",
+                    "format": "png",
+                    "file_size_bytes": 10,
+                    "atomic": True,
+                    "collision": "replace",
+                    "sha256": "c" * 64,
+                },
+            }
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    monkeypatch.setattr(srv, "_jail_path_or_raise", lambda p, label="path": p)
+    _tool_fn(srv.export_image)(  # type: ignore[arg-type]
+        _Ctx(),
+        file_path="out.png",
+        format="png",
+        image_index=0,
+        collision="replace",
+    )
+    assert captured[0]["cmd"] == "export_image"
+    assert captured[0]["params"]["collision"] == "replace"
+    # export has no verify_reopen
+    assert "verify_reopen" not in captured[0]["params"]
 
 
 def test_capability_high_level_surface() -> None:

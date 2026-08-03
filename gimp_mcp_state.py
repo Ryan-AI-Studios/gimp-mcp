@@ -196,8 +196,8 @@ def default_capabilities() -> dict[str, bool]:
         "visible_composite_snapshot": True,  # 0004
         "isolated_layer_snapshot": False,
         "alpha_snapshot": False,  # renderer → 0014
-        "atomic_xcf_save": False,  # 0013
-        "atomic_export": False,  # 0013
+        "atomic_xcf_save": True,  # 0013
+        "atomic_export": True,  # 0013
         # Extensions
         "mcp_image_visible_to_model": True,
         "filesystem_image_attachment": True,

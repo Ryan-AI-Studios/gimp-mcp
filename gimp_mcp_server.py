@@ -346,6 +346,7 @@ def reset_gimp_connection() -> None:
 # Extra top-level keys on plugin TCP error dicts that become envelope.details
 _PLUGIN_DETAIL_KEYS = (
     "left_on_disk",
+    "final_intact",
     "png_color_type",
     "property_errors",
     "preflight_has_alpha",
@@ -355,6 +356,8 @@ _PLUGIN_DETAIL_KEYS = (
     "export_method",
     "pdb_procedure",
     "alpha_verified",
+    "collision",
+    "backup_path",
 )
 
 
@@ -1648,26 +1651,48 @@ def save_xcf(
     file_path: str,
     handle: dict | None = None,
     image_index: int | None = None,
+    collision: str = "fail",
+    verify_reopen: bool = True,
 ) -> dict:
     """Save the current image as a GIMP XCF file (preserves all layers and metadata).
 
-    **Non-atomic** until track 0013 — partial writes are possible on crash mid-save.
+    **Atomic** (track 0013): writes a same-directory temp with real ``.xcf`` suffix,
+    optional structural reopen on the temp, then ``os.replace`` into the final path.
+    Verify failure never clobbers an existing final file.
+
+    Collision policy (``collision``):
+    - ``fail`` (default): existing target → ``OUTPUT_COLLISION`` (CLI exit 11)
+    - ``version``: next free ``stem-N.xcf`` (cap 10000 → INTERNAL)
+    - ``replace``: namespaced ``.gimp-mcp.bak`` backup then atomic write
 
     Parameters:
-    - file_path: Absolute path for the output .xcf file
+    - file_path: Absolute path for the output .xcf file (workspace-jailed)
     - handle: Preferred image handle from orient_workspace / mutators
     - image_index: Legacy open-image index when handle is omitted (default 0)
+    - collision: fail | version | replace (default fail)
+    - verify_reopen: Structural reopen of temp XCF before replace (default True;
+      XCF-only — export has no reopen)
 
-    Returns:
-    - status: "success" or "error"
-    - file_path: confirmed output path
+    Returns (flat success results): file_path, bytes, sha256, collision,
+    collision_resolved, backup_path, atomic=true, reopen_verified.
     """
     try:
         if handle is None and image_index is None:
             image_index = 0
         file_path = _jail_path_or_raise(file_path, "file_path")
+        # Validate collision on host before TCP (invalid → POLICY_DENIED)
+        try:
+            import gimp_mcp_atomic as _atomic
+
+            collision_mode = _atomic.parse_collision(collision, default="fail")
+        except ValueError as e:
+            tool_fail(sec.CODE_POLICY_DENIED, str(e))
         conn = get_gimp_connection()
-        params: dict[str, Any] = {"file_path": file_path}
+        params: dict[str, Any] = {
+            "file_path": file_path,
+            "collision": collision_mode,
+            "verify_reopen": bool(verify_reopen),
+        }
         if handle is not None:
             params["handle"] = handle
         if image_index is not None:
@@ -1694,12 +1719,24 @@ def export_image(
     flatten: bool = False,
     preserve_alpha: bool | None = None,
     verify: bool = True,
+    collision: str = "fail",
     handle: dict | None = None,
     image_index: int | None = None,
 ) -> dict:
     """Export the current image to a raster file (PNG, JPEG, WEBP, TIFF).
 
-    **Non-atomic** until track 0013 — partial artifacts possible on crash mid-export.
+    **Atomic** (track 0013): writes a same-directory temp with the real format
+    suffix, runs PNG IHDR / alpha verify on the **temp**, then backup (replace
+    mode) + ``os.replace``. ALPHA_LOST discards temp → ``left_on_disk=false``
+    and ``final_intact=true`` (existing final is not clobbered).
+
+    **No ``verify_reopen``** — reopen is XCF-only on ``save_xcf``. Export uses
+    ``verify`` / PNG IHDR (0005). Full AE/SSIM → track 0014.
+
+    Collision policy (``collision``):
+    - ``fail`` (default): existing target → ``OUTPUT_COLLISION`` (CLI exit 11)
+    - ``version``: next free ``stem-N.ext``
+    - ``replace``: namespaced backup then atomic write
 
     **Breaking change (Issue 16):** ``flatten`` default is **False**. Transparent
     PNG/WEBP/TIFF exports use merge-on-duplicate (alpha preserved) and fail closed
@@ -1716,6 +1753,7 @@ def export_image(
       flatten=True + preserve_alpha=True → POLICY_CONFLICT error.
     - verify: Fail-closed PNG IHDR alpha check when preserve_alpha and preflight had alpha
       (default True)
+    - collision: fail | version | replace (default fail)
     - handle: Preferred image handle from orient_workspace / mutators
     - image_index: Index of the image to export when handle omitted (default 0)
 
@@ -1726,17 +1764,24 @@ def export_image(
 
     Returns (success): file_path, format, file_size_bytes, preserve_alpha,
     preflight_has_alpha, alpha_verified (true|false|"not_applicable"), export_method,
-    pdb_procedure, optional png_color_type.
+    pdb_procedure, optional png_color_type, plus atomic manifest fields
+    (bytes, sha256, collision, collision_resolved, backup_path, atomic=true).
 
     Structured errors raise ToolError (MCP isError) with single-line envelope JSON:
-    ALPHA_LOST (details.left_on_disk, optional png_color_type / property_errors),
-    ALPHA_UNSUPPORTED_FORMAT, POLICY_CONFLICT, EXPORT_FAILED. Parse with
-    ``parse_tool_error_text``; never returned as a successful tool result (0011 H1).
+    ALPHA_LOST (details.left_on_disk / final_intact), OUTPUT_COLLISION, EXPORT_FAILED,
+    ALPHA_UNSUPPORTED_FORMAT, POLICY_CONFLICT. Parse with ``parse_tool_error_text``;
+    never returned as a successful tool result (0011 H1).
     """
     try:
         if handle is None and image_index is None:
             image_index = 0
         file_path = _jail_path_or_raise(file_path, "file_path")
+        try:
+            import gimp_mcp_atomic as _atomic
+
+            collision_mode = _atomic.parse_collision(collision, default="fail")
+        except ValueError as e:
+            tool_fail(sec.CODE_POLICY_DENIED, str(e))
         conn = get_gimp_connection()
         payload: dict[str, Any] = {
             "file_path": file_path,
@@ -1745,6 +1790,7 @@ def export_image(
             "flatten": flatten,
             "preserve_alpha": preserve_alpha,
             "verify": verify,
+            "collision": collision_mode,
         }
         if handle is not None:
             payload["handle"] = handle

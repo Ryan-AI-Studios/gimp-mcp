@@ -453,8 +453,8 @@ def test_captured_at_iso_ish() -> None:
 def test_capabilities_honesty() -> None:
     caps = state.default_capabilities()
     assert caps["visible_composite_snapshot"] is True
-    assert caps["atomic_xcf_save"] is False
-    assert caps["atomic_export"] is False
+    assert caps["atomic_xcf_save"] is True
+    assert caps["atomic_export"] is True
     assert caps["alpha_preserving_export"] is True
     assert caps["state_manifest_orientation"] is True
     assert caps["stable_handle_registry"] is True

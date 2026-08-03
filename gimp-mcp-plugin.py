@@ -75,6 +75,13 @@ except ImportError as _policy_imp_err:  # pragma: no cover - fail closed at runt
         "gimp_mcp_policy.py must sit next to gimp-mcp-plugin.py "
         f"(looked in {_plugin_dir}): {_policy_imp_err}"
     ) from _policy_imp_err
+try:
+    import gimp_mcp_atomic as _atomic
+except ImportError as _atomic_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_atomic.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_atomic_imp_err}"
+    ) from _atomic_imp_err
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
@@ -3645,20 +3652,60 @@ class MCPPlugin(Gimp.PlugIn):
         flatten=False,
         preserve_alpha=None,
         verify=True,
+        collision="fail",
     ):
-        """Export image to file_path; return rich result dict (success or error).
+        """Export image atomically: write temp → verify → backup/replace final.
 
         Never mutates the caller's original image — prep runs on a duplicate.
-        Internal opaque callers should pass flatten=True (auto preserve_alpha=False).
+        Internal opaque callers should pass flatten=True (auto preserve_alpha=False)
+        and collision=\"replace\" so re-runs do not OUTPUT_COLLISION.
 
         Defense-in-depth: re-check path jail even if callers already jailed.
+        Public default collision is fail; verify runs on the temp path only
+        (ALPHA_LOST does not clobber an existing final).
         """
         from gi.repository import Gio
 
         safe, err = self._jail_path(file_path)
         if err is not None:
             raise _sec.SecurityError(_sec.CODE_PATH_DENIED, err.get("error", "PATH_DENIED"))
-        file_path = str(safe)
+        requested_path = str(safe)
+
+        try:
+            collision_mode = _atomic.parse_collision(collision, default="fail")
+        except ValueError as e:
+            return _exp.build_export_error(
+                code=_sec.CODE_POLICY_DENIED,
+                error=str(e),
+                file_path=requested_path,
+            )
+        try:
+            resolved = _atomic.resolve_output_path(Path(requested_path), collision_mode)
+        except _atomic.OutputCollisionError as e:
+            return _exp.build_export_error(
+                code=_sec.CODE_OUTPUT_COLLISION,
+                error=str(e),
+                file_path=requested_path,
+                left_on_disk=False,
+                extra={"final_intact": True, "collision": collision_mode},
+            )
+        except _atomic.VersionCapExceededError as e:
+            return _exp.build_export_error(
+                code=_sec.CODE_INTERNAL,
+                error=str(e),
+                file_path=requested_path,
+            )
+
+        final_safe, err = self._jail_path(str(resolved.path))
+        if err is not None:
+            raise _sec.SecurityError(_sec.CODE_PATH_DENIED, err.get("error", "PATH_DENIED"))
+        file_path = str(final_safe)
+
+        temp_path = _atomic.make_temp_path(Path(file_path))
+        temp_safe, err = self._jail_path(str(temp_path))
+        if err is not None:
+            raise _sec.SecurityError(_sec.CODE_PATH_DENIED, err.get("error", "PATH_DENIED"))
+        write_path = str(temp_safe)
 
         policy = _exp.resolve_export_policy(fmt, preserve_alpha, flatten, verify=verify)
         if policy.error:
@@ -3677,8 +3724,16 @@ class MCPPlugin(Gimp.PlugIn):
         export_method = policy.export_method
         dup = None
         png_color_type = None
+        backup_path = None
+        committed = False
 
         try:
+            # Ensure clean temp sibling (same parent, real format suffix)
+            if os.path.isfile(write_path):
+                try:
+                    os.remove(write_path)
+                except OSError:
+                    pass
             # Always prep on a duplicate so the user image is never mutated.
             dup = image.duplicate()
             try:
@@ -3744,7 +3799,8 @@ class MCPPlugin(Gimp.PlugIn):
                 drawable = (selected or layers or [None])[0]
                 export_method = _exp.EXPORT_METHOD_DIRECT
 
-            gio_file = Gio.File.new_for_path(file_path)
+            # Write to temp sibling only (real format suffix); commit via os.replace.
+            gio_file = Gio.File.new_for_path(write_path)
             pdb = Gimp.get_pdb()
             proc_name = _exp.pdb_procedure_for_format(policy.format)
             if proc_name is None:
@@ -3875,10 +3931,10 @@ class MCPPlugin(Gimp.PlugIn):
                     print(f"[MCP] {proc_name} failed: {run_err}; trying degraded path")
                     proc = None
 
-            if proc is None or not os.path.isfile(file_path) or os.path.getsize(file_path) == 0:
+            if proc is None or not os.path.isfile(write_path) or os.path.getsize(write_path) == 0:
                 # Degraded last resort — log; still verify when preserve_alpha.
                 used_degraded = True
-                print(f"[MCP] DEGRADED export path for {file_path!r} (procedure={proc_name!r})")
+                print(f"[MCP] DEGRADED export path for {write_path!r} (procedure={proc_name!r})")
                 try:
                     Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, dup, gio_file)
                     pdb_procedure = pdb_procedure or "Gimp.file_overwrite"
@@ -3894,16 +3950,17 @@ class MCPPlugin(Gimp.PlugIn):
                                 f"file_overwrite/file_save: {ow_err}; {save_err}"
                             ),
                             file_path=file_path,
-                            left_on_disk=os.path.isfile(file_path),
+                            left_on_disk=False,
                             property_errors=property_errors,
                             preserve_alpha=policy.preserve_alpha,
                             preflight_has_alpha=preflight_has_alpha,
                             format=policy.format,
                             export_method=export_method,
                             pdb_procedure=pdb_procedure,
+                            extra={"final_intact": True},
                         )
 
-            if not os.path.isfile(file_path):
+            if not os.path.isfile(write_path) or os.path.getsize(write_path) <= 0:
                 return _exp.build_export_error(
                     code=_exp.CODE_EXPORT_FAILED,
                     error="Export produced no output file",
@@ -3915,14 +3972,15 @@ class MCPPlugin(Gimp.PlugIn):
                     format=policy.format,
                     export_method=export_method,
                     pdb_procedure=pdb_procedure,
+                    extra={"final_intact": True},
                 )
 
-            file_size = os.path.getsize(file_path)
+            file_size = os.path.getsize(write_path)
 
-            # PNG IHDR verify (fail-closed when preserve_alpha + preflight alpha)
-            if policy.format == "png" and os.path.isfile(file_path):
+            # PNG IHDR verify on TEMP (fail-closed when preserve_alpha + preflight alpha)
+            if policy.format == "png" and os.path.isfile(write_path):
                 try:
-                    ihdr = _exp.png_ihdr_info(file_path)
+                    ihdr = _exp.png_ihdr_info(write_path)
                     png_color_type = int(ihdr["color_type"])
                 except (ValueError, OSError) as ihdr_err:
                     if policy.preserve_alpha and preflight_has_alpha and policy.verify:
@@ -3930,13 +3988,14 @@ class MCPPlugin(Gimp.PlugIn):
                             code=_exp.CODE_ALPHA_LOST,
                             error=f"PNG IHDR unreadable after export: {ihdr_err}",
                             file_path=file_path,
-                            left_on_disk=True,
+                            left_on_disk=False,
                             preflight_has_alpha=preflight_has_alpha,
                             preserve_alpha=True,
                             property_errors=property_errors,
                             export_method=export_method,
                             pdb_procedure=pdb_procedure,
                             format=policy.format,
+                            extra={"final_intact": True},
                         )
                     png_color_type = None
 
@@ -3948,7 +4007,7 @@ class MCPPlugin(Gimp.PlugIn):
             ):
                 has_alpha_file = False
                 try:
-                    has_alpha_file = _exp.file_has_alpha_channel(file_path)
+                    has_alpha_file = _exp.file_has_alpha_channel(write_path)
                 except (ValueError, OSError):
                     has_alpha_file = False
                 if not has_alpha_file:
@@ -3957,10 +4016,10 @@ class MCPPlugin(Gimp.PlugIn):
                         error=(
                             "preserve_alpha=True and preflight had alpha, but "
                             f"PNG color type is {png_color_type} "
-                            f"(expected 4 or 6). File left on disk for debugging."
+                            f"(expected 4 or 6). Temp discarded; final path intact."
                         ),
                         file_path=file_path,
-                        left_on_disk=True,
+                        left_on_disk=False,
                         png_color_type=png_color_type,
                         preflight_has_alpha=True,
                         preserve_alpha=True,
@@ -3968,6 +4027,7 @@ class MCPPlugin(Gimp.PlugIn):
                         export_method=export_method,
                         pdb_procedure=pdb_procedure,
                         format=policy.format,
+                        extra={"final_intact": True},
                     )
 
             if policy.preserve_alpha and not preflight_has_alpha:
@@ -3978,6 +4038,93 @@ class MCPPlugin(Gimp.PlugIn):
                 alpha_verified = True
             else:
                 alpha_verified = "not_applicable"
+
+            digest = _policy.sha256_file(write_path)
+
+            # Backup existing final before replace (fail → abort, final untouched)
+            if resolved.needs_backup:
+                bak = _atomic.make_backup_path(Path(file_path))
+                bak_safe, bak_err = self._jail_path(str(bak))
+                if bak_err is not None:
+                    return _exp.build_export_error(
+                        code=_sec.CODE_PATH_DENIED,
+                        error=bak_err.get("error", "PATH_DENIED"),
+                        file_path=file_path,
+                        left_on_disk=False,
+                        preserve_alpha=policy.preserve_alpha,
+                        preflight_has_alpha=preflight_has_alpha,
+                        format=policy.format,
+                        export_method=export_method,
+                        pdb_procedure=pdb_procedure,
+                        extra={"final_intact": True},
+                    )
+                try:
+                    # Copy existing final to namespaced backup (not move — keep final until replace)
+                    import shutil
+
+                    shutil.copy2(file_path, str(bak_safe))
+                    backup_path = str(bak_safe)
+                except OSError as bak_exc:
+                    return _exp.build_export_error(
+                        code=_exp.CODE_EXPORT_FAILED,
+                        error=f"backup before replace failed: {bak_exc}",
+                        file_path=file_path,
+                        left_on_disk=False,
+                        preserve_alpha=policy.preserve_alpha,
+                        preflight_has_alpha=preflight_has_alpha,
+                        format=policy.format,
+                        export_method=export_method,
+                        pdb_procedure=pdb_procedure,
+                        extra={"final_intact": True},
+                    )
+
+            try:
+                os.replace(write_path, file_path)
+                committed = True
+            except OSError as replace_err:
+                residual = {
+                    "final_intact": os.path.isfile(file_path),
+                    "backup_path": backup_path,
+                }
+                return _exp.build_export_error(
+                    code=_exp.CODE_EXPORT_FAILED,
+                    error=f"atomic replace failed (final may be locked): {replace_err}",
+                    file_path=file_path,
+                    left_on_disk=os.path.isfile(file_path),
+                    property_errors=property_errors,
+                    preserve_alpha=policy.preserve_alpha,
+                    preflight_has_alpha=preflight_has_alpha,
+                    format=policy.format,
+                    export_method=export_method,
+                    pdb_procedure=pdb_procedure,
+                    extra=residual,
+                )
+
+            if not os.path.isfile(file_path) or os.path.getsize(file_path) <= 0:
+                return _exp.build_export_error(
+                    code=_exp.CODE_EXPORT_FAILED,
+                    error="export replace did not yield final file",
+                    file_path=file_path,
+                    left_on_disk=False,
+                    property_errors=property_errors,
+                    preserve_alpha=policy.preserve_alpha,
+                    preflight_has_alpha=preflight_has_alpha,
+                    format=policy.format,
+                    export_method=export_method,
+                    pdb_procedure=pdb_procedure,
+                )
+
+            file_size = os.path.getsize(file_path)
+            extra: dict = {
+                "bytes": int(file_size),
+                "sha256": digest,
+                "collision": collision_mode,
+                "collision_resolved": bool(resolved.collision_resolved),
+                "backup_path": backup_path,
+                "atomic": True,
+            }
+            if used_degraded:
+                extra["degraded_path"] = True
 
             result = _exp.build_export_success(
                 file_path=file_path,
@@ -3990,10 +4137,15 @@ class MCPPlugin(Gimp.PlugIn):
                 pdb_procedure=pdb_procedure,
                 png_color_type=png_color_type,
                 property_errors=property_errors if property_errors else None,
-                extra={"degraded_path": used_degraded} if used_degraded else None,
+                extra=extra,
             )
             return result
         finally:
+            if not committed and os.path.isfile(write_path):
+                try:
+                    os.remove(write_path)
+                except OSError:
+                    pass
             if dup is not None:
                 try:
                     dup.delete()
@@ -4101,30 +4253,74 @@ class MCPPlugin(Gimp.PlugIn):
             return _sec.redact_error(e)
 
     def _save_xcf(self, params):
-        """Save image as XCF."""
+        """Save image as XCF with collision policy and atomic temp→replace."""
         try:
-            from gi.repository import Gio
-
             file_path = params.get("file_path", "")
             safe, err = self._jail_path(file_path)
             if err is not None:
                 return err
-            file_path = str(safe)
+            requested = str(safe)
             try:
                 image, _iid = self._resolve_image_from_params(params)
             except _handles.HandleError as e:
                 return self._handle_error_response(e)
-            gio_file = Gio.File.new_for_path(file_path)
-            pdb = Gimp.get_pdb()
-            proc = pdb.lookup_procedure("gimp-xcf-save")
-            if proc:
-                cfg = proc.create_config()
-                cfg.set_property("image", image)
-                cfg.set_property("file", gio_file)
-                proc.run(cfg)
-            else:
-                Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
-            return {"status": "success", "results": {"status": "success", "file_path": file_path}}
+
+            try:
+                collision_mode = _atomic.parse_collision(
+                    params.get("collision", "fail"), default="fail"
+                )
+            except ValueError as e:
+                return _sec.make_error(_sec.CODE_POLICY_DENIED, str(e))
+
+            try:
+                resolved = _atomic.resolve_output_path(Path(requested), collision_mode)
+            except _atomic.OutputCollisionError as e:
+                return _sec.make_error(
+                    _sec.CODE_OUTPUT_COLLISION,
+                    str(e),
+                    details={"file_path": requested, "collision": collision_mode},
+                )
+            except _atomic.VersionCapExceededError as e:
+                return _sec.make_error(_sec.CODE_INTERNAL, str(e))
+
+            final_safe, err = self._jail_path(str(resolved.path))
+            if err is not None:
+                return err
+            file_path = str(final_safe)
+
+            verify_reopen = _exp.coerce_bool(params.get("verify_reopen", True), default=True)
+
+            manifest = self._save_xcf_to_path(
+                image,
+                file_path,
+                verify_reopen=verify_reopen,
+                create_backup=bool(resolved.needs_backup),
+            )
+            # Flat success results (no nested results.status)
+            return {
+                "status": "success",
+                "results": {
+                    "file_path": manifest["file_path"],
+                    "bytes": manifest["bytes"],
+                    "sha256": manifest["sha256"],
+                    "collision": collision_mode,
+                    "collision_resolved": bool(resolved.collision_resolved),
+                    "backup_path": manifest.get("backup_path"),
+                    "atomic": True,
+                    "reopen_verified": bool(manifest.get("reopen_verified")),
+                },
+            }
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("VERIFY_FAILED:"):
+                return _sec.make_error(
+                    _sec.CODE_VERIFY_FAILED,
+                    msg.split(":", 1)[-1].strip() or msg,
+                    details={"final_intact": True},
+                )
+            return _sec.make_error(_sec.CODE_INTERNAL, msg)
         except Exception as e:
             return _sec.redact_error(e)
 
@@ -4143,6 +4339,10 @@ class MCPPlugin(Gimp.PlugIn):
             preserve_alpha = _exp.coerce_optional_bool(params.get("preserve_alpha", None))
             verify = _exp.coerce_bool(params.get("verify", True), default=True)
             try:
+                collision = _atomic.parse_collision(params.get("collision", "fail"), default="fail")
+            except ValueError as e:
+                return _sec.make_error(_sec.CODE_POLICY_DENIED, str(e))
+            try:
                 image, _iid = self._resolve_image_from_params(params)
             except _handles.HandleError as e:
                 return self._handle_error_response(e)
@@ -4154,14 +4354,18 @@ class MCPPlugin(Gimp.PlugIn):
                 flatten=flatten,
                 preserve_alpha=preserve_alpha,
                 verify=verify,
+                collision=collision,
             )
             Gimp.displays_flush()
             if result.get("status") == "error":
                 # Preserve structured export errors (ALPHA_LOST, POLICY_CONFLICT, …)
                 return result
+            # Flat agent-facing results: drop helper ``status`` so envelope owns it
+            # (DoD-4 / 0013 — same honesty as save_xcf, no nested results.status).
+            flat = {k: v for k, v in result.items() if k != "status"}
             return {
                 "status": "success",
-                "results": result,
+                "results": flat,
             }
         except _sec.SecurityError as e:
             return e.as_error()
@@ -4212,6 +4416,7 @@ class MCPPlugin(Gimp.PlugIn):
                         flatten=flatten,
                         preserve_alpha=preserve_alpha,
                         verify=verify,
+                        collision="replace",
                     )
                     if result.get("status") == "error":
                         # Forward full structured export fields (ALPHA_LOST contract).
@@ -5956,18 +6161,36 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception:
             return True
 
-    def _save_xcf_to_path(self, image, file_path):
-        """Save image as XCF to an already-jailed absolute path.
+    def _save_xcf_to_path(
+        self,
+        image,
+        file_path,
+        *,
+        verify_reopen=False,
+        create_backup=False,
+    ):
+        """Path-only atomic XCF writer (already-jailed absolute path).
 
-        Writes to a ``.partial`` sibling first, verifies non-empty bytes, then
-        ``os.replace`` into the final path so a failed overwrite cannot pair a
-        stale XCF with a fresh sidecar (Codex P1). Full atomic product semantics
-        remain **0013**.
+        Order (locked 0013): write TEMP (real ``.xcf`` suffix) → size>0 →
+        optional reopen structural on TEMP → sha256(temp) → optional backup →
+        ``os.replace`` → cleanup temp. Checkpoint keeps ``verify_reopen=False``.
+
+        Returns a manifest dict with file_path/bytes/sha256/backup_path/
+        reopen_verified. Raises ``RuntimeError`` on failure (checkpoint path);
+        public ``_save_xcf`` maps VERIFY_FAILED / IO errors to structured codes.
         """
         from gi.repository import Gio
 
         xcf_path = os.fspath(file_path)
-        tmp_path = xcf_path + ".partial"
+        tmp_path = str(_atomic.make_temp_path(Path(xcf_path)))
+        # Jail temp sibling (defense-in-depth; same parent as final)
+        tmp_safe, tmp_err = self._jail_path(tmp_path)
+        if tmp_err is not None:
+            raise _sec.SecurityError(_sec.CODE_PATH_DENIED, tmp_err.get("error", "PATH_DENIED"))
+        tmp_path = str(tmp_safe)
+        committed = False
+        backup_path = None
+        reopen_verified = False
         try:
             if os.path.isfile(tmp_path):
                 try:
@@ -5988,12 +6211,77 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.file_overwrite(Gimp.RunMode.NONINTERACTIVE, image, gio_file)
             if not os.path.isfile(tmp_path) or os.path.getsize(tmp_path) <= 0:
                 raise RuntimeError(f"XCF save produced empty/missing file: {tmp_path}")
-            os.replace(tmp_path, xcf_path)
+
+            # Optional structural reopen on TEMP before replace (public default True)
+            if verify_reopen:
+                loaded = None
+                try:
+                    loaded = Gimp.file_load(
+                        Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(tmp_path)
+                    )
+                    if loaded is None:
+                        raise RuntimeError("VERIFY_FAILED: reopen returned no image")
+                    src_w = int(image.get_width())
+                    src_h = int(image.get_height())
+                    got_w = int(loaded.get_width())
+                    got_h = int(loaded.get_height())
+                    if got_w != src_w or got_h != src_h:
+                        raise RuntimeError(
+                            f"VERIFY_FAILED: reopen dims {got_w}x{got_h} != source {src_w}x{src_h}"
+                        )
+                    try:
+                        layers = list(loaded.get_layers() or [])
+                    except (AttributeError, RuntimeError, TypeError):
+                        layers = []
+                    if len(layers) < 1:
+                        raise RuntimeError("VERIFY_FAILED: reopen image has no layers")
+                    reopen_verified = True
+                finally:
+                    if loaded is not None:
+                        try:
+                            loaded.delete()
+                        except Exception:
+                            pass
+
+            digest = _policy.sha256_file(tmp_path)
+            file_size = int(os.path.getsize(tmp_path))
+
+            if create_backup and os.path.isfile(xcf_path):
+                bak = _atomic.make_backup_path(Path(xcf_path))
+                bak_safe, bak_err = self._jail_path(str(bak))
+                if bak_err is not None:
+                    raise _sec.SecurityError(
+                        _sec.CODE_PATH_DENIED, bak_err.get("error", "PATH_DENIED")
+                    )
+                try:
+                    import shutil
+
+                    shutil.copy2(xcf_path, str(bak_safe))
+                    backup_path = str(bak_safe)
+                except OSError as bak_exc:
+                    raise RuntimeError(f"backup before replace failed: {bak_exc}") from bak_exc
+
+            try:
+                os.replace(tmp_path, xcf_path)
+                committed = True
+            except OSError as replace_err:
+                raise RuntimeError(
+                    f"atomic XCF replace failed (final may be locked): {replace_err}"
+                ) from replace_err
+
             if not os.path.isfile(xcf_path) or os.path.getsize(xcf_path) <= 0:
                 raise RuntimeError(f"XCF replace did not yield file: {xcf_path}")
-            return xcf_path
+
+            return {
+                "file_path": xcf_path,
+                "bytes": file_size,
+                "sha256": digest,
+                "backup_path": backup_path,
+                "reopen_verified": reopen_verified if verify_reopen else False,
+                "atomic": True,
+            }
         finally:
-            if os.path.isfile(tmp_path):
+            if not committed and os.path.isfile(tmp_path):
                 try:
                     os.remove(tmp_path)
                 except OSError:
@@ -7314,7 +7602,9 @@ class MCPPlugin(Gimp.PlugIn):
                         new_w = max(1, int(px * aspect))
                     dup.scale(new_w, new_h)
                     # Opaque bake intentional (icons): flatten=True → preserve_alpha False
-                    exp_r = self._export_to_path(dup, out_path, fmt, 95, flatten=True)
+                    exp_r = self._export_to_path(
+                        dup, out_path, fmt, 95, flatten=True, collision="replace"
+                    )
                     if exp_r.get("status") == "error":
                         raise RuntimeError(exp_r.get("error", "icon export failed"))
                     exported.append({"size": px, "file_path": out_path})
@@ -7362,8 +7652,12 @@ class MCPPlugin(Gimp.PlugIn):
                 jpeg_path = os.path.join(output_dir, f"{raw_name}.jpg")
                 png_path = os.path.join(output_dir, f"{raw_name}.png")
                 # Opaque bake for size compare (flatten=True → preserve_alpha False)
-                jpeg_r = self._export_to_path(dup, jpeg_path, "jpeg", jpeg_quality, flatten=True)
-                png_r = self._export_to_path(dup, png_path, "png", 95, flatten=True)
+                jpeg_r = self._export_to_path(
+                    dup, jpeg_path, "jpeg", jpeg_quality, flatten=True, collision="replace"
+                )
+                png_r = self._export_to_path(
+                    dup, png_path, "png", 95, flatten=True, collision="replace"
+                )
                 if jpeg_r.get("status") == "error":
                     raise RuntimeError(jpeg_r.get("error", "jpeg export failed"))
                 if png_r.get("status") == "error":
@@ -7510,7 +7804,9 @@ class MCPPlugin(Gimp.PlugIn):
                 Gimp.floating_sel_anchor(pasted)
 
             # Sprite sheet is pre-composited; flatten bake is intentional
-            exp_r = self._export_to_path(sheet, output_path, "png", 95, flatten=True)
+            exp_r = self._export_to_path(
+                sheet, output_path, "png", 95, flatten=True, collision="replace"
+            )
             if exp_r.get("status") == "error":
                 sheet.delete()
                 return {
@@ -7576,7 +7872,9 @@ class MCPPlugin(Gimp.PlugIn):
                     dup.crop(target_w, target_h, crop_x, crop_y)
                     out_path = os.path.join(output_dir, f"{platform_name}.png")
                     # Social media kit: opaque bake (flatten=True)
-                    exp_r = self._export_to_path(dup, out_path, "png", 95, flatten=True)
+                    exp_r = self._export_to_path(
+                        dup, out_path, "png", 95, flatten=True, collision="replace"
+                    )
                     if exp_r.get("status") == "error":
                         raise RuntimeError(exp_r.get("error", f"export failed for {platform_name}"))
                     exported.append(

@@ -267,8 +267,8 @@ def test_capabilities_policy_flags() -> None:
     caps = state.default_capabilities()
     assert caps.get("source_immutable_policy") is True
     assert caps.get("checkpoints") is True
-    assert caps["atomic_xcf_save"] is False
-    assert caps["atomic_export"] is False
+    assert caps["atomic_xcf_save"] is True
+    assert caps["atomic_export"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +281,12 @@ def test_wiring_pyproject_lists_policy() -> None:
     assert "gimp_mcp_policy" in text
 
 
-def test_wiring_readme_seven_install_files() -> None:
+def test_wiring_readme_eight_install_files() -> None:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "gimp_mcp_policy.py" in text
-    # EXPECTED_PLUGIN_FILES = plugin + 6 shared modules (7 total)
-    assert "7 files" in text or "**7** files" in text
-    assert "8 files" not in text and "**8** files" not in text
+    assert "gimp_mcp_atomic.py" in text
+    # EXPECTED_PLUGIN_FILES = plugin + 7 shared modules (8 total)
+    assert "8 files" in text or "**8** files" in text
 
 
 def test_wiring_plugin_imports_policy() -> None:
@@ -305,8 +305,8 @@ def test_wiring_plugin_imports_policy() -> None:
     assert "_exp.coerce_bool" in text
     assert "def _require_confirm_destructive" in text
     assert "def _allow_source_mutation_from_params" in text
-    # Checkpoint XCF: partial + replace so failed overwrite cannot keep stale XCF
-    assert ".partial" in text
+    # Checkpoint XCF: atomic temp (suffix-preserving) + os.replace (0013)
+    assert "make_temp_path" in text
     assert "os.replace" in text
     # Durable protection across restore/restart (Codex final P1)
     assert "_hydrate_protected_from_group" in text

@@ -69,6 +69,9 @@ CODE_PARTIAL_MUTATION = "PARTIAL_MUTATION"
 CODE_CONNECTION_FAILED = "CONNECTION_FAILED"
 CODE_TIMEOUT = "TIMEOUT"  # reserved
 CODE_UNSUPPORTED = "UNSUPPORTED"  # reserved
+# Atomic save/export (track 0013)
+CODE_OUTPUT_COLLISION = "OUTPUT_COLLISION"
+CODE_VERIFY_FAILED = "VERIFY_FAILED"
 
 
 class SecurityError(Exception):
@@ -127,6 +130,9 @@ CODE_DEFAULTS: dict[str, ErrorSpec] = {
     CODE_CONNECTION_FAILED: _spec(retryable=True),
     CODE_TIMEOUT: _spec(retryable=True, state_may_have_changed=True),
     CODE_UNSUPPORTED: _spec(),
+    # 0013: static CODE_DEFAULTS — both non-retryable; verify-on-temp leaves final intact
+    CODE_OUTPUT_COLLISION: _spec(retryable=False),
+    CODE_VERIFY_FAILED: _spec(retryable=False, state_may_have_changed=False),
 }
 
 

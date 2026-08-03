@@ -48,7 +48,8 @@ See [SECURITY.md](SECURITY.md) for env vars, start order, and residuals.
 - `flatten=True` + `preserve_alpha=None` → opaque bake (`preserve_alpha` forced false) — safe for icons/sprites.
 - `flatten=True` + `preserve_alpha=True` → `POLICY_CONFLICT` error.
 - JPEG + `preserve_alpha=True` → `ALPHA_UNSUPPORTED_FORMAT`.
-- Preflight had alpha + `preserve_alpha` + verify + PNG without alpha → `ALPHA_LOST` (`left_on_disk=true`).
+- Preflight had alpha + `preserve_alpha` + verify + PNG without alpha → `ALPHA_LOST`
+  (verify-on-temp: `left_on_disk=false`, `final_intact=true`; final path never replaced).
 - Opaque source + default preserve_alpha → success with `alpha_verified="not_applicable"`.
 
 PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `file-tiff-export`.
@@ -102,7 +103,7 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 - **selected:** true only for the front display image (`Gimp.get_displays()[0]`); if no
   displays, all `selected: false` (never defaults index 0 to true)
 - **Layer kinds:** `raster` | `group` | `text` | `link` | `vector` (nested `children[]`)
-- **Capabilities:** honest matrix (composite snapshot true; atomic save/export false; …)
+- **Capabilities:** honest matrix (composite snapshot true; atomic save/export true; …)
 - **Transport:** agent-facing `stdio-proxy` (plugin TCP is internal)
 - **Contract file:** `schemas/state-manifest.v1.json`
 
@@ -143,7 +144,7 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 | `PARTIAL_MUTATION` | Mutation incomplete; **do not** blind-retry. Re-orient and inspect state (`state_may_have_changed: true`) |
 | `CONNECTION_FAILED` | TCP/socket/timeout to GIMP plugin — ensure plugin running, retry (`retryable: true`) |
 | `INTERNAL_ERROR` | Unexpected host/plugin failure; re-orient; check `GIMP_MCP_DEBUG` diagnostics |
-| `ALPHA_LOST` | Export lost alpha; check envelope `details.left_on_disk` / `png_color_type`; re-export with `preserve_alpha` / non-flatten |
+| `ALPHA_LOST` | Export lost alpha on **temp** (no final replace); `details.left_on_disk=false`, `final_intact=true`; check `png_color_type`; re-export with `preserve_alpha` / non-flatten |
 
 #### Structured error wire format (track 0011)
 
@@ -181,17 +182,19 @@ table with `uv run gimp-agent codes --json`.
 | 5 | Stale / foreign / invalid handle | `STALE_HANDLE`, `FOREIGN_SESSION`, `INVALID_HANDLE`, `HANDLE_NOT_FOUND`, `SELECTION_CONFLICT` |
 | 6 | Policy / path / approval / checkpoint | `POLICY_DENIED`, `CONFIRM_REQUIRED`, `PATH_DENIED`, `EXEC_DISABLED`, `CHECKPOINT_EXISTS`, `CHECKPOINT_NOT_FOUND`, `CHECKPOINT_CORRUPTED` |
 | 7 | Internal / unmapped | `INTERNAL_ERROR`, `METADATA_WRITE_FAILED`, unknown `CODE_*` |
-| 8 | Verification failed | `ALPHA_LOST` |
+| 8 | Verification failed | `ALPHA_LOST`, `VERIFY_FAILED` |
 | 9 | Timeout | `TIMEOUT` |
 | 10 | Partial mutation | `PARTIAL_MUTATION` |
-| 11 | Output collision | *(reserved track 0013 — no code yet)* |
+| 11 | Output collision | `OUTPUT_COLLISION` |
 | 12 | Unsupported | `UNSUPPORTED` |
 
 CLI-local codes (not raised by the TCP plugin): `CLI_USAGE`, `GIMP_NOT_FOUND`,
 `PLUGIN_NOT_FOUND`. Envelope: `{ok, exit_code, code, message, data}`. JSON mode:
 `--json` flag overrides env `GIMP_AGENT_JSON` (truthy: `1`/`true`/`yes`/`on`).
 
-Commands: `doctor [--strict]`, `probe [--timeout]`, `version`, `codes`.
+Commands: `doctor [--strict]`, `probe [--timeout]`, `version`, `codes`,
+`save-xcf PATH [--collision fail|version|replace] [--verify-reopen|--no-verify-reopen]`,
+`export PATH --format {png,jpeg,webp,tiff} [--collision …] [--verify]`.
 
 **Doctor (non-strict):** default `doctor` is diagnostics-only. When a **required**
 check fails without `--strict`, process exit stays **0** and the envelope keeps
@@ -216,9 +219,28 @@ Transport refuse / auth remain exit **4** (`CONNECTION_FAILED` / `AUTH_FAILED`).
 | `checkpoint_create` | Jailed `{workspace}/.gimp-mcp-checkpoints/{label}/project.xcf` + `checkpoint.json` after successful XCF. Label: `[A-Za-z0-9._-]+`, max 64; reject `..`, Windows reserved (`CON`…). |
 | `checkpoint_restore` | Opens XCF as **new** image (alongside). Prior handles invalid if closed. **Must re-orient.** No tattoo rebind. Optional `close_prior`. |
 
-**Capabilities:** `source_immutable_policy: true`, `checkpoints: true`; `atomic_xcf_save` / `atomic_export` remain **false** until 0013.
+**Capabilities:** `source_immutable_policy: true`, `checkpoints: true`,
+`atomic_xcf_save: true`, `atomic_export: true` (track 0013).
 
-**Integrity hash:** `xcf_sha256` is integrity of **as-written** bytes — not XCF reproducibility. Soft compare on restore only; hard reopen verify → 0013.
+**Integrity hash:** `xcf_sha256` is integrity of **as-written** bytes — not XCF reproducibility.
+Soft compare on restore only. Public `save_xcf` optionally reopens the temp XCF for
+structural checks (`verify_reopen`, default true) before atomic replace.
+
+#### Atomic save / export (track 0013)
+
+| Surface | Behavior |
+|---|---|
+| `save_xcf` / `gimp-agent save-xcf` | Temp sibling (real `.xcf` suffix) → size>0 → optional reopen on temp → sha256 → backup if `replace` → `os.replace` |
+| `export_image` / `gimp-agent export` | Temp sibling (real format suffix) → IHDR/alpha on **temp** → sha256 → backup if `replace` → `os.replace` |
+| `collision=fail` (public default) | Existing target → `OUTPUT_COLLISION` (CLI exit **11**) |
+| `collision=version` | Next free `stem-N.ext` (cap 10000 → `INTERNAL` exit 7) |
+| `collision=replace` | Namespaced `{stem}.gimp-mcp.bak{suffix}` (or timestamped) then atomic write |
+| `VERIFY_FAILED` | Structural reopen failed **before** replace (exit **8**); final intact |
+| `ALPHA_LOST` | Verify failed on temp → no replace; `left_on_disk=false`, `final_intact=true` |
+
+Success results are flat under plugin `results`: `file_path`, `bytes`/`file_size_bytes`,
+`sha256`, `collision`, `collision_resolved`, `backup_path`, `atomic: true`, and
+`reopen_verified` (XCF only). Export has **no** `verify_reopen` parameter.
 
 **Orient additive fields (layer nodes):** `tattoo` (when available), `protected` (session protected set).
 
