@@ -175,6 +175,18 @@ def run_probe(*, timeout: float = 2.0) -> ProbeReport:
             data=data,
         )
 
+    # Plugin real success is {"status":"success","results":...} from _get_gimp_info.
+    # Do not treat {} or unexpected status as success.
+    if result.get("status") != "success":
+        raw = result.get("status")
+        return ProbeReport(
+            ok=False,
+            code=sec.CODE_INTERNAL,
+            message=(f"unexpected probe response status {raw!r} (expected status='success')"),
+            exit_code=ec.exit_code_for(sec.CODE_INTERNAL),
+            data=data,
+        )
+
     version = _extract_version(result)
     data["gimp_version"] = version
     data["probe"] = "ok"

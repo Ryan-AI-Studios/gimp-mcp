@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from collections.abc import Sequence
 from importlib import metadata
@@ -23,6 +24,11 @@ def _agent_version() -> str:
         return package_version
 
 
+def _json_flag(args: argparse.Namespace) -> bool:
+    """OR parent ``--json`` and subcommand ``--json`` (separate dests)."""
+    return bool(getattr(args, "json_global", False) or getattr(args, "json_local", False))
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     report = doctor_mod.run_doctor(strict=bool(args.strict))
     envelope = jsonio.make_envelope(
@@ -32,12 +38,24 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         message=report.message,
         data=report.envelope_data(),
     )
-    jsonio.emit(envelope, as_json=jsonio.json_mode_enabled(flag=args.json))
+    jsonio.emit(envelope, as_json=jsonio.json_mode_enabled(flag=_json_flag(args)))
     return report.exit_code
 
 
 def _cmd_probe(args: argparse.Namespace) -> int:
-    report = probe_mod.run_probe(timeout=float(args.timeout))
+    timeout = float(args.timeout)
+    if not math.isfinite(timeout) or timeout <= 0:
+        envelope = jsonio.make_envelope(
+            ok=False,
+            exit_code=ec.EXIT_CLI_USAGE,
+            code=ec.CLI_USAGE,
+            message=(f"invalid --timeout {timeout!r}: must be a finite positive number"),
+            data={"timeout": timeout},
+        )
+        jsonio.emit(envelope, as_json=jsonio.json_mode_enabled(flag=_json_flag(args)))
+        return ec.EXIT_CLI_USAGE
+
+    report = probe_mod.run_probe(timeout=timeout)
     envelope = jsonio.make_envelope(
         ok=report.ok,
         exit_code=report.exit_code,
@@ -45,7 +63,7 @@ def _cmd_probe(args: argparse.Namespace) -> int:
         message=report.message,
         data=report.data,
     )
-    jsonio.emit(envelope, as_json=jsonio.json_mode_enabled(flag=args.json))
+    jsonio.emit(envelope, as_json=jsonio.json_mode_enabled(flag=_json_flag(args)))
     return report.exit_code
 
 
@@ -68,7 +86,7 @@ def _cmd_version(args: argparse.Namespace) -> int:
         message=f"gimp-agent {_agent_version()}",
         data=data,
     )
-    as_json = jsonio.json_mode_enabled(flag=args.json)
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
     human = [
         f"gimp-agent {data['agent_version']}",
         f"  gimp_console_path: {console_path or '(not found)'}",
@@ -92,7 +110,7 @@ def _cmd_codes(args: argparse.Namespace) -> int:
             "exit_to_codes": exit_to_codes,
         },
     )
-    as_json = jsonio.json_mode_enabled(flag=args.json)
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
     if as_json:
         jsonio.emit(envelope, as_json=True)
     else:
@@ -112,10 +130,13 @@ def build_parser() -> argparse.ArgumentParser:
         prog="gimp-agent",
         description="Deterministic CLI sidecar for GIMP MCP (doctor, probe, exit codes).",
     )
+    # Separate dest from subcommand --json so parent True is not overwritten by
+    # subparser default=False when the flag is only given before the subcommand.
     parser.add_argument(
         "--json",
         action="store_true",
-        default=None,
+        dest="json_global",
+        default=False,
         help="Emit JSON envelope on stdout (overrides GIMP_AGENT_JSON)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -129,7 +150,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument(
         "--json",
         action="store_true",
-        default=None,
+        dest="json_local",
+        default=False,
         help="Emit JSON envelope on stdout",
     )
     p_doctor.set_defaults(func=_cmd_doctor)
@@ -139,12 +161,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout",
         type=float,
         default=2.0,
-        help="Connect/read timeout seconds (default 2.0)",
+        help="Connect/read timeout seconds (default 2.0; must be finite and > 0)",
     )
     p_probe.add_argument(
         "--json",
         action="store_true",
-        default=None,
+        dest="json_local",
+        default=False,
         help="Emit JSON envelope on stdout",
     )
     p_probe.set_defaults(func=_cmd_probe)
@@ -153,7 +176,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_version.add_argument(
         "--json",
         action="store_true",
-        default=None,
+        dest="json_local",
+        default=False,
         help="Emit JSON envelope on stdout",
     )
     p_version.set_defaults(func=_cmd_version)
@@ -162,7 +186,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_codes.add_argument(
         "--json",
         action="store_true",
-        default=None,
+        dest="json_local",
+        default=False,
         help="Emit JSON envelope on stdout",
     )
     p_codes.set_defaults(func=_cmd_codes)
@@ -184,7 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return code
         return ec.EXIT_CLI_USAGE
 
-    # Parent and subcommand both expose --json (same dest); either position enables it.
+    # Parent and subcommand both expose --json (separate dests); either enables it.
     return int(args.func(args))
 
 

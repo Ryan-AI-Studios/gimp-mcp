@@ -436,6 +436,74 @@ def test_cli_codes_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert sec.CODE_STALE_HANDLE in body["data"]["exit_to_codes"]["5"]
 
 
+def test_cli_global_json_before_subcommand(capsys: pytest.CaptureFixture[str]) -> None:
+    """P1-001: ``gimp-agent --json codes`` must emit parseable JSON (not human)."""
+    code = main(["--json", "codes"])
+    assert code == 0
+    out = capsys.readouterr().out
+    body = json.loads(out)
+    assert body["ok"] is True
+    assert body["exit_code"] == 0
+    assert "code_to_exit" in body["data"]
+    assert body["data"]["code_to_exit"][sec.CODE_STALE_HANDLE] == 5
+
+
+def test_probe_empty_or_unexpected_status_not_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-002: ``{}`` or unexpected status must yield ok=False (not false-success)."""
+    monkeypatch.setattr(probe_mod, "load_probe_token", lambda: "tok")
+    monkeypatch.setattr(probe_mod, "_resolve_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(sec, "get_port", lambda: 9877)
+
+    monkeypatch.setattr(probe_mod, "send_get_gimp_info", lambda **_k: {})
+    report = probe_mod.run_probe(timeout=0.5)
+    assert report.ok is False
+    assert report.exit_code != 0
+    assert report.code == sec.CODE_INTERNAL
+    assert report.data.get("probe") != "ok"
+
+    monkeypatch.setattr(
+        probe_mod,
+        "send_get_gimp_info",
+        lambda **_k: {"status": "unexpected"},
+    )
+    report2 = probe_mod.run_probe(timeout=0.5)
+    assert report2.ok is False
+    assert report2.exit_code != 0
+    assert report2.code == sec.CODE_INTERNAL
+    assert report2.data.get("probe") != "ok"
+
+
+def test_run_console_version_nonzero_rc_is_error() -> None:
+    """P1-003: non-zero --version returncode must not be treated as success."""
+    from subprocess import CompletedProcess
+
+    fake = CompletedProcess(
+        args=["gimp-console", "--version"],
+        returncode=1,
+        stdout="err",
+        stderr="",
+    )
+    with patch("gimp_agent.paths.subprocess.run", return_value=fake):
+        out, err = pathmod.run_console_version(Path("C:/fake/gimp-console.exe"))
+    assert out is None
+    assert err is not None
+    assert "exit 1" in err
+
+
+def test_cli_probe_invalid_timeout_exit_2(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """P2-001: timeout <= 0 → exit 2 CLI_USAGE envelope (not raw ValueError)."""
+    code = main(["probe", "--timeout", "-1", "--json"])
+    assert code == 2
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False
+    assert body["exit_code"] == 2
+    assert body["code"] == ec.CLI_USAGE
+
+
 def test_cli_help_exits_0() -> None:
     code = main(["--help"])
     assert code == 0

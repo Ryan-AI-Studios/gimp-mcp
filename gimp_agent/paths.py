@@ -237,7 +237,14 @@ def run_console_version(
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, str(exc)
-    out = (completed.stdout or "").strip() or (completed.stderr or "").strip()
-    if completed.returncode != 0 and not out:
-        return None, f"exit {completed.returncode}"
+    if completed.returncode != 0:
+        err_bits = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+        detail = f"exit {completed.returncode}"
+        if err_bits:
+            detail = f"{detail}: {err_bits}"
+        return None, detail
+    out = (completed.stdout or "").strip()
+    if not out:
+        # Prefer stdout; allow stderr only as a last resort when rc==0.
+        out = (completed.stderr or "").strip()
     return (out or None), None
