@@ -184,6 +184,31 @@ Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on 
 **Start order:** GIMP plugin first (token available) → then MCP client / `gimp_mcp_server.py`
 (lazy token load with retry).
 
+### 3b. Product CLI (`gimp-agent`)
+
+The package ships a deterministic host CLI for agents and operators (stdlib
+`argparse` — no extra deps). Install entrypoint via `uv sync`, then:
+
+```bash
+uv run gimp-agent doctor          # GIMP binary + plug-in files + TCP + workspace
+uv run gimp-agent doctor --strict --json   # CI-friendly: fail on required checks
+uv run gimp-agent probe --json    # authenticated get_gimp_info round-trip
+uv run gimp-agent version --json  # agent + discovered GIMP versions
+uv run gimp-agent codes --json    # CODE_* → exit 0–12 map (+ reverse)
+```
+
+JSON envelopes use `{ok, exit_code, code, message, data}`. Prefer `--json`, or set
+`GIMP_AGENT_JSON=1`. Exit codes bind product `CODE_*` (and CLI-local
+`CLI_USAGE` / `GIMP_NOT_FOUND` / `PLUGIN_NOT_FOUND`) to process exits **0–12** —
+see [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md).
+
+**Parent workspace shims vs product CLI:** repos that nest this package under a
+parent workspace (e.g. `C:\dev\GIMP\bin\gimp.cmd` / `gimp-console.cmd`) may ship
+hardcoded `Program Files\GIMP 3\bin\…` wrappers for local operators. Those shims
+are **not** versioned with the `gimp-mcp` package. Prefer
+`uv run gimp-agent` / the installed `gimp-agent` entrypoint for path discovery,
+doctor, and exit-code contracts.
+
 ### 4. Configure Your MCP Client
 
 #### Claude Desktop

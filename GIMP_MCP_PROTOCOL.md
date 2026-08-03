@@ -166,7 +166,32 @@ MCP tool failures raise FastMCP `ToolError` → client `isError: true` with **si
   `_meta.traceparent` / W3C Trace Context (align post major when pin supports it).
 - CONFIRM_REQUIRED stays `isError` + `approval_required` on mcp/fastmcp 1.10/2.10 pin;
   MCP **2026-07-28** `InputRequiredResult` / MRTR is deferred.
-- CLI exit-code mapping is reserved for track **0012**.
+#### CLI exit codes (`gimp-agent`, track 0012)
+
+Product `CODE_*` and CLI-local codes map to process exits **0–12**. Inspect the live
+table with `uv run gimp-agent codes --json`.
+
+| Exit | Meaning | Codes |
+|---:|---|---|
+| 0 | Success | *(ok)* |
+| 1 | Generic failure | `code is None` and `ok=false` |
+| 2 | Invalid CLI usage | `CLI_USAGE` (argparse; **`--help` exits 0**) |
+| 3 | GIMP or plug-in unavailable | `GIMP_NOT_FOUND`, `PLUGIN_NOT_FOUND` |
+| 4 | Transport / auth | `CONNECTION_FAILED`, `AUTH_FAILED`, `BIND_DENIED` |
+| 5 | Stale / foreign / invalid handle | `STALE_HANDLE`, `FOREIGN_SESSION`, `INVALID_HANDLE`, `HANDLE_NOT_FOUND`, `SELECTION_CONFLICT` |
+| 6 | Policy / path / approval / checkpoint | `POLICY_DENIED`, `CONFIRM_REQUIRED`, `PATH_DENIED`, `EXEC_DISABLED`, `CHECKPOINT_EXISTS`, `CHECKPOINT_NOT_FOUND`, `CHECKPOINT_CORRUPTED` |
+| 7 | Internal / unmapped | `INTERNAL_ERROR`, `METADATA_WRITE_FAILED`, unknown `CODE_*` |
+| 8 | Verification failed | `ALPHA_LOST` |
+| 9 | Timeout | `TIMEOUT` |
+| 10 | Partial mutation | `PARTIAL_MUTATION` |
+| 11 | Output collision | *(reserved track 0013 — no code yet)* |
+| 12 | Unsupported | `UNSUPPORTED` |
+
+CLI-local codes (not raised by the TCP plugin): `CLI_USAGE`, `GIMP_NOT_FOUND`,
+`PLUGIN_NOT_FOUND`. Envelope: `{ok, exit_code, code, message, data}`. JSON mode:
+`--json` flag overrides env `GIMP_AGENT_JSON` (truthy: `1`/`true`/`yes`/`on`).
+
+Commands: `doctor [--strict]`, `probe [--timeout]`, `version`, `codes`.
 
 #### Layer policy + checkpoints (track 0009)
 
