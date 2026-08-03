@@ -384,7 +384,8 @@ def test_call_api_gate_without_gimp(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Ctx:
         pass
 
-    raw = server.call_api(_Ctx(), api_path="exec", args=["pyGObject-console", ["print(1)"]])
+    call_api = server.call_api.fn  # real FastMCP FunctionTool wrapper
+    raw = call_api(_Ctx(), api_path="exec", args=["pyGObject-console", ["print(1)"]])
     body = __import__("json").loads(raw)
     assert body["status"] == "error"
     assert body["code"] == sec.CODE_EXEC_DISABLED
@@ -405,7 +406,8 @@ def test_call_api_allows_when_exec_enabled(monkeypatch: pytest.MonkeyPatch) -> N
     class _Ctx:
         pass
 
-    raw = server.call_api(_Ctx(), api_path="exec", args=["pyGObject-console", ["1"]])
+    call_api = server.call_api.fn  # real FastMCP FunctionTool wrapper
+    raw = call_api(_Ctx(), api_path="exec", args=["pyGObject-console", ["1"]])
     body = __import__("json").loads(raw)
     assert body == {"ok": True}
 

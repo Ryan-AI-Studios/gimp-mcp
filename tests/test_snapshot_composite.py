@@ -81,7 +81,8 @@ def test_bitmap_method_no_select_on_original() -> None:
 def test_bitmap_method_uses_get_image_not_bare_images0() -> None:
     text = PLUGIN.read_text(encoding="utf-8")
     body = _method_body(text, "_get_current_image_bitmap")
-    assert "_get_image" in body
+    # Prefer handle/index helper (0010) or legacy _get_image — never bare images[0]
+    assert "_get_image" in body or "_resolve_image_from_params" in body
     # Ban bare first-image selection in this method
     assert "images[0]" not in body
     assert "Gimp.get_images()" not in body
@@ -183,13 +184,12 @@ def test_server_snapshot_tools_return_tool_result() -> None:
     assert "from fastmcp.tools.tool import ToolResult" in text
     assert "structured_content" in text
     assert "_snapshot_tool_result" in text
-    # Both tools should return ToolResult (annotation or explicit return)
+    # Snapshot tools return ToolResult (real FastMCP handles ToolResult natively)
     assert "def get_image_bitmap(" in text
     assert "def get_state_snapshot(" in text
+    assert "def render_visible_composite(" in text
     assert "-> ToolResult" in text
-    # convert_result passthrough for ToolResult
-    assert "convert_result" in text
-    assert "to_mcp_result" in text
+    assert "from fastmcp import Context, FastMCP" in text
 
 
 def test_server_docstrings_mention_visible_composite() -> None:
@@ -286,10 +286,8 @@ def test_snapshot_tool_result_region_relative_scales() -> None:
     assert structured["scale_x"] != pytest.approx(100 / 4000)
 
 
-def test_convert_result_passthrough_for_tool_result() -> None:
-    """Patched FuncMetadata.convert_result must return (content, structured) for ToolResult."""
-    from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
-
+def test_tool_result_to_mcp_result_for_snapshot() -> None:
+    """Real FastMCP ToolResult.to_mcp_result yields content + structured mapping."""
     import gimp_mcp_server as server
 
     fake_png = b"\x89PNG\r\n\x1a\ncvt"
@@ -315,8 +313,8 @@ def test_convert_result_passthrough_for_tool_result() -> None:
     tr = server._snapshot_tool_result(results, image_index=0)
     assert isinstance(tr, server.ToolResult)
 
-    # Invoke the monkey-patched class method (self unused on ToolResult branch)
-    out = FuncMetadata.convert_result(None, tr)  # type: ignore[arg-type]
+    # Real FastMCP (H1): no FuncMetadata monkeypatch — ToolResult is first-class.
+    out = tr.to_mcp_result()
     assert isinstance(out, tuple)
     assert len(out) == 2
     content_list, structured_dict = out

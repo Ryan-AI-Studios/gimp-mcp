@@ -238,7 +238,7 @@ Gimp.Drawable.edit_fill(drawable, Gimp.FillType.FOREGROUND)
 
 ### Verification After Drawing
 After drawing operations, capture a high-resolution region to verify output quality:
-- Use `get_image_bitmap()` with region parameter to check specific areas
+- Use `render_visible_composite()` with region parameter to check specific areas
 - Extract only the modified area (saves resources, faster feedback)
 - Can use higher resolution for small regions
 - Example: After drawing a face, get just the face region at high quality
@@ -274,7 +274,7 @@ Check `get_context_state()` before operations that depend on settings:
 
 ## ✅ SELF-CRITIQUE CHECKLIST
 
-After calling `get_image_bitmap()`, systematically check:
+After calling `render_visible_composite()`, systematically check:
 
 ### Visual Inspection
 - [ ] Do all shapes match their intended form?
@@ -306,7 +306,7 @@ After calling `get_image_bitmap()`, systematically check:
 - STOP drawing new elements
 - Identify which layer has the problem
 - Fix on that specific layer
-- Validate fix with another get_image_bitmap()
+- Validate fix with another render_visible_composite()
 - Only continue when satisfied
 
 **Never:**

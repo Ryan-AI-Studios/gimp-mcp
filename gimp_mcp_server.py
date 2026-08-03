@@ -13,30 +13,19 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from fastmcp import Context, FastMCP
 from fastmcp.tools.tool import ToolResult
-from mcp.server.fastmcp import Context, FastMCP, Image
-from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
-from mcp.types import Annotations
+from fastmcp.utilities.types import Image
+from mcp.types import Annotations, ToolAnnotations
 
 import gimp_mcp_coords as coords
 import gimp_mcp_security as sec
 import gimp_mcp_snapshot as snap
-from gimp_mcp_state import finalize_manifest
+import gimp_mcp_surface as surface
+from gimp_mcp_state import default_capabilities, finalize_manifest
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("GimpMCPServer")
-
-# FastMCP 2.10.1: allow ToolResult (image content + structuredContent) through convert_result.
-_orig_convert = FuncMetadata.convert_result
-
-
-def _convert_result_passthrough(self, result):  # type: ignore[no-untyped-def]
-    if isinstance(result, ToolResult):
-        return result.to_mcp_result()
-    return _orig_convert(self, result)
-
-
-FuncMetadata.convert_result = _convert_result_passthrough  # type: ignore[method-assign]
 
 # Env plumbing — never default to bare "localhost" (IPv6 dual-stack risk).
 try:
@@ -311,15 +300,130 @@ def reset_gimp_connection() -> None:
 
 
 # MCP server
-mcp = FastMCP(
-    "GimpMCP",
-    description="GIMP integration through MCP — with new_canvas, check_server, restart_server",
-)
 
 
-@mcp.tool()
+def _ann(
+    *,
+    read_only: bool = False,
+    destructive: bool = False,
+    idempotent: bool | None = None,
+) -> ToolAnnotations:
+    """MCP ToolAnnotations helper (omit destructiveHint when read-only)."""
+    if read_only:
+        return ToolAnnotations(
+            readOnlyHint=True,
+            openWorldHint=False,
+            idempotentHint=idempotent,
+        )
+    return ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=destructive,
+        openWorldHint=False,
+        idempotentHint=idempotent,
+    )
+
+
+def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
+    """Build a FastMCP instance with HL or advanced include_tags (track 0010)."""
+    mode = surface.surface_mode(advanced_mode=advanced_mode)
+    return FastMCP(
+        "GimpMCP",
+        instructions=(
+            "GIMP MCP — default ~18 high-level tools "
+            "(set GIMP_MCP_ADVANCED_TOOLS=1 for full ~90-tool advanced surface)"
+        ),
+        include_tags=surface.include_tags_for_mode(mode),
+    )
+
+
+mcp = create_mcp_server()
+
+
+def _probe_connection() -> dict[str, Any]:
+    """Shared TCP probe of the GIMP plug-in (used by session_probe / check_server)."""
+    try:
+        test_conn = GimpConnection(GIMP_HOST, GIMP_PORT)
+        test_conn.connect()
+        result = test_conn.send_command("get_gimp_info")
+        version = result.get("results", {}).get("version", {}).get("version_method", "unknown")
+        return {
+            "connected": True,
+            "host": GIMP_HOST,
+            "port": GIMP_PORT,
+            "gimp_version": version,
+        }
+    except Exception as e:
+        return {
+            "connected": False,
+            "host": GIMP_HOST,
+            "port": GIMP_PORT,
+            "error": str(e),
+        }
+
+
+def _surface_probe_fields(
+    *,
+    nonce: str | None = None,
+    min_plugin_version: str | None = None,
+    gimp_version: str | None = None,
+) -> dict[str, Any]:
+    """Host-side surface/capability fields always returned by session_probe."""
+    mode = surface.surface_mode()
+    out: dict[str, Any] = {
+        "tool_surface": mode,
+        "advanced_tools_enabled": surface.advanced_tools_enabled(),
+        "hl_tool_names": surface.get_hl_catalog_names(),
+        "capabilities": default_capabilities(),
+        "nonce": nonce,
+        "version_ok": surface.soft_version_ok(gimp_version, min_plugin_version),
+        "min_plugin_version": min_plugin_version,
+    }
+    return out
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+def session_probe(
+    ctx: Context,
+    nonce: str | None = None,
+    min_plugin_version: str | None = None,
+) -> dict:
+    """Probe GIMP MCP connectivity plus host-side surface/capability state.
+
+    Preferred default-surface health check (supersedes ``check_server``).
+    Always reports tool surface mode and HL catalog even when disconnected.
+
+    Parameters:
+    - nonce: Optional echo token for client correlation
+    - min_plugin_version: Soft minimum (dotted ints); ``version_ok`` may be None
+      if unparseable
+
+    Returns: connected, host, port, gimp_version (when up), tool_surface,
+    advanced_tools_enabled, hl_tool_names, capabilities, nonce, version_ok,
+    and error when disconnected.
+    """
+    probe = _probe_connection()
+    gimp_version = probe.get("gimp_version") if probe.get("connected") else None
+    if isinstance(gimp_version, str):
+        ver: str | None = gimp_version
+    else:
+        ver = None
+    out = {
+        **probe,
+        **_surface_probe_fields(
+            nonce=nonce,
+            min_plugin_version=min_plugin_version,
+            gimp_version=ver,
+        ),
+    }
+    return out
+
+
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def check_server(ctx: Context) -> dict:
-    """Check whether the GIMP MCP plugin socket is reachable and responding.
+    """Check whether the GIMP MCP plugin socket is reachable (advanced surface).
+
+    Prefer ``session_probe`` on the default high-level surface — it also reports
+    tool_surface, capabilities, and HL catalog when disconnected.
 
     Returns a status dict:
     - connected: bool
@@ -327,36 +431,32 @@ def check_server(ctx: Context) -> dict:
     - gimp_version: if connected successfully
     - error: description if not connected
 
-    Use this before any other operation to verify the GIMP plugin is running.
     If not connected, open GIMP and run Tools > Start MCP Server.
     """
-    try:
-        test_conn = GimpConnection(GIMP_HOST, GIMP_PORT)
-        test_conn.connect()
-        result = test_conn.send_command("get_gimp_info")
-        version = result.get("results", {}).get("version", {}).get("version_method", "unknown")
-        return {"connected": True, "host": GIMP_HOST, "port": GIMP_PORT, "gimp_version": version}
-    except Exception as e:
-        return {"connected": False, "host": GIMP_HOST, "port": GIMP_PORT, "error": str(e)}
+    return _probe_connection()
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
 def restart_server(ctx: Context) -> dict:
     """Drop and re-establish the connection to the GIMP MCP plugin.
 
-    Use this when:
-    - GIMP was restarted after Claude Code was already running
-    - The socket connection dropped mid-session
-    - check_server() shows not connected but GIMP is open
+    Prefer ``session_probe`` first. Use ``restart_server`` only when disconnected
+    or reconnect is needed after GIMP/plugin restart — it is session-disruptive
+    (clears connection + cached auth token).
 
-    Returns the new connection status (same format as check_server).
+    Use when:
+    - GIMP was restarted after the MCP client was already running
+    - The socket connection dropped mid-session
+    - session_probe shows not connected but GIMP is open
+
+    Returns the new connection status (same format as check_server / probe base).
     """
     reset_gimp_connection()
     time.sleep(0.5)
-    return check_server(ctx)
+    return _probe_connection()
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
 def new_canvas(
     ctx: Context,
     width: int,
@@ -410,78 +510,117 @@ def new_canvas(
         raise Exception(f"Failed to create new canvas: {e}")
 
 
-@mcp.tool()
+def _render_visible_composite_impl(
+    *,
+    handle: dict | None = None,
+    image_index: int | None = None,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    region: dict | None = None,
+) -> ToolResult:
+    """Shared visible-composite snapshot (plugin get_image_bitmap + ToolResult)."""
+    if handle is None and image_index is None:
+        image_index = 0
+    params: dict[str, Any] = {}
+    if handle is not None:
+        params["handle"] = handle
+    if image_index is not None:
+        params["image_index"] = int(image_index)
+    if max_width is not None:
+        params["max_width"] = max_width
+    if max_height is not None:
+        params["max_height"] = max_height
+    if region is not None:
+        try:
+            norm = snap.normalize_region(region)
+        except (TypeError, ValueError) as e:
+            raise Exception(f"Invalid region: {e}") from e
+        if norm is not None:
+            params["region"] = norm
+
+    conn = get_gimp_connection()
+    result = conn.send_command("get_image_bitmap", params)
+    if result["status"] == "success":
+        idx = int(image_index) if image_index is not None else 0
+        return _snapshot_tool_result(result["results"], image_index=idx)
+    raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+def render_visible_composite(
+    ctx: Context,
+    handle: dict | None = None,
+    image_index: int | None = None,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    region: dict | None = None,
+) -> ToolResult:
+    """Render the visible composite of an open GIMP image as PNG + mapping metadata.
+
+    Design-name primary for the default surface (prefer over advanced
+    ``get_image_bitmap``). Returns the **visible composite** (all visible layers,
+    opacity, blend modes, masks — GIMP's canvas projection), not a single top
+    layer. Never mutates the user's original image.
+
+    Parameters:
+    - handle: Preferred image handle from orient_workspace / mutators
+    - image_index: Legacy open-image index when handle is omitted (default 0)
+    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved)
+    - region: Optional region dict (origin_x/origin_y or x/y, width, height)
+
+    Returns ToolResult with PNG ImageContent plus structuredContent mapping.
+    """
+    try:
+        print("Requesting visible composite from GIMP...")
+        return _render_visible_composite_impl(
+            handle=handle,
+            image_index=image_index,
+            max_width=max_width,
+            max_height=max_height,
+            region=region,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        raise Exception(f"Failed to render visible composite: {e}")
+
+
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def get_image_bitmap(
     ctx: Context,
     image_index: int = 0,
     max_width: int | None = None,
     max_height: int | None = None,
     region: dict | None = None,
+    handle: dict | None = None,
 ) -> ToolResult:
     """Get the visible composite of an open GIMP image as PNG + mapping metadata.
 
-    By default returns the **visible composite** (all visible layers, opacity, blend
-    modes, masks — GIMP's canvas projection), not a single top layer. Never mutates
-    the user's original image.
-
-    No size restrictions — pass any max_width/max_height you need.
-    For large images, omit max_width/max_height to get the full resolution.
-
-    Supports two main use cases:
-    1. Full image with optional scaling (pass max_width/max_height)
-    2. Region extraction with optional scaling (pass region dict)
+    Advanced alias — prefer ``render_visible_composite`` on the default surface.
+    Same implementation (visible composite, never mutates the original image).
 
     Parameters:
     - image_index: Which open image to capture (default 0)
-    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved).
-      Omit for full resolution.
-    - region: Dictionary with keys (origin_x/origin_y or x/y aliases):
-        - origin_x, origin_y: Top-left corner of region to extract
-        - width, height: Dimensions of region to extract
-        - max_width, max_height: Optional scaling for the extracted region
+    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved)
+    - region: Dictionary with origin_x/origin_y (or x/y), width, height
+    - handle: Optional image handle (preferred when known)
 
-    Examples:
-    - Full image at full res: get_image_bitmap()
-    - Full image scaled: get_image_bitmap(max_width=2048, max_height=2048)
-    - Region: get_image_bitmap(region={"origin_x": 0, "origin_y": 0, "width": 512, "height": 512})
-    - Second open image: get_image_bitmap(image_index=1)
-
-    Returns:
-    - ToolResult with PNG ImageContent plus structuredContent mapping:
-      mode, image_index, source_width/height, rendered_width/height,
-      scale_x/scale_y (region-relative when region set), region, composite_method
-
-    Raises:
-    - RuntimeError if no image is open, region is invalid, or export fails
+    Returns ToolResult with PNG ImageContent plus structuredContent mapping.
     """
     try:
         print("Requesting current image bitmap from GIMP...")
-
-        conn = get_gimp_connection()
-
-        params: dict[str, Any] = {"image_index": image_index}
-        if max_width is not None:
-            params["max_width"] = max_width
-        if max_height is not None:
-            params["max_height"] = max_height
-        if region is not None:
-            try:
-                norm = snap.normalize_region(region)
-            except (TypeError, ValueError) as e:
-                raise Exception(f"Invalid region: {e}") from e
-            if norm is not None:
-                params["region"] = norm
-
-        result = conn.send_command("get_image_bitmap", params)
-        if result["status"] == "success":
-            return _snapshot_tool_result(result["results"], image_index=image_index)
-        raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
+        return _render_visible_composite_impl(
+            handle=handle,
+            image_index=image_index,
+            max_width=max_width,
+            max_height=max_height,
+            region=region,
+        )
     except Exception as e:
         traceback.print_exc()
         raise Exception(f"Failed to get image bitmap: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def get_image_metadata(ctx: Context, image_index: int = 0) -> dict:
     """Get metadata about an open image in GIMP without the bitmap data.
 
@@ -507,7 +646,7 @@ def get_image_metadata(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"Failed to get image metadata: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
 def orient_workspace(
     ctx: Context,
     image_index: int | None = None,
@@ -566,7 +705,7 @@ def _raise_plugin_error(result: dict[str, Any], tool_name: str) -> None:
     raise Exception(f"{tool_name} failed: {err}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=True))
 def select_image(ctx: Context, handle: dict) -> dict:
     """Validate/bind an image handle for agent targeting (handles only).
 
@@ -602,7 +741,7 @@ def select_image(ctx: Context, handle: dict) -> dict:
         raise Exception(f"select_image failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
 def normalize_image_orientation(
     ctx: Context,
     handle: dict | None = None,
@@ -652,7 +791,7 @@ def normalize_image_orientation(
         raise Exception(f"normalize_image_orientation failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
 def map_preview_to_image(
     ctx: Context,
     preview_x: float,
@@ -703,7 +842,7 @@ def map_preview_to_image(
         raise Exception(f"map_preview_to_image failed: {e}") from e
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def map_image_to_preview(
     ctx: Context,
     image_x: float,
@@ -716,7 +855,10 @@ def map_image_to_preview(
     preview_padding_y: float = 0,
     declaration: dict | None = None,
 ) -> dict:
-    """Inverse of map_preview_to_image (image-pixel → preview). Host-only pure math."""
+    """Inverse of map_preview_to_image (image-pixel → preview). Host-only pure math.
+
+    Advanced map inverse — default surface exposes ``map_preview_to_image`` only.
+    """
     try:
         if declaration is not None:
             coords.validate_declaration(declaration)
@@ -743,7 +885,7 @@ def map_image_to_preview(
         raise Exception(f"map_image_to_preview failed: {e}") from e
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def map_layer_local_to_image(
     ctx: Context,
     local_x: float,
@@ -772,7 +914,7 @@ def map_layer_local_to_image(
         raise Exception(f"map_layer_local_to_image failed: {e}") from e
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def map_image_to_layer_local(
     ctx: Context,
     image_x: float,
@@ -798,7 +940,7 @@ def map_image_to_layer_local(
         raise Exception(f"map_image_to_layer_local failed: {e}") from e
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=True))
 def select_layers(ctx: Context, handles: list) -> dict:
     """Select layers by stable item handles (handles only; max 64).
 
@@ -832,9 +974,12 @@ def select_layers(ctx: Context, handles: list) -> dict:
         raise Exception(f"select_layers failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def get_gimp_info(ctx: Context) -> dict:
     """Get comprehensive information about the GIMP installation and environment.
+
+    Prefer ``orient_workspace`` for agent orientation (schema-versioned SoT).
+    Prefer ``session_probe`` for connectivity + surface/capability summary.
 
     Returns detailed information about GIMP that AI assistants need to understand
     the current environment, including:
@@ -865,7 +1010,7 @@ def get_gimp_info(ctx: Context) -> dict:
         raise Exception(f"Failed to get GIMP info: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def get_state_snapshot(
     ctx: Context,
     image_index: int = 0,
@@ -874,6 +1019,9 @@ def get_state_snapshot(
     label: str = "",
 ) -> ToolResult:
     """Return a live visual snapshot of the visible composite — no file save needed.
+
+    Prefer ``orient_workspace`` for structural SoT and ``render_visible_composite``
+    for full-fidelity composite + mapping on the default surface.
 
     AI agents call this to get immediate visual feedback after any edit operation,
     letting them verify results and decide next steps without saving to disk.
@@ -936,9 +1084,11 @@ def get_state_snapshot(
         raise Exception(f"get_state_snapshot failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def get_context_state(ctx: Context) -> dict:
     """Get the current GIMP context state (colors, brush, settings).
+
+    Prefer ``orient_workspace`` for agent orientation (schema-versioned SoT).
 
     IMPORTANT: Context state can be changed by the user in GIMP UI at any time.
     Check context state before operations that depend on specific settings.
@@ -973,7 +1123,7 @@ def get_context_state(ctx: Context) -> dict:
         raise Exception(f"Failed to get context state: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def call_api(
     ctx: Context,
     api_path: str,
@@ -1080,7 +1230,8 @@ def call_api(
 
 
 @mcp.prompt(
-    description="GIMP MCP best practices for common operations - filling shapes, bezier paths, and variable persistence"
+    description="GIMP MCP best practices for common operations - filling shapes, bezier paths, and variable persistence",
+    tags={surface.HL_TAG},
 )
 def gimp_best_practices() -> str:
     """Returns guidance on best practices for GIMP operations via MCP.
@@ -1093,7 +1244,8 @@ def gimp_best_practices() -> str:
 
 
 @mcp.prompt(
-    description="Iterative workflow guidance for building complex images with proper validation and layer management"
+    description="Iterative workflow guidance for building complex images with proper validation and layer management",
+    tags={surface.HL_TAG},
 )
 def gimp_iterative_workflow() -> str:
     """Returns comprehensive guidance on iterative workflow with GIMP MCP.
@@ -1101,7 +1253,7 @@ def gimp_iterative_workflow() -> str:
     This prompt teaches AI assistants how to:
     - Plan layer structures before drawing
     - Work incrementally with continuous validation
-    - Self-critique using get_image_bitmap()
+    - Self-critique using render_visible_composite()
     - Fix problems properly instead of painting over them
     - Leverage GIMP's professional features for clean, organized work
     """
@@ -1114,7 +1266,7 @@ def gimp_iterative_workflow() -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
 def open_image(ctx: Context, file_path: str) -> dict:
     """Open an image file in GIMP and create a display window.
 
@@ -1140,22 +1292,37 @@ def open_image(ctx: Context, file_path: str) -> dict:
         raise Exception(f"open_image failed: {e}")
 
 
-@mcp.tool()
-def save_xcf(ctx: Context, file_path: str, image_index: int = 0) -> dict:
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+def save_xcf(
+    ctx: Context,
+    file_path: str,
+    handle: dict | None = None,
+    image_index: int | None = None,
+) -> dict:
     """Save the current image as a GIMP XCF file (preserves all layers and metadata).
+
+    **Non-atomic** until track 0013 — partial writes are possible on crash mid-save.
 
     Parameters:
     - file_path: Absolute path for the output .xcf file
-    - image_index: Index of the image to save (default 0 = first open image)
+    - handle: Preferred image handle from orient_workspace / mutators
+    - image_index: Legacy open-image index when handle is omitted (default 0)
 
     Returns:
     - status: "success" or "error"
     - file_path: confirmed output path
     """
     try:
+        if handle is None and image_index is None:
+            image_index = 0
         file_path = _jail_path_or_raise(file_path, "file_path")
         conn = get_gimp_connection()
-        result = conn.send_command("save_xcf", {"file_path": file_path, "image_index": image_index})
+        params: dict[str, Any] = {"file_path": file_path}
+        if handle is not None:
+            params["handle"] = handle
+        if image_index is not None:
+            params["image_index"] = int(image_index)
+        result = conn.send_command("save_xcf", params)
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1164,7 +1331,7 @@ def save_xcf(ctx: Context, file_path: str, image_index: int = 0) -> dict:
         raise Exception(f"save_xcf failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
 def export_image(
     ctx: Context,
     file_path: str,
@@ -1173,9 +1340,12 @@ def export_image(
     flatten: bool = False,
     preserve_alpha: bool | None = None,
     verify: bool = True,
-    image_index: int = 0,
+    handle: dict | None = None,
+    image_index: int | None = None,
 ) -> dict:
     """Export the current image to a raster file (PNG, JPEG, WEBP, TIFF).
+
+    **Non-atomic** until track 0013 — partial artifacts possible on crash mid-export.
 
     **Breaking change (Issue 16):** ``flatten`` default is **False**. Transparent
     PNG/WEBP/TIFF exports use merge-on-duplicate (alpha preserved) and fail closed
@@ -1192,7 +1362,8 @@ def export_image(
       flatten=True + preserve_alpha=True → POLICY_CONFLICT error.
     - verify: Fail-closed PNG IHDR alpha check when preserve_alpha and preflight had alpha
       (default True)
-    - image_index: Index of the image to export (default 0)
+    - handle: Preferred image handle from orient_workspace / mutators
+    - image_index: Index of the image to export when handle omitted (default 0)
 
     Notes:
     - Never mutates the open document for export prep (works on a duplicate).
@@ -1209,20 +1380,23 @@ def export_image(
     Agents should inspect ``code`` / ``left_on_disk`` on the return value.
     """
     try:
+        if handle is None and image_index is None:
+            image_index = 0
         file_path = _jail_path_or_raise(file_path, "file_path")
         conn = get_gimp_connection()
-        result = conn.send_command(
-            "export_image",
-            {
-                "file_path": file_path,
-                "format": format,
-                "quality": quality,
-                "flatten": flatten,
-                "preserve_alpha": preserve_alpha,
-                "verify": verify,
-                "image_index": image_index,
-            },
-        )
+        payload: dict[str, Any] = {
+            "file_path": file_path,
+            "format": format,
+            "quality": quality,
+            "flatten": flatten,
+            "preserve_alpha": preserve_alpha,
+            "verify": verify,
+        }
+        if handle is not None:
+            payload["handle"] = handle
+        if image_index is not None:
+            payload["image_index"] = int(image_index)
+        result = conn.send_command("export_image", payload)
         if result["status"] == "success":
             return result["results"]
         # Structured export errors (ALPHA_LOST, POLICY_CONFLICT, …): return the
@@ -1242,7 +1416,7 @@ def export_image(
         raise Exception(f"export_image failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def batch_export(
     ctx: Context,
     output_dir: str,
@@ -1296,15 +1470,20 @@ def batch_export(
         raise Exception(f"batch_export failed: {e}")
 
 
-@mcp.tool()
-def verify_alpha_channel(ctx: Context, image_index: int = 0) -> dict:
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+def verify_alpha_channel(
+    ctx: Context,
+    handle: dict | None = None,
+    image_index: int | None = None,
+) -> dict:
     """Read-only preflight: does the image have alpha, and which formats can keep it?
 
     Cheaper than full metadata when an agent only needs image-level alpha status
     and format prediction before export.
 
     Parameters:
-    - image_index: Index of the open image (default 0)
+    - handle: Preferred image handle from orient_workspace / mutators
+    - image_index: Index of the open image when handle omitted (default 0)
 
     Returns:
     - has_alpha: True if any layer reports an alpha channel
@@ -1313,11 +1492,15 @@ def verify_alpha_channel(ctx: Context, image_index: int = 0) -> dict:
     - can_preserve_alpha_for_format: {png: true, jpeg: false, webp: true, tiff: true}
     """
     try:
+        if handle is None and image_index is None:
+            image_index = 0
         conn = get_gimp_connection()
-        result = conn.send_command(
-            "verify_alpha_channel",
-            {"image_index": image_index},
-        )
+        params: dict[str, Any] = {}
+        if handle is not None:
+            params["handle"] = handle
+        if image_index is not None:
+            params["image_index"] = int(image_index)
+        result = conn.send_command("verify_alpha_channel", params)
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -1331,7 +1514,7 @@ def verify_alpha_channel(ctx: Context, image_index: int = 0) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = None) -> dict:
     """Automatically stretch the tonal range of an image (auto levels / auto stretch contrast).
 
@@ -1354,7 +1537,7 @@ def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = Non
         raise Exception(f"auto_levels failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def adjust_curves(
     ctx: Context,
     preset: str = "s_curve",
@@ -1394,7 +1577,7 @@ def adjust_curves(
         raise Exception(f"adjust_curves failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def adjust_brightness_contrast(
     ctx: Context,
     brightness: int = 0,
@@ -1431,7 +1614,7 @@ def adjust_brightness_contrast(
         raise Exception(f"adjust_brightness_contrast failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def adjust_hue_saturation(
     ctx: Context,
     hue: float = 0,
@@ -1474,7 +1657,7 @@ def adjust_hue_saturation(
         raise Exception(f"adjust_hue_saturation failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def adjust_color_balance(
     ctx: Context,
     cyan_red: float = 0,
@@ -1517,7 +1700,7 @@ def adjust_color_balance(
         raise Exception(f"adjust_color_balance failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def sharpen(
     ctx: Context,
     amount: float = 50.0,
@@ -1557,7 +1740,7 @@ def sharpen(
         raise Exception(f"sharpen failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def blur(
     ctx: Context,
     radius_x: float = 5.0,
@@ -1594,7 +1777,7 @@ def blur(
         raise Exception(f"blur failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def denoise(
     ctx: Context, strength: int = 50, image_index: int = 0, layer_name: str | None = None
 ) -> dict:
@@ -1625,7 +1808,7 @@ def denoise(
         raise Exception(f"denoise failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def desaturate(
     ctx: Context, mode: str = "luminosity", image_index: int = 0, layer_name: str | None = None
 ) -> dict:
@@ -1656,7 +1839,7 @@ def desaturate(
         raise Exception(f"desaturate failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def invert_colors(ctx: Context, image_index: int = 0, layer_name: str | None = None) -> dict:
     """Invert all colors in a layer (create a negative).
 
@@ -1688,7 +1871,7 @@ def invert_colors(ctx: Context, image_index: int = 0, layer_name: str | None = N
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def scale_image(
     ctx: Context, width: int, height: int, interpolation: str = "cubic", image_index: int = 0
 ) -> dict:
@@ -1721,7 +1904,7 @@ def scale_image(
         raise Exception(f"scale_image failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def scale_to_fit(
     ctx: Context,
     max_width: int,
@@ -1758,7 +1941,7 @@ def scale_to_fit(
         raise Exception(f"scale_to_fit failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def crop_to_selection(ctx: Context, autocrop: bool = False, image_index: int = 0) -> dict:
     """Crop the image canvas to the current selection bounds.
 
@@ -1785,7 +1968,7 @@ def crop_to_selection(ctx: Context, autocrop: bool = False, image_index: int = 0
         raise Exception(f"crop_to_selection failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def crop_to_rect(
     ctx: Context, x: int, y: int, width: int, height: int, image_index: int = 0
 ) -> dict:
@@ -1818,7 +2001,7 @@ def crop_to_rect(
         raise Exception(f"crop_to_rect failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def rotate_image(
     ctx: Context,
     angle: float,
@@ -1858,7 +2041,7 @@ def rotate_image(
         raise Exception(f"rotate_image failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def flip_image(ctx: Context, direction: str = "horizontal", image_index: int = 0) -> dict:
     """Flip the entire image horizontally or vertically.
 
@@ -1885,7 +2068,7 @@ def flip_image(ctx: Context, direction: str = "horizontal", image_index: int = 0
         raise Exception(f"flip_image failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def resize_canvas(
     ctx: Context,
     width: int,
@@ -1938,7 +2121,120 @@ def resize_canvas(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
+def create_selection(
+    ctx: Context,
+    type: str,
+    handle: dict | None = None,
+    image_index: int | None = None,
+    operation: str = "replace",
+    feather: float = 0.0,
+    x: int | None = None,
+    y: int | None = None,
+    width: int | None = None,
+    height: int | None = None,
+    color: str | None = None,
+    threshold: int = 15,
+    layer_handle: dict | None = None,
+) -> dict:
+    """Unified selection tool (rectangle, ellipse, by_color, all, none).
+
+    Prefer this over advanced ``select_rectangle`` / ``select_ellipse`` /
+    ``select_by_color`` / ``select_all`` / ``select_none``. Does **not** wrap
+    invert/modify (use advanced tools for those).
+
+    Parameters:
+    - type: ``rectangle`` | ``ellipse`` | ``by_color`` | ``all`` | ``none``
+    - handle: Preferred image handle; image_index used when handle omitted
+    - image_index: Legacy open-image index (default 0 when both omitted)
+    - operation: replace/add/subtract/intersect (default replace)
+    - feather: pixels for rectangle/ellipse only (default 0)
+    - x, y, width, height: required for rectangle/ellipse
+    - color: required for by_color (CSS/hex string)
+    - threshold: by_color similarity (default 15)
+    - layer_handle: optional item handle for by_color sample layer. When omitted
+      or not resolvable to a layer name/id, samples the **active layer**
+      (plugin ``select_by_color`` path).
+
+    Host validates params before any TCP call.
+    """
+    raw: dict[str, Any] = {
+        "type": type,
+        "operation": operation,
+        "feather": feather,
+        "threshold": threshold,
+    }
+    if handle is not None:
+        raw["handle"] = handle
+    if image_index is not None:
+        raw["image_index"] = image_index
+    if layer_handle is not None:
+        raw["layer_handle"] = layer_handle
+    if x is not None:
+        raw["x"] = x
+    if y is not None:
+        raw["y"] = y
+    if width is not None:
+        raw["width"] = width
+    if height is not None:
+        raw["height"] = height
+    if color is not None:
+        raw["color"] = color
+
+    try:
+        norm = surface.validate_create_selection_params(raw)
+    except ValueError as e:
+        raise Exception(f"create_selection validation failed: {e}") from e
+
+    sel_type = norm["type"]
+    cmd_map = {
+        "rectangle": "select_rectangle",
+        "ellipse": "select_ellipse",
+        "by_color": "select_by_color",
+        "all": "select_all",
+        "none": "select_none",
+    }
+    cmd = cmd_map[sel_type]
+    params: dict[str, Any] = {"operation": norm["operation"]}
+    if "handle" in norm:
+        params["handle"] = norm["handle"]
+    if "image_index" in norm:
+        params["image_index"] = int(norm["image_index"])
+    elif "handle" not in params:
+        params["image_index"] = 0
+
+    if sel_type in ("rectangle", "ellipse"):
+        params.update(
+            {
+                "x": norm["x"],
+                "y": norm["y"],
+                "width": norm["width"],
+                "height": norm["height"],
+                "feather": norm["feather"],
+            }
+        )
+    elif sel_type == "by_color":
+        params["color"] = norm["color"]
+        params["threshold"] = norm["threshold"]
+        # Prefer layer id from handle when present; plugin may use layer_name.
+        lh = norm.get("layer_handle")
+        if isinstance(lh, dict) and "item_id" in lh:
+            params["layer_id"] = int(lh["item_id"])
+
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command(cmd, params)
+        if result["status"] == "success":
+            return result["results"]
+        raise Exception(result.get("error", "Unknown error"))
+    except Exception as e:
+        traceback.print_exc()
+        if str(e).startswith("create_selection"):
+            raise
+        raise Exception(f"create_selection failed: {e}")
+
+
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def select_rectangle(
     ctx: Context,
     x: int,
@@ -1982,7 +2278,7 @@ def select_rectangle(
         raise Exception(f"select_rectangle failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def select_ellipse(
     ctx: Context,
     x: int,
@@ -2026,7 +2322,7 @@ def select_ellipse(
         raise Exception(f"select_ellipse failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def select_by_color(
     ctx: Context,
     color: str,
@@ -2066,7 +2362,7 @@ def select_by_color(
         raise Exception(f"select_by_color failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def select_all(ctx: Context, image_index: int = 0) -> dict:
     """Select the entire image canvas.
 
@@ -2086,7 +2382,7 @@ def select_all(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"select_all failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def select_none(ctx: Context, image_index: int = 0) -> dict:
     """Remove / deselect all selections.
 
@@ -2106,7 +2402,7 @@ def select_none(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"select_none failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def invert_selection(ctx: Context, image_index: int = 0) -> dict:
     """Invert the current selection (select what is not selected).
 
@@ -2126,7 +2422,7 @@ def invert_selection(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"invert_selection failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def modify_selection(ctx: Context, operation: str, amount: float, image_index: int = 0) -> dict:
     """Grow, shrink, feather, border, or sharpen the current selection.
 
@@ -2160,7 +2456,7 @@ def modify_selection(ctx: Context, operation: str, amount: float, image_index: i
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def create_layer(
     ctx: Context,
     name: str = "New Layer",
@@ -2208,7 +2504,7 @@ def create_layer(
         raise Exception(f"create_layer failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def duplicate_layer(ctx: Context, layer_name: str | None = None, image_index: int = 0) -> dict:
     """Duplicate a layer and insert the copy above it.
 
@@ -2235,7 +2531,7 @@ def duplicate_layer(ctx: Context, layer_name: str | None = None, image_index: in
         raise Exception(f"duplicate_layer failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def delete_layer(
     ctx: Context,
     layer_name: str | None = None,
@@ -2271,7 +2567,7 @@ def delete_layer(
         raise Exception(f"delete_layer failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def rename_layer(
     ctx: Context,
     new_name: str,
@@ -2308,7 +2604,7 @@ def rename_layer(
         raise Exception(f"rename_layer failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def set_layer_properties(
     ctx: Context,
     layer_name: str | None = None,
@@ -2350,7 +2646,7 @@ def set_layer_properties(
         raise Exception(f"set_layer_properties failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def reorder_layer(
     ctx: Context,
     new_position: int,
@@ -2386,7 +2682,7 @@ def reorder_layer(
         raise Exception(f"reorder_layer failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def flatten_image(
     ctx: Context,
     image_index: int = 0,
@@ -2422,7 +2718,7 @@ def flatten_image(
         raise Exception(f"flatten_image failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def merge_visible_layers(
     ctx: Context,
     image_index: int = 0,
@@ -2457,7 +2753,7 @@ def merge_visible_layers(
         raise Exception(f"merge_visible_layers failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def list_layers(ctx: Context, image_index: int = 0) -> dict:
     """List layers in an image (flat root list — group children not expanded).
 
@@ -2480,10 +2776,11 @@ def list_layers(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"list_layers failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
 def ensure_source_immutable(
     ctx: Context,
-    image_index: int = 0,
+    handle: dict | None = None,
+    image_index: int | None = None,
     layer_ids: list[int] | None = None,
 ) -> dict:
     """Protect root source layers under a parasite-marked Source_Immutable group.
@@ -2503,14 +2800,21 @@ def ensure_source_immutable(
     checkpoint_create before destructive ops → confirm_destructive for flatten.
 
     Parameters:
-    - image_index: Target image index (default 0)
+    - handle: Preferred image handle from orient_workspace / mutators
+    - image_index: Legacy open-image index when handle is omitted (default 0)
     - layer_ids: optional explicit root layer ids to protect
 
     Returns: protected/working layer lists, generation, image handle.
     """
     try:
+        if handle is None and image_index is None:
+            image_index = 0
         conn = get_gimp_connection()
-        params: dict[str, Any] = {"image_index": image_index}
+        params: dict[str, Any] = {}
+        if handle is not None:
+            params["handle"] = handle
+        if image_index is not None:
+            params["image_index"] = int(image_index)
         if layer_ids is not None:
             params["layer_ids"] = layer_ids
         result = conn.send_command("ensure_source_immutable", params)
@@ -2526,11 +2830,12 @@ def ensure_source_immutable(
         raise Exception(f"ensure_source_immutable failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
 def checkpoint_create(
     ctx: Context,
     label: str,
-    image_index: int = 0,
+    handle: dict | None = None,
+    image_index: int | None = None,
     overwrite: bool = False,
     include_orient_snapshot: bool = False,
 ) -> dict:
@@ -2545,7 +2850,8 @@ def checkpoint_create(
 
     Parameters:
     - label: checkpoint label
-    - image_index: Target image index (default 0)
+    - handle: Preferred image handle from orient_workspace / mutators
+    - image_index: Legacy open-image index when handle is omitted (default 0)
     - overwrite: replace existing label (default False → CHECKPOINT_EXISTS)
     - include_orient_snapshot: default False. When True, records an honesty
       note only (full orient dump is not embedded — call orient_workspace
@@ -2554,16 +2860,19 @@ def checkpoint_create(
     Returns: paths, xcf_sha256, generation, handle.
     """
     try:
+        if handle is None and image_index is None:
+            image_index = 0
         conn = get_gimp_connection()
-        result = conn.send_command(
-            "checkpoint_create",
-            {
-                "label": label,
-                "image_index": image_index,
-                "overwrite": overwrite,
-                "include_orient_snapshot": include_orient_snapshot,
-            },
-        )
+        params: dict[str, Any] = {
+            "label": label,
+            "overwrite": overwrite,
+            "include_orient_snapshot": include_orient_snapshot,
+        }
+        if handle is not None:
+            params["handle"] = handle
+        if image_index is not None:
+            params["image_index"] = int(image_index)
+        result = conn.send_command("checkpoint_create", params)
         if result["status"] == "success":
             return result["results"]
         code = result.get("code")
@@ -2576,11 +2885,12 @@ def checkpoint_create(
         raise Exception(f"checkpoint_create failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
 def checkpoint_restore(
     ctx: Context,
     label: str,
     close_prior: bool = False,
+    handle: dict | None = None,
     image_index: int | None = None,
     verify_hash: bool = True,
 ) -> dict:
@@ -2593,7 +2903,8 @@ def checkpoint_restore(
     Parameters:
     - label: checkpoint label
     - close_prior: if True, close the prior image after open success (default False)
-    - image_index: prior image index when close_prior is True
+    - handle: Preferred prior image handle when close_prior is True
+    - image_index: prior image index when close_prior is True (legacy)
     - verify_hash: soft integrity compare vs sidecar (mismatch → CHECKPOINT_CORRUPTED)
 
     Returns: new handle, generation, hash_status, note.
@@ -2605,6 +2916,8 @@ def checkpoint_restore(
             "close_prior": close_prior,
             "verify_hash": verify_hash,
         }
+        if handle is not None:
+            params["handle"] = handle
         if image_index is not None:
             params["image_index"] = image_index
         result = conn.send_command("checkpoint_restore", params)
@@ -2625,7 +2938,7 @@ def checkpoint_restore(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def fill_layer(
     ctx: Context, color: str, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
@@ -2656,7 +2969,7 @@ def fill_layer(
         raise Exception(f"fill_layer failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def fill_selection(
     ctx: Context,
     color: str | None = None,
@@ -2693,7 +3006,7 @@ def fill_selection(
         raise Exception(f"fill_selection failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def set_colors(ctx: Context, foreground: str | None = None, background: str | None = None) -> dict:
     """Set the GIMP foreground and/or background color.
 
@@ -2720,7 +3033,7 @@ def set_colors(ctx: Context, foreground: str | None = None, background: str | No
         raise Exception(f"set_colors failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def draw_line(
     ctx: Context,
     x1: float,
@@ -2770,7 +3083,7 @@ def draw_line(
         raise Exception(f"draw_line failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def draw_rectangle(
     ctx: Context,
     x: int,
@@ -2817,7 +3130,7 @@ def draw_rectangle(
         raise Exception(f"draw_rectangle failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def draw_ellipse(
     ctx: Context,
     x: int,
@@ -2864,7 +3177,7 @@ def draw_ellipse(
         raise Exception(f"draw_ellipse failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def fill_rectangle(
     ctx: Context,
     x: int,
@@ -2908,7 +3221,7 @@ def fill_rectangle(
         raise Exception(f"fill_rectangle failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def fill_ellipse(
     ctx: Context,
     x: int,
@@ -2952,7 +3265,7 @@ def fill_ellipse(
         raise Exception(f"fill_ellipse failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def gradient_fill(
     ctx: Context,
     color1: str = "black",
@@ -3007,7 +3320,7 @@ def gradient_fill(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def add_text(
     ctx: Context,
     text: str,
@@ -3052,7 +3365,7 @@ def add_text(
         raise Exception(f"add_text failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def edit_text(
     ctx: Context,
     layer_name: str,
@@ -3095,7 +3408,7 @@ def edit_text(
         raise Exception(f"edit_text failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def list_fonts(ctx: Context, filter: str | None = None) -> dict:
     """List available fonts installed in GIMP.
 
@@ -3120,7 +3433,7 @@ def list_fonts(ctx: Context, filter: str | None = None) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def apply_drop_shadow(
     ctx: Context,
     offset_x: int = 5,
@@ -3165,7 +3478,7 @@ def apply_drop_shadow(
         raise Exception(f"apply_drop_shadow failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def apply_gaussian_blur(
     ctx: Context, radius: float = 5.0, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
@@ -3196,7 +3509,7 @@ def apply_gaussian_blur(
         raise Exception(f"apply_gaussian_blur failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def apply_pixelate(
     ctx: Context, block_size: int = 10, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
@@ -3227,7 +3540,7 @@ def apply_pixelate(
         raise Exception(f"apply_pixelate failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def apply_emboss(
     ctx: Context,
     azimuth: float = 315,
@@ -3267,7 +3580,7 @@ def apply_emboss(
         raise Exception(f"apply_emboss failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def apply_vignette(
     ctx: Context,
     softness: float = 3.0,
@@ -3304,7 +3617,7 @@ def apply_vignette(
         raise Exception(f"apply_vignette failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def apply_noise(
     ctx: Context, amount: float = 0.2, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
@@ -3340,7 +3653,7 @@ def apply_noise(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def export_icon_sizes(
     ctx: Context,
     output_dir: str,
@@ -3382,7 +3695,7 @@ def export_icon_sizes(
         raise Exception(f"export_icon_sizes failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def export_web_optimized(
     ctx: Context,
     output_dir: str,
@@ -3425,7 +3738,7 @@ def export_web_optimized(
         raise Exception(f"export_web_optimized failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def warp_region(
     ctx: Context,
     vectors: list,
@@ -3474,7 +3787,7 @@ def warp_region(
         raise Exception(f"warp_region failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def batch_resize(
     ctx: Context,
     width: int | None = None,
@@ -3510,7 +3823,7 @@ def batch_resize(
         raise Exception(f"batch_resize failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def export_sprite_sheet(
     ctx: Context,
     output_path: str,
@@ -3551,7 +3864,7 @@ def export_sprite_sheet(
         raise Exception(f"export_sprite_sheet failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def export_social_media_kit(
     ctx: Context, output_dir: str, platforms: list | None = None, image_index: int = 0
 ) -> dict:
@@ -3595,9 +3908,11 @@ def export_social_media_kit(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def list_images(ctx: Context) -> dict:
     """List all images currently open in GIMP.
+
+    Prefer ``orient_workspace`` for agent orientation (schema-versioned SoT).
 
     Returns:
     - images: list of {index, image_id, name, width, height, color_mode,
@@ -3615,7 +3930,7 @@ def list_images(ctx: Context) -> dict:
         raise Exception(f"list_images failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def set_active_image(ctx: Context, image_index: int) -> dict:
     """Raise a specific image to the front / make it active in GIMP.
 
@@ -3635,7 +3950,7 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
         raise Exception(f"set_active_image failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     """Undo one or more operations on an image.
 
@@ -3656,7 +3971,7 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         raise Exception(f"undo failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     """Redo one or more previously undone operations on an image.
 
@@ -3677,7 +3992,7 @@ def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         raise Exception(f"redo failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def convert_color_mode(
     ctx: Context, mode: str, num_colors: int = 256, image_index: int = 0
 ) -> dict:
@@ -3708,25 +4023,32 @@ def convert_color_mode(
         raise Exception(f"convert_color_mode failed: {e}")
 
 
-@mcp.tool()
-def close_image(ctx: Context, image_index: int = 0, save_first: bool = False) -> dict:
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+def close_image(
+    ctx: Context,
+    handle: dict | None = None,
+    image_index: int | None = None,
+    save_first: bool = False,
+) -> dict:
     """Close an image, optionally saving as XCF first.
 
     Parameters:
-    - image_index: Index of the image to close (default 0)
+    - handle: Preferred image handle from orient_workspace / mutators
+    - image_index: Index of the image to close when handle omitted (default 0)
     - save_first: If True, save as XCF before closing (default False)
 
     Returns status dict.
     """
     try:
+        if handle is None and image_index is None:
+            image_index = 0
         conn = get_gimp_connection()
-        result = conn.send_command(
-            "close_image",
-            {
-                "image_index": image_index,
-                "save_first": save_first,
-            },
-        )
+        params: dict[str, Any] = {"save_first": save_first}
+        if handle is not None:
+            params["handle"] = handle
+        if image_index is not None:
+            params["image_index"] = int(image_index)
+        result = conn.send_command("close_image", params)
         if result["status"] == "success":
             return result["results"]
         raise Exception(result.get("error", "Unknown error"))
@@ -3735,7 +4057,7 @@ def close_image(ctx: Context, image_index: int = 0, save_first: bool = False) ->
         raise Exception(f"close_image failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
     """Get the bounding rectangle of the current selection.
 
@@ -3755,7 +4077,7 @@ def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
         raise Exception(f"get_selection_bounds failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def get_pixel_color(
     ctx: Context, x: int, y: int, image_index: int = 0, layer_name: str | None = None
 ) -> dict:
@@ -3787,7 +4109,7 @@ def get_pixel_color(
         raise Exception(f"get_pixel_color failed: {e}")
 
 
-@mcp.tool()
+@mcp.tool(tags={surface.ADVANCED_TAG})
 def get_histogram(ctx: Context, channel: str = "value", image_index: int = 0) -> dict:
     """Get histogram statistics for a channel of the active layer.
 

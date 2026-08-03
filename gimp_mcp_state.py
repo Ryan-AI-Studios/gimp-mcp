@@ -208,6 +208,7 @@ def default_capabilities() -> dict[str, bool]:
         "coordinate_exif_normalized": True,  # 0008
         "source_immutable_policy": True,  # 0009
         "checkpoints": True,  # 0009
+        "high_level_mcp_surface": True,  # 0010
     }
 
 

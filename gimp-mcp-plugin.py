@@ -771,7 +771,6 @@ class MCPPlugin(Gimp.PlugIn):
 
             print(f"Getting current image bitmap with params: {params}")
 
-            image_index = int(params.get("image_index", 0))
             max_width = params.get("max_width")
             max_height = params.get("max_height")
 
@@ -796,9 +795,12 @@ class MCPPlugin(Gimp.PlugIn):
                     v is not None for v in (origin_x, origin_y, region_width, region_height)
                 )
 
-            # Select image (rejects negative / OOB)
+            # Select image: handle preferred, else image_index (default 0)
             try:
-                original_image = self._get_image(image_index)
+                original_image, _image_id = self._resolve_image_from_params(params)
+                image_index = int(params.get("image_index", 0))
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             except RuntimeError as e:
                 return {"status": "error", "error": str(e)}
 
@@ -2784,6 +2786,23 @@ class MCPPlugin(Gimp.PlugIn):
                 f"image_index {image_index} out of range (only {len(images)} images open)"
             )
         return images[image_index]
+
+    def _resolve_image_from_params(self, params):
+        """Resolve image from handle (preferred) or image_index (default 0).
+
+        Returns ``(image, image_id)``. Handle path uses the stable-handle registry
+        (STALE_HANDLE / FOREIGN_SESSION / …). Used by 0010 handle-first tools.
+        """
+        params = params or {}
+        handle = params.get("handle")
+        if handle is not None:
+            validated = self._validate_request_handle(handle, kind="image")
+            image_id = int(validated["image_id"])
+            image = self._get_image_by_id(image_id)
+            return image, image_id
+        image_index = int(params.get("image_index", 0))
+        image = self._get_image(image_index)
+        return image, int(image.get_id())
 
     def _get_image_by_id(self, image_id):
         """Resolve image by GIMP id; raise RuntimeError with HANDLE_NOT_FOUND semantics.
@@ -4945,14 +4964,16 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_rectangle(self, params):
         """Create a rectangular selection."""
         try:
-            image_index = int(params.get("image_index", 0))
             x = int(params.get("x", 0))
             y = int(params.get("y", 0))
             width = int(params.get("width"))
             height = int(params.get("height"))
             operation = params.get("operation", "replace")
             feather = float(params.get("feather", 0))
-            image = self._get_image(image_index)
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             op = self._channel_ops_from_string(operation)
             image.select_rectangle(op, x, y, width, height)
             if feather > 0:
@@ -4965,14 +4986,16 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_ellipse(self, params):
         """Create an elliptical selection."""
         try:
-            image_index = int(params.get("image_index", 0))
             x = int(params.get("x", 0))
             y = int(params.get("y", 0))
             width = int(params.get("width"))
             height = int(params.get("height"))
             operation = params.get("operation", "replace")
             feather = float(params.get("feather", 0))
-            image = self._get_image(image_index)
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             op = self._channel_ops_from_string(operation)
             image.select_ellipse(op, x, y, width, height)
             if feather > 0:
@@ -4987,13 +5010,25 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             from gi.repository import Gegl
 
-            image_index = int(params.get("image_index", 0))
             layer_name = params.get("layer_name", None)
+            layer_id = params.get("layer_id", None)
             color_str = params.get("color", "white")
             threshold = int(params.get("threshold", 15))
             operation = params.get("operation", "replace")
-            image = self._get_image(image_index)
-            drawable = self._resolve_layer(image, layer_name, None)
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+            # Prefer layer_id when provided (create_selection layer_handle path)
+            if layer_id is not None and layer_name is None:
+                try:
+                    drawable = Gimp.Layer.get_by_id(int(layer_id))
+                    if drawable is None:
+                        drawable = self._resolve_layer(image, None, None)
+                except Exception:
+                    drawable = self._resolve_layer(image, None, None)
+            else:
+                drawable = self._resolve_layer(image, layer_name, None)
             op = self._channel_ops_from_string(operation)
             color = Gegl.Color.new(color_str)
             pdb = Gimp.get_pdb()
@@ -5023,7 +5058,10 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_all(self, params):
         """Select entire canvas."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             Gimp.Selection.all(image)
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
@@ -5033,7 +5071,10 @@ class MCPPlugin(Gimp.PlugIn):
     def _select_none(self, params):
         """Remove all selections."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             Gimp.Selection.none(image)
             Gimp.displays_flush()
             return {"status": "success", "results": {"status": "success"}}
@@ -5618,9 +5659,10 @@ class MCPPlugin(Gimp.PlugIn):
         Single generation bump after ALL layers; emit handles after.
         """
         try:
-            image_index = int(params.get("image_index", 0))
-            image = self._get_image(image_index)
-            image_id = int(image.get_id())
+            try:
+                image, image_id = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             # Optional explicit layer ids (root non-group only when omitted)
             raw_ids = params.get("layer_ids") or params.get("item_ids") or None
             explicit_ids = None
@@ -5940,9 +5982,10 @@ class MCPPlugin(Gimp.PlugIn):
             include_orient = _exp.coerce_bool(
                 params.get("include_orient_snapshot", False), default=False
             )
-            image_index = int(params.get("image_index", 0))
-            image = self._get_image(image_index)
-            image_id = int(image.get_id())
+            try:
+                image, image_id = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             gen = self._image_generation(image_id)
 
             # Prefer absolute under workspace_root then jail
@@ -6064,6 +6107,7 @@ class MCPPlugin(Gimp.PlugIn):
 
             close_prior = _exp.coerce_bool(params.get("close_prior", False), default=False)
             prior_index = params.get("image_index", None)
+            prior_handle = params.get("handle", None)
             verify_hash = _exp.coerce_bool(params.get("verify_hash", True), default=True)
 
             intended_dir = Path(str(self.workspace_root)) / _policy.CHECKPOINT_DIR_NAME / label
@@ -6122,11 +6166,14 @@ class MCPPlugin(Gimp.PlugIn):
             closed_prior = None
             if close_prior:
                 try:
-                    if prior_index is not None:
+                    prior = None
+                    if prior_handle is not None:
+                        try:
+                            prior, _pid = self._resolve_image_from_params({"handle": prior_handle})
+                        except _handles.HandleError:
+                            prior = None
+                    elif prior_index is not None:
                         prior = self._get_image(int(prior_index))
-                    else:
-                        # close nothing specific if not provided — optional only
-                        prior = None
                     if prior is not None and int(prior.get_id()) != new_id:
                         closed_prior = int(prior.get_id())
                         for display_obj in Gimp.get_displays() or []:

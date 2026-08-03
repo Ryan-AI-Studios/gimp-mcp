@@ -42,6 +42,7 @@ References:
 | `GIMP_MCP_ALLOW_NON_LOOPBACK` | Non-loopback bind | **off** |
 | `GIMP_MCP_DEBUG` | Tracebacks + verbose diagnostics only | **off** |
 | `GIMP_MCP_AUDIT_LOG` | Audit JSONL path | platform default |
+| `GIMP_MCP_ADVANCED_TOOLS` | Full ~90-tool MCP surface (`1`/`true`/`yes`/`on`) | **off** → ~18 high-level tools |
 
 Token file default:
 
@@ -59,6 +60,14 @@ Audit default:
 2. Set `GIMP_WORKSPACE_ROOT` (and optional `GIMP_MCP_TOKEN`) for the GIMP process if needed.
 3. Start GIMP → **Tools → MCP → Start MCP Server** (writes/reads token file, binds `127.0.0.1`).
 4. Start MCP client / `gimp_mcp_server.py` (lazy token load with retry if file appears late).
+
+## Advanced MCP tool surface
+
+Default model-facing surface is **~18 high-level tools**. Setting
+`GIMP_MCP_ADVANCED_TOOLS=1` exposes the full ~90-tool footgun surface (filters,
+low-level selection primitives, `call_api`, etc.). After flipping this env var,
+restart the **stdio MCP process and the LLM client** — clients cache
+`list_tools` and will keep the old list until re-handshake.
 
 ## Advanced exec footgun
 

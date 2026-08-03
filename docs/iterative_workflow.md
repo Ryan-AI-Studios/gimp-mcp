@@ -65,7 +65,7 @@ print(f"Existing layers: {len(metadata['structure']['layers'])}")
 **Pattern:**
 1. Set active layer
 2. Draw 3-5 elements
-3. Validate with get_image_bitmap()
+3. Validate with render_visible_composite()
 4. Review and fix issues
 5. Repeat
 
@@ -79,7 +79,7 @@ call_api("exec", ["pyGObject-console", [
 ]])
 
 # Step 2: VALIDATE (critical!)
-bitmap = get_image_bitmap(max_width=1024, max_height=1024)
+bitmap = render_visible_composite(max_width=1024, max_height=1024)
 # STOP and analyze the bitmap image you just received:
 # 1. Describe what you see in the image
 # 2. Compare to what you intended to draw
@@ -102,7 +102,7 @@ call_api("exec", ["pyGObject-console", [
 ]])
 
 # Step 5: VALIDATE again
-bitmap = get_image_bitmap(max_width=1024, max_height=1024)
+bitmap = render_visible_composite(max_width=1024, max_height=1024)
 # STOP and analyze: Does the head look correct? Any issues to fix?
 ```
 
@@ -128,7 +128,7 @@ bitmap = get_image_bitmap(max_width=1024, max_height=1024)
  "Gimp.displays_flush()"]
 
 # Then validate
-get_image_bitmap(max_width=1024, max_height=1024)
+render_visible_composite(max_width=1024, max_height=1024)
 ```
 
 ### ❌ Mistake 2: No Validation Until End
@@ -160,7 +160,7 @@ validate()  # ← And here
 
 ## Self-Critique Questions
 
-After each validation with `get_image_bitmap()`, ask yourself:
+After each validation with `render_visible_composite()`, ask yourself:
 
 ### 1. Layer Issues
 - Are elements on the correct layer?
@@ -178,7 +178,7 @@ After each validation with `get_image_bitmap()`, ask yourself:
 - Instead of checking full image, extract just the modified region
 - Higher resolution possible for small areas
 - Faster feedback, saves resources
-- Example: get_image_bitmap(region={"origin_x": 100, "origin_y": 50, "width": 200, "height": 200})
+- Example: render_visible_composite(region={"origin_x": 100, "origin_y": 50, "width": 200, "height": 200})
 
 ### 3. Selection Cleanup
 - Did I clear selections after drawing?
@@ -302,7 +302,7 @@ The key to success with GIMP MCP:
 
 1. **Plan** layer structure first
 2. **Build** incrementally (3-5 operations at a time)
-3. **Validate** after each build phase with `get_image_bitmap()`
+3. **Validate** after each build phase with `render_visible_composite()`
 4. **Fix** issues immediately on correct layer
 5. **Continue** only when current phase is correct
 

@@ -22,18 +22,49 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 
 **What makes it different from other GIMP integrations:**
 
-- The AI can *see* the image at any point in the workflow without saving to disk (`get_state_snapshot`)
+- The AI can *see* the image at any point in the workflow without saving to disk (`render_visible_composite`)
 - Supports fully autonomous multi-step pipelines: open → edit → verify → refine → export
-- 57 dedicated tool commands covering every major GIMP operation
+- Default **~18 high-level tools** (full ~90-tool advanced surface via env flag)
 - Fully compatible with GIMP 3.2.x (all breaking API changes resolved)
+
+## Default high-level tool surface (track 0010)
+
+By default the MCP server lists **~18 high-level tools** (FastMCP `include_tags={"hl"}`).
+Set **`GIMP_MCP_ADVANCED_TOOLS=1`** on the **host / stdio MCP process** for the full
+~90-tool advanced surface. After flipping the env var, restart the **MCP server
+process and the LLM client session** (clients cache `list_tools`).
+
+| Tool | Role |
+|---|---|
+| `session_probe` | Connectivity + surface mode + capabilities |
+| `restart_server` | Drop/reconnect TCP (prefer probe first) |
+| `orient_workspace` | State-manifest orientation SoT |
+| `select_image` / `select_layers` | Handle bind |
+| `open_image` / `close_image` / `new_canvas` | Session lifecycle |
+| `ensure_source_immutable` | Source layer policy |
+| `checkpoint_create` / `checkpoint_restore` | XCF checkpoints |
+| `render_visible_composite` | Visible composite PNG + mapping |
+| `normalize_image_orientation` | EXIF normalize |
+| `map_preview_to_image` | Preview → image coords |
+| `save_xcf` / `export_image` | Project save / typed export (**non-atomic** until 0013) |
+| `verify_alpha_channel` | Alpha preflight |
+| `create_selection` | Unified selection (rect/ellipse/by_color/all/none) |
+
+**Migration names (advanced only unless advanced mode):**
+
+| Prefer (default) | Legacy (advanced) |
+|---|---|
+| `session_probe` | `check_server` |
+| `render_visible_composite` | `get_image_bitmap` |
+| `create_selection` | `select_rectangle` / `select_ellipse` / `select_by_color` / `select_all` / `select_none` |
 
 ## Key Features
 
 | | |
 |---|---|
-| 👁️ **Live Visual Feedback** | `get_state_snapshot` returns a PNG preview mid-workflow so the AI verifies each step |
+| 👁️ **Live Visual Feedback** | `render_visible_composite` returns a PNG + mapping mid-workflow so the AI verifies each step |
 | 🧭 **Workspace Orientation** | `orient_workspace` returns a schema-versioned state manifest (layers tree, kinds, handles, capabilities) |
-| 🎨 **57+ GIMP Tools** | Adjustments, transforms, selections, layers, drawing, text, filters — all via MCP |
+| 🎨 **~18 HL / ~90 advanced** | Curated default surface; full adjustments, transforms, layers, drawing, filters in advanced mode |
 | 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested |
 | 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
 | 🖼️ **Region Snapshots** | Zoom into any area for detail verification (face, mouth, corner, etc.) |
