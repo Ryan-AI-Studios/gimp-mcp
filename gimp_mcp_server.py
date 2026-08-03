@@ -508,10 +508,29 @@ def raise_from_exception(
     )
 
 
+def _harvest_affected_handles(kwargs: dict[str, Any]) -> list[Any] | None:
+    """Collect known handle kwargs for INTERNAL_ERROR affected_handles (M5).
+
+    - ``handle`` if present and dict-like → include once
+    - ``handles`` if present and list → extend
+    Returns None when nothing harvested (omit empty list on wire).
+    """
+    out: list[Any] = []
+    handle = kwargs.get("handle")
+    if isinstance(handle, dict):
+        out.append(handle)
+    handles = kwargs.get("handles")
+    if isinstance(handles, list):
+        out.extend(item for item in handles if item is not None)
+    return out or None
+
+
 def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
     """Decorator: mint request_id, host audit start/end, map exceptions → ToolError.
 
     Success path does **not** inject request_id into return dicts (v1 M4).
+    On non-ToolError exceptions, harvests ``handle`` / ``handles`` kwargs into
+    affected_handles for INTERNAL_ERROR (and other mapped codes) when known.
     """
 
     def decorator(fn: F) -> F:
@@ -542,8 +561,14 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
             except Exception as e:
                 if sec.debug_enabled():
                     traceback.print_exc()
+                handles = _harvest_affected_handles(kwargs)
                 try:
-                    raise_from_exception(e, request_id=rid, tool_name=name)
+                    raise_from_exception(
+                        e,
+                        request_id=rid,
+                        tool_name=name,
+                        affected_handles=handles,
+                    )
                 except ToolError as te:
                     parsed = sec.parse_tool_error_text(str(te))
                     code = None
@@ -1529,29 +1554,24 @@ def call_api(
     Security: Class B (PDB-mediated) exec — disabled unless GIMP_MCP_ALLOW_EXEC=1.
     """
     if not sec.exec_allowed():
-        return json.dumps(
-            sec.make_error(
-                sec.CODE_EXEC_DISABLED,
-                "call_api / PDB-mediated Python exec is disabled by default. "
-                "Set GIMP_MCP_ALLOW_EXEC=1 only for advanced local use "
-                "(Class B — cannot disable GIMP built-in python-fu-* PDB procedures globally).",
-            )
+        tool_fail(
+            sec.CODE_EXEC_DISABLED,
+            "Class B call_api is disabled. Set GIMP_MCP_ALLOW_EXEC=1 only for "
+            "advanced local use (Class B — cannot disable GIMP built-in "
+            "python-fu-* PDB procedures globally).",
         )
     if args is None:
         args = []
     if kwargs is None:
         kwargs = {}
-    try:
-        conn = get_gimp_connection()
-        result = conn.send_command(
-            "call_api", {"api_path": api_path, "args": args, "kwargs": kwargs}
-        )
-        if result["status"] == "success":
-            return json.dumps(result["results"])
-        else:
-            return f"Error: {json.dumps(result['error'])}"
-    except Exception as e:
-        return f"Error: {e}"
+    conn = get_gimp_connection()
+    result = conn.send_command("call_api", {"api_path": api_path, "args": args, "kwargs": kwargs})
+    if result.get("status") == "success":
+        return json.dumps(result["results"])
+    raise_from_plugin_result(
+        result if isinstance(result, dict) else {"error": str(result)},
+        "call_api",
+    )
 
 
 @mcp.prompt(

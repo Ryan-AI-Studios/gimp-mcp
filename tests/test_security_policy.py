@@ -370,7 +370,9 @@ def test_class_a_exec_disabled_envelope(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_call_api_gate_without_gimp(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Class B: call_api hard-fails offline without ALLOW_EXEC (no GIMP connect)."""
+    """Class B: call_api raises ToolError offline without ALLOW_EXEC (no GIMP connect)."""
+    from fastmcp.exceptions import ToolError
+
     monkeypatch.delenv(sec.ENV_ALLOW_EXEC, raising=False)
     import gimp_mcp_server as server
 
@@ -385,10 +387,11 @@ def test_call_api_gate_without_gimp(monkeypatch: pytest.MonkeyPatch) -> None:
         pass
 
     call_api = server.call_api.fn  # real FastMCP FunctionTool wrapper
-    raw = call_api(_Ctx(), api_path="exec", args=["pyGObject-console", ["print(1)"]])
-    body = __import__("json").loads(raw)
-    assert body["status"] == "error"
-    assert body["code"] == sec.CODE_EXEC_DISABLED
+    with pytest.raises(ToolError) as ei:
+        call_api(_Ctx(), api_path="exec", args=["pyGObject-console", ["print(1)"]])
+    parsed = sec.parse_tool_error_text(str(ei.value))
+    assert parsed is not None
+    assert parsed["error"]["code"] == sec.CODE_EXEC_DISABLED
 
 
 def test_call_api_allows_when_exec_enabled(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -411,3 +411,147 @@ def test_send_command_injects_request_id_copy() -> None:
     assert "_request_id" not in original
     assert captured["params"]["_request_id"] == rid
     assert captured["params"]["handle"] == original["handle"]
+
+
+# ---------------------------------------------------------------------------
+# call_api — no false-green (BS3 / DoD-2)
+# ---------------------------------------------------------------------------
+
+
+def test_call_api_exec_disabled_raises_tool_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EXEC_DISABLED must raise ToolError (isError), never return success JSON."""
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_server as srv
+
+    monkeypatch.delenv(sec.ENV_ALLOW_EXEC, raising=False)
+    call_fn = srv.call_api.fn
+    with patch.object(srv.sec, "write_audit_event"):
+        with pytest.raises(ToolError) as ei:
+            call_fn(ctx=MagicMock(), api_path="exec", args=[], kwargs={})
+
+    parsed = sec.parse_tool_error_text(str(ei.value))
+    assert parsed is not None
+    assert parsed["error"]["code"] == sec.CODE_EXEC_DISABLED
+    assert parsed["ok"] is False
+
+
+def test_call_api_plugin_error_raises_tool_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plugin status=error must raise ToolError with plugin code — not 'Error: …' string."""
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_server as srv
+
+    monkeypatch.setenv(sec.ENV_ALLOW_EXEC, "1")
+    mock_conn = MagicMock()
+    mock_conn.send_command.return_value = {
+        "status": "error",
+        "code": sec.CODE_POLICY_DENIED,
+        "error": "exec blocked by policy",
+    }
+    call_fn = srv.call_api.fn
+    with (
+        patch.object(srv, "get_gimp_connection", return_value=mock_conn),
+        patch.object(srv.sec, "write_audit_event"),
+    ):
+        with pytest.raises(ToolError) as ei:
+            call_fn(
+                ctx=MagicMock(),
+                api_path="exec",
+                args=["pyGObject-console", ["1+1"]],
+                kwargs={},
+            )
+
+    text = str(ei.value)
+    parsed = sec.parse_tool_error_text(text)
+    assert parsed is not None
+    assert parsed["error"]["code"] == sec.CODE_POLICY_DENIED
+    # Must not be the old false-green "Error: …" success-string path
+    assert not text.startswith("Error: ")
+
+
+def test_call_api_connection_error_raises_tool_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ConnectionError on call_api → CONNECTION_FAILED via decorator."""
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_server as srv
+
+    monkeypatch.setenv(sec.ENV_ALLOW_EXEC, "1")
+    call_fn = srv.call_api.fn
+    with (
+        patch.object(srv, "get_gimp_connection", side_effect=ConnectionError("refused")),
+        patch.object(srv.sec, "write_audit_event"),
+    ):
+        with pytest.raises(ToolError) as ei:
+            call_fn(ctx=MagicMock(), api_path="exec", args=[], kwargs={})
+
+    parsed = sec.parse_tool_error_text(str(ei.value))
+    assert parsed is not None
+    assert parsed["error"]["code"] == sec.CODE_CONNECTION_FAILED
+    assert parsed["error"]["retryable"] is True
+
+
+# ---------------------------------------------------------------------------
+# M5 — affected_handles on INTERNAL when handle known
+# ---------------------------------------------------------------------------
+
+
+def test_harvest_affected_handles_from_kwargs() -> None:
+    import gimp_mcp_server as srv
+
+    h = {"image_id": 7, "generation": 1}
+    assert srv._harvest_affected_handles({"handle": h}) == [h]
+    assert srv._harvest_affected_handles({"handles": [h, {"image_id": 8}]}) == [
+        h,
+        {"image_id": 8},
+    ]
+    both = srv._harvest_affected_handles({"handle": h, "handles": [{"image_id": 9}]})
+    assert both == [h, {"image_id": 9}]
+    assert srv._harvest_affected_handles({}) is None
+    assert srv._harvest_affected_handles({"handle": "not-a-dict"}) is None
+    assert srv._harvest_affected_handles({"handles": "nope"}) is None
+
+
+def test_with_structured_error_harvests_handle_on_internal() -> None:
+    """Decorator maps RuntimeError → INTERNAL with affected_handles from handle=."""
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_server as srv
+
+    handle = {"image_id": 42, "generation": 3, "session_id": "s1"}
+
+    @srv.with_structured_error("fake_handle_tool")
+    def fake_handle_tool(*, handle: dict | None = None) -> str:
+        raise RuntimeError("simulated crash")
+
+    with patch.object(srv.sec, "write_audit_event"):
+        with pytest.raises(ToolError) as ei:
+            fake_handle_tool(handle=handle)
+
+    parsed = sec.parse_tool_error_text(str(ei.value))
+    assert parsed is not None
+    assert parsed["error"]["code"] == sec.CODE_INTERNAL
+    assert handle in (parsed["error"].get("affected_handles") or [])
+
+
+def test_select_image_internal_includes_affected_handle() -> None:
+    """select_image RuntimeError from connection → INTERNAL + handle in envelope."""
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_server as srv
+
+    handle = {"image_id": 99, "generation": 0}
+    select_fn = srv.select_image.fn
+    with (
+        patch.object(srv, "get_gimp_connection", side_effect=RuntimeError("boom")),
+        patch.object(srv.sec, "write_audit_event"),
+    ):
+        with pytest.raises(ToolError) as ei:
+            select_fn(ctx=MagicMock(), handle=handle)
+
+    parsed = sec.parse_tool_error_text(str(ei.value))
+    assert parsed is not None
+    assert parsed["error"]["code"] == sec.CODE_INTERNAL
+    assert handle in (parsed["error"].get("affected_handles") or [])
