@@ -462,7 +462,8 @@ def test_capabilities_honesty() -> None:
     assert caps["source_immutable_policy"] is True
     assert caps["checkpoints"] is True
     assert caps["isolated_layer_snapshot"] is False
-    assert caps["alpha_snapshot"] is False
+    assert caps["alpha_snapshot"] is False  # live renderer unfinished (0014 keeps false)
+    assert caps["pixel_verification"] is True  # 0014 host PNG compare/verify
     assert caps["batch_interpreter"] is False
     assert caps["mcp_image_visible_to_model"] is True
     assert caps["filesystem_image_attachment"] is True

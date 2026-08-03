@@ -195,7 +195,8 @@ def default_capabilities() -> dict[str, bool]:
         # Design-required
         "visible_composite_snapshot": True,  # 0004
         "isolated_layer_snapshot": False,
-        "alpha_snapshot": False,  # renderer → 0014
+        # Live GIMP render_alpha unfinished — host PNG alpha metrics do NOT flip this.
+        "alpha_snapshot": False,
         "atomic_xcf_save": True,  # 0013
         "atomic_export": True,  # 0013
         # Extensions
@@ -210,6 +211,7 @@ def default_capabilities() -> dict[str, bool]:
         "checkpoints": True,  # 0009
         "high_level_mcp_surface": True,  # 0010
         "structured_errors": True,  # 0011
+        "pixel_verification": True,  # 0014 host PNG compare/verify (not _CAPABILITY_REQUIRED)
     }
 
 

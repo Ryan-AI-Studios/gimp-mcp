@@ -18,7 +18,7 @@ HL_TAG = "hl"
 ADVANCED_TAG = "advanced"
 ENV_ADVANCED_TOOLS = "GIMP_MCP_ADVANCED_TOOLS"
 
-# Locked default catalog (spec §2.4) — exactly 18 names.
+# Locked default catalog — exactly 20 names (0010 + 0014 compare/verify).
 HL_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "session_probe",
@@ -39,6 +39,8 @@ HL_TOOL_NAMES: frozenset[str] = frozenset(
         "export_image",
         "verify_alpha_channel",
         "create_selection",
+        "compare_images",
+        "verify_artifact",
     }
 )
 
@@ -80,7 +82,7 @@ def include_tags_for_mode(mode: str) -> set[str] | None:
 
 
 def get_hl_catalog_names() -> list[str]:
-    """Sorted list of the 18 high-level tool names."""
+    """Sorted list of the 20 high-level tool names."""
     return sorted(HL_TOOL_NAMES)
 
 

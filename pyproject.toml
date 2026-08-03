@@ -31,6 +31,7 @@ py-modules = [
     "gimp_mcp_policy",
     "gimp_mcp_atomic",
     "gimp_mcp_surface",
+    "gimp_mcp_verify",
 ]
 packages = ["gimp_agent"]
 
@@ -91,6 +92,7 @@ known-first-party = [
     "gimp_mcp_policy",
     "gimp_mcp_atomic",
     "gimp_mcp_surface",
+    "gimp_mcp_verify",
     "gimp_agent",
 ]
 
@@ -125,6 +127,7 @@ include = [
     "gimp_mcp_policy.py",
     "gimp_mcp_atomic.py",
     "gimp_mcp_surface.py",
+    "gimp_mcp_verify.py",
     "gimp_agent",
     "tests",
 ]
