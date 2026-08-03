@@ -504,6 +504,33 @@ def test_cli_probe_invalid_timeout_exit_2(
     assert body["code"] == ec.CLI_USAGE
 
 
+def test_cli_env_json_without_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """P2-004: GIMP_AGENT_JSON=1 enables JSON when no --json flag is present."""
+    monkeypatch.setenv("GIMP_AGENT_JSON", "1")
+    code = main(["codes"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert "code_to_exit" in body["data"]
+
+
+def test_cli_probe_nan_timeout_json_compliant(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """P2-005: NaN/Infinity timeout must emit standards-compliant JSON (no bare NaN)."""
+    code = main(["probe", "--timeout", "nan", "--json"])
+    assert code == 2
+    raw = capsys.readouterr().out
+    # Strict JSON parsers reject Python's non-standard NaN token
+    body = json.loads(raw)
+    assert body["ok"] is False
+    assert body["code"] == ec.CLI_USAGE
+    assert isinstance(body["data"].get("timeout"), str)
+
+
 def test_cli_help_exits_0() -> None:
     code = main(["--help"])
     assert code == 0

@@ -24,9 +24,15 @@ def _agent_version() -> str:
         return package_version
 
 
-def _json_flag(args: argparse.Namespace) -> bool:
-    """OR parent ``--json`` and subcommand ``--json`` (separate dests)."""
-    return bool(getattr(args, "json_global", False) or getattr(args, "json_local", False))
+def _json_flag(args: argparse.Namespace) -> bool | None:
+    """OR parent/subcommand ``--json``; return None when unset so env is consulted.
+
+    Spec: ``--json`` flag overrides env; env ``GIMP_AGENT_JSON`` applies only when
+    neither CLI flag is present. Returning explicit False would suppress env.
+    """
+    if getattr(args, "json_global", False) or getattr(args, "json_local", False):
+        return True
+    return None
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -45,12 +51,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 def _cmd_probe(args: argparse.Namespace) -> int:
     timeout = float(args.timeout)
     if not math.isfinite(timeout) or timeout <= 0:
+        # Serialize timeout as string so json.dumps stays standards-compliant
+        # (Python would otherwise emit NaN/Infinity, which strict parsers reject).
+        timeout_repr = str(timeout)
         envelope = jsonio.make_envelope(
             ok=False,
             exit_code=ec.EXIT_CLI_USAGE,
             code=ec.CLI_USAGE,
-            message=(f"invalid --timeout {timeout!r}: must be a finite positive number"),
-            data={"timeout": timeout},
+            message=(f"invalid --timeout {timeout_repr!r}: must be a finite positive number"),
+            data={"timeout": timeout_repr},
         )
         jsonio.emit(envelope, as_json=jsonio.json_mode_enabled(flag=_json_flag(args)))
         return ec.EXIT_CLI_USAGE
