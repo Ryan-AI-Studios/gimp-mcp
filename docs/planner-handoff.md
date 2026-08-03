@@ -101,15 +101,17 @@ minting. Track IDs are creation order, not execution order.
   → 0009 LayerPolicyAndCheckpoints — Completed
   → 0010 HighLevelMcpSurface — Completed
   → 0011 StructuredErrorsAndAudit — Completed
-  → 0012 DeterministicCliSidecar … through 0028 Final product polish (v1)
+  → 0012 DeterministicCliSidecar — Completed
+  → 0013 AtomicSaveExport … through 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. **0001–0011 Completed.** Orientation SoT is
+recipes → packaging → golden path → v1 polish. **0001–0012 Completed.** Orientation SoT is
 `orient_workspace` (state-manifest v1). Stable handles + STALE_HANDLE + `select_*` in **0007**.
 Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF normalize + coordinate math in **0008**.
 Source_Immutable + checkpoints in **0009**. Default high-level MCP surface (~18 tools) in **0010**.
-Structured error envelope + request_id audit in **0011**. Authoritative table: `conductor/conductor.md`.
+Structured error envelope + request_id audit in **0011**. Agent CLI (`gimp-agent`) in **0012**.
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -207,6 +209,7 @@ Known upstream defects (must remain visible until fixed by tracks):
 | Source integrity | Source_Immutable + checkpoints + destructive confirm | **0009** (Completed) |
 | Default MCP surface | ~18 HL tools; advanced env for full set | **0010** (Completed) |
 | Structured errors | Uniform codes, request_id, partial-mutation honesty | **0011** (Completed) |
+| Agent CLI sidecar | gimp-agent doctor/probe + CODE_* exit map | **0012** (Completed) |
 | Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
@@ -221,6 +224,7 @@ Hard rules for product work:
 - **Source integrity (0009):** `ensure_source_immutable` before first mutation; `checkpoint_create`; flatten/live-merge need `confirm_destructive`; restore → re-orient.
 - **Default MCP surface (0010):** ~18 high-level tools via real FastMCP `include_tags={"hl"}`; design names (`session_probe`, `render_visible_composite`, `create_selection`); full ~90 tools only with `GIMP_MCP_ADVANCED_TOOLS=1` (restart MCP **and** LLM client). Prefer HL tools; do not major-bump mcp/fastmcp for 3.x visibility API.
 - **Structured errors (0011):** product failures → FastMCP `ToolError` **single-line** text (`CODE: msg (request_id=…) | {json}`); never return error dicts as success. Split audit `audit-server.jsonl` / `audit-plugin.jsonl`. `rollback_available` false until **0017**. Parse helper: `parse_tool_error_text`.
+- **Agent CLI (0012 Completed):** `uv run gimp-agent doctor|probe|version|codes` with JSON + exit codes from `CODE_*` (0–12). Probe always JSON-auth; doctor connect-only TCP; `--strict` for CI. Non-strict doctor may exit 0 with `ok:false` — check envelope or use `--strict`. Headless recipes not in 0012.
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
@@ -288,7 +292,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0012-DeterministicCliSidecar** — Proposed (needs full plan); prior **0011 Completed** PR #14 / main@b9d1d23 |
+| Active focus | **0013-AtomicSaveExport** — Proposed (needs full plan); prior **0012 Completed** PR #16 / main@691aaa9 |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
@@ -379,8 +383,20 @@ If indexes are empty: `ledgerful index --incremental`.
 - **M5:** harvest `handle`/`handles` kwargs into `affected_handles` on INTERNAL.
 - **Capability:** `structured_errors: true`. Pins hold (mcp/fastmcp no major).
 - **Codex final:** **PASS WITH DEFERRED P3** (bare Exception residuals + plugin TCP body without rid).
-- **Residuals:** CLI exit map → **0012**; `rollback_available` true → **0017**; InputRequiredResult/traceparent → post major.
-- **Next:** **0012** DeterministicCliSidecar (placeholder — needs full plan).
+- **Residuals:** CLI exit map → **0012 Completed**; `rollback_available` true → **0017**; InputRequiredResult/traceparent → post major.
+- **Next:** **0012 Completed** — then **0013** AtomicSaveExport (placeholder plan).
+
+### 0012 completion notes (planners / implementers)
+
+- **Completed (PR #16 / main@691aaa9):** host package `gimp_agent/` + **`gimp-agent`** entrypoint (argparse; no click/typer).
+- **Commands:** `doctor [--strict]`, `probe [--timeout]`, `version`, `codes` + `--json` (flag before/after subcommand; flag > `GIMP_AGENT_JSON`).
+- **Exit map:** 0 success; **1** generic; **2** CLI_USAGE (help→0); 3 GIMP/plugin missing; 4 AUTH/CONNECTION; 5 handles; 6 policy/path; 7 internal/unmapped; 8 ALPHA_LOST; 9 TIMEOUT; 10 PARTIAL; 11 reserved; 12 UNSUPPORTED. Reverse map via `codes`.
+- **doctor:** ordered checks; first required fail under `--strict`; TCP = **connect-only**; EXPECTED_PLUGIN_FILES = 7 (plugin+6 shared); workspace **info**; exiftool `which`; `batch_interpreter: false`.
+- **probe:** token + JSON `auth` + `get_gimp_info`; require `status=="success"`; no `gimp_mcp_server` import.
+- **Packaging:** `packages = ["gimp_agent"]` explicit + py-modules; ruff/basedpyright include.
+- **Codex final:** **PASS** (after P1/P2 fixes: global `--json`, probe success, version rc, env JSON, NaN JSON).
+- **Residuals:** live probe matrix (ops); incomplete APPDATA install → **0018**; batch/recipes/atomic → **0019/0015/0013**.
+- **Next:** **0013** AtomicSaveExport (placeholder — needs full plan).
 
 ---
 
@@ -388,6 +404,9 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-03 | **0012 Completed:** gimp-agent doctor/probe/exit map; PR #16 / main@691aaa9; Codex PASS; next=0013 |
+| 2026-08-03 | Full plan **0012** DeterministicCliSidecar: gimp-agent doctor/probe/exit map; Ready — not started |
+| 2026-08-03 | Folded AI-review into **0012**: path names; JSON auth probe; packages explicit; strict first-fail; full ship files; exit 1/help 0 |
 | 2026-08-03 | **0011 Completed:** structured errors envelope, ToolError wire, request_id, split audit; PR #14 / main@b9d1d23; Codex PASS WITH DEFERRED P3; next=0012 |
 | 2026-08-03 | Full plan **0011** StructuredErrorsAndAudit: envelope v1, ToolError wire, request_id, audit; Ready — not started |
 | 2026-08-03 | Folded AI-review into **0011**: H1 export false-green; single-line wire; split audit; thread-local rid; CONNECTION_FAILED; InputRequiredResult/traceparent deferred |
