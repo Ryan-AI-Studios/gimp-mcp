@@ -541,8 +541,13 @@ def _render_visible_composite_impl(
     conn = get_gimp_connection()
     result = conn.send_command("get_image_bitmap", params)
     if result["status"] == "success":
-        idx = int(image_index) if image_index is not None else 0
-        return _snapshot_tool_result(result["results"], image_index=idx)
+        # Prefer plugin-reported index (honest after handle resolve); fallback local
+        results = result["results"]
+        if "image_index" in results and results["image_index"] is not None:
+            idx = int(results["image_index"])
+        else:
+            idx = int(image_index) if image_index is not None else 0
+        return _snapshot_tool_result(results, image_index=idx)
     raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
 
 
@@ -2152,9 +2157,10 @@ def create_selection(
     - x, y, width, height: required for rectangle/ellipse
     - color: required for by_color (CSS/hex string)
     - threshold: by_color similarity (default 15)
-    - layer_handle: optional item handle for by_color sample layer. When omitted
-      or not resolvable to a layer name/id, samples the **active layer**
-      (plugin ``select_by_color`` path).
+    - layer_handle: optional item handle for by_color sample layer. When
+      provided, plugin resolves by ``item_id`` and **fails closed** on invalid
+      id/membership (no silent active-layer fallback). When omitted, samples
+      the **active layer**.
 
     Host validates params before any TCP call.
     """

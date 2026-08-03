@@ -82,10 +82,10 @@ def test_bitmap_method_uses_get_image_not_bare_images0() -> None:
     text = PLUGIN.read_text(encoding="utf-8")
     body = _method_body(text, "_get_current_image_bitmap")
     # Prefer handle/index helper (0010) or legacy _get_image — never bare images[0]
-    assert "_get_image" in body or "_resolve_image_from_params" in body
-    # Ban bare first-image selection in this method
+    assert "_resolve_image_from_params" in body or "_get_image" in body
+    # Ban bare first-image selection as the resolve path
     assert "images[0]" not in body
-    assert "Gimp.get_images()" not in body
+    # Gimp.get_images() may be used only to derive open-list index after handle resolve
 
 
 def test_bitmap_method_uses_snapshot_temp_helpers() -> None:

@@ -335,6 +335,28 @@ def test_plugin_handle_resolve_for_hl_mutators() -> None:
         assert "_resolve_image_from_params" in body, f"{snippet} missing handle resolve"
 
 
+def test_checkpoint_restore_close_prior_handle_fail_closed() -> None:
+    """Explicit prior handle must not be swallowed on HandleError (Codex P1-1)."""
+    text = open("gimp-mcp-plugin.py", encoding="utf-8").read()
+    start = text.index("def _checkpoint_restore")
+    body = text[start : start + 4500]
+    # Must return handle error response, not silent prior = None
+    assert "return self._handle_error_response(e)" in body
+    assert "except _handles.HandleError as e:" in body
+    # The silent swallow pattern must not remain for prior_handle
+    assert "except _handles.HandleError:\n                            prior = None" not in body
+
+
+def test_get_image_bitmap_derives_image_index_from_handle() -> None:
+    """Composite mapping must not hardcode image_index=0 after handle resolve."""
+    text = open("gimp-mcp-plugin.py", encoding="utf-8").read()
+    start = text.index("def _get_current_image_bitmap")
+    body = text[start : start + 2500]
+    assert "_resolve_image_from_params" in body
+    assert "images_open" in body or "Gimp.get_images()" in body
+    assert "enumerate" in body
+
+
 def test_save_xcf_forwards_handle_only(monkeypatch: pytest.MonkeyPatch) -> None:
     import gimp_mcp_server as srv
 

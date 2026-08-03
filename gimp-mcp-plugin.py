@@ -795,10 +795,16 @@ class MCPPlugin(Gimp.PlugIn):
                     v is not None for v in (origin_x, origin_y, region_width, region_height)
                 )
 
-            # Select image: handle preferred, else image_index (default 0)
+            # Select image: handle preferred, else image_index (default 0).
+            # Mapping metadata must report the resolved image's open-list index
+            # (not a stale default 0 when only handle was supplied).
             try:
-                original_image, _image_id = self._resolve_image_from_params(params)
-                image_index = int(params.get("image_index", 0))
+                original_image, image_id = self._resolve_image_from_params(params)
+                images_open = list(Gimp.get_images() or [])
+                image_index = next(
+                    (i for i, im in enumerate(images_open) if int(im.get_id()) == int(image_id)),
+                    int(params.get("image_index", 0)),
+                )
             except _handles.HandleError as e:
                 return self._handle_error_response(e)
             except RuntimeError as e:
@@ -6170,10 +6176,11 @@ class MCPPlugin(Gimp.PlugIn):
                 try:
                     prior = None
                     if prior_handle is not None:
+                        # Explicit prior handle must not silently no-op on STALE/FOREIGN
                         try:
                             prior, _pid = self._resolve_image_from_params({"handle": prior_handle})
-                        except _handles.HandleError:
-                            prior = None
+                        except _handles.HandleError as e:
+                            return self._handle_error_response(e)
                     elif prior_index is not None:
                         prior = self._get_image(int(prior_index))
                     if prior is not None and int(prior.get_id()) != new_id:
