@@ -281,10 +281,12 @@ def test_wiring_pyproject_lists_policy() -> None:
     assert "gimp_mcp_policy" in text
 
 
-def test_wiring_readme_eight_install_files() -> None:
+def test_wiring_readme_seven_install_files() -> None:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "gimp_mcp_policy.py" in text
-    assert "8 files" in text or "**8** files" in text or "8th" in text
+    # EXPECTED_PLUGIN_FILES = plugin + 6 shared modules (7 total)
+    assert "7 files" in text or "**7** files" in text
+    assert "8 files" not in text and "**8** files" not in text
 
 
 def test_wiring_plugin_imports_policy() -> None:

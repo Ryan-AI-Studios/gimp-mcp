@@ -127,8 +127,8 @@ Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, **`gimp_mcp_snapshot.
 **`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, **`gimp_mcp_coords.py`**, and
 **`gimp_mcp_policy.py`** to GIMP's plug-ins directory (same folder) and restart GIMP.
 The security, snapshot, export, handles, coords, and policy modules are stdlib-only and
-must sit next to the plugin (**8 files** total including the plugin).
-(`gimp_mcp_state.py` is host-side only.)
+must sit next to the plugin (**7 files** total: plugin + 6 shared modules).
+(`gimp_mcp_state.py` / `gimp_mcp_surface.py` are host-side only.)
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
 > (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
@@ -169,7 +169,7 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_coords.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_policy.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **seven** shared modules listed above (8 files total) and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **six** shared modules listed above (7 files total) and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
@@ -183,6 +183,41 @@ Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on 
 
 **Start order:** GIMP plugin first (token available) → then MCP client / `gimp_mcp_server.py`
 (lazy token load with retry).
+
+### 3b. Product CLI (`gimp-agent`)
+
+The package ships a deterministic host CLI for agents and operators (stdlib
+`argparse` — no extra deps). Install entrypoint via `uv sync`, then:
+
+```bash
+uv run gimp-agent doctor          # GIMP binary + plug-in files + TCP + workspace
+uv run gimp-agent doctor --strict --json   # CI-friendly: fail on required checks
+uv run gimp-agent probe --json    # authenticated get_gimp_info round-trip
+uv run gimp-agent version --json  # agent + discovered GIMP versions
+uv run gimp-agent codes --json    # CODE_* → exit 0–12 map (+ reverse)
+```
+
+JSON envelopes use `{ok, exit_code, code, message, data}`. Prefer `--json`, or set
+`GIMP_AGENT_JSON=1`. Exit codes bind product `CODE_*` (and CLI-local
+`CLI_USAGE` / `GIMP_NOT_FOUND` / `PLUGIN_NOT_FOUND`) to process exits **0–12** —
+see [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md).
+
+**Doctor non-strict vs `--strict`:** default `doctor` is diagnostics-only — required
+check failures still yield process exit **0** and envelope `exit_code: 0` with
+`ok: false` and a failure `code` (plus full `data.checks`). Agents must inspect
+the `ok` field (or `data.checks`), not only the process exit. Use
+`doctor --strict` (often with `--json`) for CI/gating so the first required
+failure maps to a non-zero process exit.
+
+**Probe timeouts:** socket/read `TimeoutError` maps to product `TIMEOUT` → process
+exit **9** (not transport exit 4). Connection refuse / auth failures remain exit **4**.
+
+**Parent workspace shims vs product CLI:** repos that nest this package under a
+parent workspace (e.g. `C:\dev\GIMP\bin\gimp.cmd` / `gimp-console.cmd`) may ship
+hardcoded `Program Files\GIMP 3\bin\…` wrappers for local operators. Those shims
+are **not** versioned with the `gimp-mcp` package. Prefer
+`uv run gimp-agent` / the installed `gimp-agent` entrypoint for path discovery,
+doctor, and exit-code contracts.
 
 ### 4. Configure Your MCP Client
 
@@ -490,8 +525,8 @@ gimp_mcp_server.py          ← MCP tool definitions (+ gimp_mcp_state finalize)
       ▼
 gimp-mcp-plugin.py          ← Runs inside GIMP process (generation registry + orient dump)
   + gimp_mcp_handles.py     ← shared pure require_*/builders (host + plug-in install)
-  + gimp_mcp_coords.py      ← pure preview/layer math + EXIF op table (7th install file)
-  + gimp_mcp_policy.py      ← Source_Immutable + checkpoint paths/sidecar (8th install file)
+  + gimp_mcp_coords.py      ← pure preview/layer math + EXIF op table (shared install file)
+  + gimp_mcp_policy.py      ← Source_Immutable + checkpoint paths/sidecar (shared install file)
       │  PyGObject
       ▼
 GIMP 3.2 (gi.repository.Gimp)
@@ -525,7 +560,7 @@ Export prep always runs on a **duplicate** (user document unchanged). Alpha path
 `merge_visible_layers(CLIP_TO_IMAGE)` + GIMP 3 `file-*-export` only (no `file-*-save`).
 Install must include **`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**,
 **`gimp_mcp_coords.py`**, and **`gimp_mcp_policy.py`** next to the plugin
-(8 files total with security/snapshot/plugin).
+(7 files total with security/snapshot/plugin).
 
 For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).
 Do **not** confuse with `flatten_image`, which mutates the open document.

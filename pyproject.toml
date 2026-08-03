@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 gimp-mcp-server = "gimp_mcp_server:main"
+gimp-agent = "gimp_agent.cli:main"
 
 [tool.setuptools]
 py-modules = [
@@ -30,6 +31,7 @@ py-modules = [
     "gimp_mcp_policy",
     "gimp_mcp_surface",
 ]
+packages = ["gimp_agent"]
 
 [dependency-groups]
 dev = [
@@ -45,7 +47,7 @@ dev = [
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = [".", "tests"]
+src = [".", "gimp_agent", "tests"]
 # Full product Python surface is in scope. Governance / local agent dirs stay out.
 # .venv/.git/__pycache__ are covered by Ruff defaults; list governance dirs only.
 # Markdown: ruff format rewrites fenced code blocks; we do not format docs via ruff.
@@ -87,6 +89,7 @@ known-first-party = [
     "gimp_mcp_coords",
     "gimp_mcp_policy",
     "gimp_mcp_surface",
+    "gimp_agent",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -119,6 +122,7 @@ include = [
     "gimp_mcp_coords.py",
     "gimp_mcp_policy.py",
     "gimp_mcp_surface.py",
+    "gimp_agent",
     "tests",
 ]
 exclude = [
