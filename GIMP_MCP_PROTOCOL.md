@@ -48,7 +48,8 @@ See [SECURITY.md](SECURITY.md) for env vars, start order, and residuals.
 - `flatten=True` + `preserve_alpha=None` → opaque bake (`preserve_alpha` forced false) — safe for icons/sprites.
 - `flatten=True` + `preserve_alpha=True` → `POLICY_CONFLICT` error.
 - JPEG + `preserve_alpha=True` → `ALPHA_UNSUPPORTED_FORMAT`.
-- Preflight had alpha + `preserve_alpha` + verify + PNG without alpha → `ALPHA_LOST` (`left_on_disk=true`).
+- Preflight had alpha + `preserve_alpha` + verify + PNG without alpha → `ALPHA_LOST`
+  (verify-on-temp: `left_on_disk=false`, `final_intact=true`; final path never replaced).
 - Opaque source + default preserve_alpha → success with `alpha_verified="not_applicable"`.
 
 PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `file-tiff-export`.
@@ -102,7 +103,7 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 - **selected:** true only for the front display image (`Gimp.get_displays()[0]`); if no
   displays, all `selected: false` (never defaults index 0 to true)
 - **Layer kinds:** `raster` | `group` | `text` | `link` | `vector` (nested `children[]`)
-- **Capabilities:** honest matrix (composite snapshot true; atomic save/export false; …)
+- **Capabilities:** honest matrix (composite snapshot true; atomic save/export true; …)
 - **Transport:** agent-facing `stdio-proxy` (plugin TCP is internal)
 - **Contract file:** `schemas/state-manifest.v1.json`
 
@@ -143,7 +144,7 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 | `PARTIAL_MUTATION` | Mutation incomplete; **do not** blind-retry. Re-orient and inspect state (`state_may_have_changed: true`) |
 | `CONNECTION_FAILED` | TCP/socket/timeout to GIMP plugin — ensure plugin running, retry (`retryable: true`) |
 | `INTERNAL_ERROR` | Unexpected host/plugin failure; re-orient; check `GIMP_MCP_DEBUG` diagnostics |
-| `ALPHA_LOST` | Export lost alpha; check envelope `details.left_on_disk` / `png_color_type`; re-export with `preserve_alpha` / non-flatten |
+| `ALPHA_LOST` | Export lost alpha on **temp** (no final replace); `details.left_on_disk=false`, `final_intact=true`; check `png_color_type`; re-export with `preserve_alpha` / non-flatten |
 
 #### Structured error wire format (track 0011)
 

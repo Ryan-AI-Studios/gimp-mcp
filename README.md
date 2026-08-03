@@ -46,7 +46,7 @@ process and the LLM client session** (clients cache `list_tools`).
 | `render_visible_composite` | Visible composite PNG + mapping |
 | `normalize_image_orientation` | EXIF normalize |
 | `map_preview_to_image` | Preview → image coords |
-| `save_xcf` / `export_image` | Project save / typed export (**non-atomic** until 0013) |
+| `save_xcf` / `export_image` | Atomic XCF/export (temp→replace); collision `fail`\|`version`\|`replace` |
 | `verify_alpha_channel` | Alpha preflight |
 | `create_selection` | Unified selection (rect/ellipse/by_color/all/none) |
 

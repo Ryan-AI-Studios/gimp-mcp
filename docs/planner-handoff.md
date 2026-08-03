@@ -292,7 +292,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0013-AtomicSaveExport** — Proposed (needs full plan); prior **0012 Completed** PR #16 / main@691aaa9 |
+| Active focus | **0013-AtomicSaveExport** — implementing (atomic save/export); prior **0012 Completed** PR #16 / main@691aaa9 |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
@@ -367,9 +367,9 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Handle-first:** ensure/checkpoint/save/export/verify/close/render; plugin `_resolve_image_from_params`; fail-closed explicit `layer_id` / prior handle.
 - **Host-only** `gimp_mcp_surface.py` (catalog, mode, validation) — not a 9th plug-in file.
 - **Capability:** `high_level_mcp_surface: true`. Pins: `mcp>=1.10,<2`, `fastmcp>=2.10,<3`.
-- **Honesty:** save/export non-atomic until **0013**; no HL undo until **0017** (checkpoint_restore / advanced).
+- **Honesty:** save/export atomic as of **0013**; no HL undo until **0017** (checkpoint_restore / advanced).
 - **Codex final:** **PASS**. Live GIMP matrix waived offline (operator checklist in track review/spec).
-- **Next:** **0011 Completed** — then **0012** CLI sidecar.
+- **Next:** **0011–0013 Completed** (see later notes).
 
 ### 0011 completion notes (planners / implementers)
 
@@ -384,19 +384,29 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Capability:** `structured_errors: true`. Pins hold (mcp/fastmcp no major).
 - **Codex final:** **PASS WITH DEFERRED P3** (bare Exception residuals + plugin TCP body without rid).
 - **Residuals:** CLI exit map → **0012 Completed**; `rollback_available` true → **0017**; InputRequiredResult/traceparent → post major.
-- **Next:** **0012 Completed** — then **0013** AtomicSaveExport (placeholder plan).
+- **Next:** **0012–0013 Completed** (see later notes).
 
 ### 0012 completion notes (planners / implementers)
 
 - **Completed (PR #16 / main@691aaa9):** host package `gimp_agent/` + **`gimp-agent`** entrypoint (argparse; no click/typer).
 - **Commands:** `doctor [--strict]`, `probe [--timeout]`, `version`, `codes` + `--json` (flag before/after subcommand; flag > `GIMP_AGENT_JSON`).
-- **Exit map:** 0 success; **1** generic; **2** CLI_USAGE (help→0); 3 GIMP/plugin missing; 4 AUTH/CONNECTION; 5 handles; 6 policy/path; 7 internal/unmapped; 8 ALPHA_LOST; 9 TIMEOUT; 10 PARTIAL; 11 reserved; 12 UNSUPPORTED. Reverse map via `codes`.
+- **Exit map:** 0 success; **1** generic; **2** CLI_USAGE (help→0); 3 GIMP/plugin missing; 4 AUTH/CONNECTION; 5 handles; 6 policy/path; 7 internal/unmapped; 8 ALPHA_LOST / VERIFY_FAILED; 9 TIMEOUT; 10 PARTIAL; **11 OUTPUT_COLLISION** (0013); 12 UNSUPPORTED. Reverse map via `codes`.
 - **doctor:** ordered checks; first required fail under `--strict`; TCP = **connect-only**; EXPECTED_PLUGIN_FILES = 8 (plugin+7 shared, includes `gimp_mcp_atomic.py`); workspace **info**; exiftool `which`; `batch_interpreter: false`.
 - **probe:** token + JSON `auth` + `get_gimp_info`; require `status=="success"`; no `gimp_mcp_server` import.
 - **Packaging:** `packages = ["gimp_agent"]` explicit + py-modules; ruff/basedpyright include.
 - **Codex final:** **PASS** (after P1/P2 fixes: global `--json`, probe success, version rc, env JSON, NaN JSON).
-- **Residuals:** live probe matrix (ops); incomplete APPDATA install → **0018**; batch/recipes/atomic → **0019/0015/0013**.
-- **Next:** **0013** AtomicSaveExport (placeholder — needs full plan).
+- **Residuals:** live probe matrix (ops); incomplete APPDATA install → **0018**; batch/recipes → **0019/0015**; atomic verbs → **0013 Completed**.
+- **Next:** **0013** AtomicSaveExport.
+
+### 0013 completion notes (planners / implementers) — in progress on branch
+
+- **Ship:** pure `gimp_mcp_atomic.py` (collision fail|version|replace; same-dir temp preserving suffix; namespaced backup); dual-ship (EXPECTED 8 + pyproject).
+- **Plugin:** atomic `_save_xcf` / `_export_to_path` (verify-on-temp-before-replace); flat save manifest; ALPHA_LOST `left_on_disk=false` + `final_intact=true`.
+- **Internal derivatives** (batch/icon/web/sprite/social) pass `collision=replace`; public default `fail`.
+- **Codes:** `OUTPUT_COLLISION`→exit **11**; `VERIFY_FAILED`→**8**. Capabilities `atomic_xcf_save` / `atomic_export` **true**.
+- **CLI:** `gimp-agent save-xcf` / `export` over session TCP.
+- **Residuals:** live GIMP matrix (ops); backup-after-failed-replace honesty; full pixel → **0014**; installer → **0018**.
+- **Next:** after PR merge — mark conductor Completed; **0014** PixelVerificationProtocol.
 
 ---
 
@@ -404,6 +414,7 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-03 | **0013** AtomicSaveExport implementation on feature branch (atomic save/export, collision, CLI verbs, ship set 8) |
 | 2026-08-03 | **0012 Completed:** gimp-agent doctor/probe/exit map; PR #16 / main@691aaa9; Codex PASS; next=0013 |
 | 2026-08-03 | Full plan **0012** DeterministicCliSidecar: gimp-agent doctor/probe/exit map; Ready — not started |
 | 2026-08-03 | Folded AI-review into **0012**: path names; JSON auth probe; packages explicit; strict first-fail; full ship files; exit 1/help 0 |
