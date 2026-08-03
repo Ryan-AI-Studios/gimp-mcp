@@ -147,6 +147,29 @@ def test_format_message_with_spaces() -> None:
     assert "workspace root" in parsed["error"]["message"]
 
 
+def test_format_parse_message_containing_pipe_delimiter() -> None:
+    """Message with ' | ' must still round-trip (Codex P1: rfind alone is wrong)."""
+    rid = sec.new_request_id()
+    msg = "partial write | left_on_disk | retry with confirm"
+    env = sec.build_error_envelope(
+        sec.CODE_PARTIAL_MUTATION,
+        msg,
+        request_id=rid,
+        details={"note": "a | b"},
+    )
+    text = sec.format_tool_error_text(env)
+    assert "\n" not in text
+    # Message appears both in the header and inside JSON — multiple " | " spans
+    assert text.count(" | ") >= 2
+    parsed = sec.parse_tool_error_text(text)
+    assert parsed is not None
+    assert parsed["ok"] is False
+    assert parsed["error"]["code"] == sec.CODE_PARTIAL_MUTATION
+    assert parsed["error"]["request_id"] == rid
+    assert parsed["error"]["message"] == msg
+    assert parsed["error"]["details"] == {"note": "a | b"}
+
+
 def test_parse_tool_error_text_malformed() -> None:
     assert sec.parse_tool_error_text("") is None
     assert sec.parse_tool_error_text("just a string") is None

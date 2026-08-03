@@ -259,25 +259,42 @@ def format_tool_error_text(envelope: dict[str, Any]) -> str:
 
 
 def parse_tool_error_text(text: str) -> dict[str, Any] | None:
-    """Parse single-line ToolError text → envelope dict, or None if malformed."""
+    """Parse single-line ToolError text → envelope dict, or None if malformed.
+
+    The wire format is ``{CODE}: {message} (request_id=…) | {json}``. Both the
+    human message and the JSON body may contain ``" | "`` (the message is
+    duplicated in the JSON ``error.message`` field). A single ``rfind(" | ")``
+    therefore selects the wrong split when the message contains that sequence.
+
+    Strategy: try every ``" | "`` candidate from the right until the right-hand
+    side parses as a valid envelope (``ok is False`` + ``error`` object).
+    """
     if not text or not isinstance(text, str):
         return None
-    # Prefer the last " | " split so message text can contain " | "
     marker = " | "
-    idx = text.rfind(marker)
-    if idx < 0:
+    starts: list[int] = []
+    pos = 0
+    while True:
+        idx = text.find(marker, pos)
+        if idx < 0:
+            break
+        starts.append(idx)
+        pos = idx + 1
+    if not starts:
         return None
-    json_part = text[idx + len(marker) :].strip()
-    try:
-        data = json.loads(json_part)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return None
-    if not isinstance(data, dict) or data.get("ok") is not False:
-        return None
-    err = data.get("error")
-    if not isinstance(err, dict):
-        return None
-    return data
+    for idx in reversed(starts):
+        json_part = text[idx + len(marker) :].strip()
+        try:
+            data = json.loads(json_part)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("ok") is not False:
+            continue
+        err = data.get("error")
+        if not isinstance(err, dict):
+            continue
+        return data
+    return None
 
 
 # ---------------------------------------------------------------------------
