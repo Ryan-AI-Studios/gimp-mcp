@@ -202,6 +202,16 @@ JSON envelopes use `{ok, exit_code, code, message, data}`. Prefer `--json`, or s
 `CLI_USAGE` / `GIMP_NOT_FOUND` / `PLUGIN_NOT_FOUND`) to process exits **0–12** —
 see [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md).
 
+**Doctor non-strict vs `--strict`:** default `doctor` is diagnostics-only — required
+check failures still yield process exit **0** and envelope `exit_code: 0` with
+`ok: false` and a failure `code` (plus full `data.checks`). Agents must inspect
+the `ok` field (or `data.checks`), not only the process exit. Use
+`doctor --strict` (often with `--json`) for CI/gating so the first required
+failure maps to a non-zero process exit.
+
+**Probe timeouts:** socket/read `TimeoutError` maps to product `TIMEOUT` → process
+exit **9** (not transport exit 4). Connection refuse / auth failures remain exit **4**.
+
 **Parent workspace shims vs product CLI:** repos that nest this package under a
 parent workspace (e.g. `C:\dev\GIMP\bin\gimp.cmd` / `gimp-console.cmd`) may ship
 hardcoded `Program Files\GIMP 3\bin\…` wrappers for local operators. Those shims

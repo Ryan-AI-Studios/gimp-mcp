@@ -57,12 +57,9 @@ def emit(
     text = "\n".join(lines)
     if text and not text.endswith("\n"):
         text += "\n"
-    stream = sys.stdout if envelope.get("ok") else sys.stderr
-    # Prefer stdout for mixed human status so pipes still see results;
-    # failures still print to stdout for agent capture of the summary line.
+    # Always write human mode to stdout so agent pipes capture the summary
+    # (including failures). Process exit code remains the failure signal.
     sys.stdout.write(text if text else "")
-    if not envelope.get("ok") and stream is sys.stderr:
-        pass  # reserved for future stderr split; keep single-stream for agents
 
 
 def _default_human(envelope: dict[str, Any]) -> list[str]:

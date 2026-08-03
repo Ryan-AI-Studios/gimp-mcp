@@ -193,6 +193,15 @@ CLI-local codes (not raised by the TCP plugin): `CLI_USAGE`, `GIMP_NOT_FOUND`,
 
 Commands: `doctor [--strict]`, `probe [--timeout]`, `version`, `codes`.
 
+**Doctor (non-strict):** default `doctor` is diagnostics-only. When a **required**
+check fails without `--strict`, process exit stays **0** and the envelope keeps
+`exit_code: 0` with `ok: false`, a failure `code`, and full `data.checks`. Agents
+must read `ok` (or checks), not only process exit / `exit_code`. Use
+`doctor --strict` for CI/gating (first required failure → non-zero process exit).
+
+**Probe timeout:** socket/read `TimeoutError` → `TIMEOUT` → exit **9** (CODE map).
+Transport refuse / auth remain exit **4** (`CONNECTION_FAILED` / `AUTH_FAILED`).
+
 #### Layer policy + checkpoints (track 0009)
 
 **Agent intake order (recommended):**

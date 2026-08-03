@@ -204,6 +204,77 @@ def test_doctor_missing_security_strict_exit_3(
     assert report.envelope_data()["batch_interpreter"] is False
 
 
+def _patch_doctor_incomplete_plugin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Shared fixtures: incomplete plugin install + quiet network/token."""
+    gimp_base = tmp_path / "GIMP"
+    plugin_dir = gimp_base / "3.2" / "plug-ins" / "gimp-mcp-plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "gimp-mcp-plugin.py").write_text("# only plugin\n", encoding="utf-8")
+
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    fake_console = tmp_path / "gimp-console-3.2.exe"
+    fake_console.write_bytes(b"")
+
+    monkeypatch.setattr(pathmod, "find_gimp_console", lambda: fake_console)
+    monkeypatch.setattr(
+        pathmod,
+        "run_console_version",
+        lambda console, *, timeout=15.0: ("GIMP 3.2.4", None),
+    )
+    monkeypatch.setattr(pathmod, "find_gimp_gui", lambda: None)
+    monkeypatch.setattr(pathmod, "gimp_config_base", lambda: gimp_base)
+    monkeypatch.setattr(pathmod, "find_plugin_dir", lambda base=None: plugin_dir)
+
+    monkeypatch.delenv(sec.ENV_TOKEN, raising=False)
+    monkeypatch.setattr(sec, "read_token_file", lambda path=None: None)
+    monkeypatch.setattr(sec, "default_token_path", lambda: tmp_path / "session.token")
+    monkeypatch.setattr(sec, "workspace_root", lambda: None)
+    monkeypatch.setattr(sec, "get_port", lambda: 9877)
+    monkeypatch.setattr(
+        "gimp_agent.doctor._tcp_connect_only",
+        lambda host, port, timeout=2.0: (False, "refused"),
+    )
+    return plugin_dir
+
+
+def test_doctor_nonstrict_required_fail_exit_0(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-strict doctor: required failure → process/envelope exit 0, ok=False."""
+    _patch_doctor_incomplete_plugin(tmp_path, monkeypatch)
+
+    report = run_doctor(strict=False)
+    assert report.ok is False
+    assert report.code == ec.PLUGIN_NOT_FOUND
+    assert report.exit_code == 0
+    assert report.exit_code == ec.EXIT_SUCCESS
+
+    # CLI main returns the same process exit (0) with ok=false envelope
+    code = main(["doctor", "--json"])
+    assert code == 0
+
+
+def test_doctor_nonstrict_cli_envelope_ok_false(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """JSON envelope from non-strict doctor reports ok=false with exit_code 0."""
+    _patch_doctor_incomplete_plugin(tmp_path, monkeypatch)
+
+    code = main(["doctor", "--json"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False
+    assert body["exit_code"] == 0
+    assert body["code"] == ec.PLUGIN_NOT_FOUND
+    assert isinstance(body["data"].get("checks"), list)
+
+
 # ---------------------------------------------------------------------------
 # probe (mocked socket)
 # ---------------------------------------------------------------------------
@@ -237,6 +308,24 @@ def test_probe_connection_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     assert report.ok is False
     assert report.code == sec.CODE_CONNECTION_FAILED
     assert report.exit_code == 4
+
+
+def test_probe_timeout_is_9(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Socket/read TimeoutError → TIMEOUT code → exit 9 (not transport 4)."""
+    monkeypatch.setattr(probe_mod, "load_probe_token", lambda: "tok")
+    monkeypatch.setattr(probe_mod, "_resolve_host", lambda: "127.0.0.1")
+    monkeypatch.setattr(sec, "get_port", lambda: 9877)
+
+    def _timeout(**kwargs: Any) -> dict[str, Any]:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(probe_mod, "send_get_gimp_info", _timeout)
+    report = probe_mod.run_probe(timeout=0.5)
+    assert report.ok is False
+    assert report.code == sec.CODE_TIMEOUT
+    assert report.exit_code == ec.exit_code_for(sec.CODE_TIMEOUT)
+    assert report.exit_code == 9
+    assert report.exit_code != 4
 
 
 def test_probe_success_extracts_version(monkeypatch: pytest.MonkeyPatch) -> None:
