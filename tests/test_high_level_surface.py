@@ -147,9 +147,8 @@ def test_module_mcp_is_real_fastmcp() -> None:
     import gimp_mcp_server as srv
 
     assert isinstance(srv.mcp, RealFastMCP)
-    # H1: no FuncMetadata monkeypatch module residue required
-    assert not hasattr(srv, "_convert_result_passthrough") or True
-    # Shim import must be gone
+    # H1: FuncMetadata monkeypatch and shim import must be gone
+    assert not hasattr(srv, "_convert_result_passthrough")
     src = open(srv.__file__, encoding="utf-8").read()
     assert "mcp.server.fastmcp" not in src
     assert "FuncMetadata" not in src
@@ -307,9 +306,56 @@ def test_ensure_and_checkpoint_accept_handle_signature() -> None:
 
     import gimp_mcp_server as srv
 
-    for name in ("ensure_source_immutable", "checkpoint_create", "checkpoint_restore"):
+    for name in (
+        "ensure_source_immutable",
+        "checkpoint_create",
+        "checkpoint_restore",
+        "save_xcf",
+        "export_image",
+        "verify_alpha_channel",
+        "close_image",
+        "render_visible_composite",
+    ):
         sig = inspect.signature(_tool_fn(getattr(srv, name)))
         assert "handle" in sig.parameters, f"{name} missing handle param"
+
+
+def test_plugin_handle_resolve_for_hl_mutators() -> None:
+    """Plugin must resolve handle for save/export/verify/close (P1-1)."""
+    text = open("gimp-mcp-plugin.py", encoding="utf-8").read()
+    for snippet in (
+        "def _save_xcf",
+        "def _export_image",
+        "def _verify_alpha_channel",
+        "def _close_image",
+    ):
+        assert snippet in text, f"missing {snippet}"
+        start = text.index(snippet)
+        body = text[start : start + 1200]
+        assert "_resolve_image_from_params" in body, f"{snippet} missing handle resolve"
+
+
+def test_save_xcf_forwards_handle_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    captured: list[dict[str, Any]] = []
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            captured.append({"cmd": cmd, "params": params or {}})
+            return {"status": "success", "results": {"status": "success", "file_path": "x.xcf"}}
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    monkeypatch.setattr(srv, "_jail_path_or_raise", lambda p, label="path": p)
+
+    handle = {"image_id": 9, "generation": 1, "session_epoch": 1}
+    _tool_fn(srv.save_xcf)(_Ctx(), file_path="out.xcf", handle=handle)  # type: ignore[arg-type]
+    assert captured and captured[0]["cmd"] == "save_xcf"
+    assert captured[0]["params"].get("handle") == handle
+    assert "image_index" not in captured[0]["params"]
 
 
 def test_capability_high_level_surface() -> None:

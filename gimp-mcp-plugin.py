@@ -4068,13 +4068,15 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             from gi.repository import Gio
 
-            image_index = int(params.get("image_index", 0))
             file_path = params.get("file_path", "")
             safe, err = self._jail_path(file_path)
             if err is not None:
                 return err
             file_path = str(safe)
-            image = self._get_image(image_index)
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             gio_file = Gio.File.new_for_path(file_path)
             pdb = Gimp.get_pdb()
             proc = pdb.lookup_procedure("gimp-xcf-save")
@@ -4092,7 +4094,6 @@ class MCPPlugin(Gimp.PlugIn):
     def _export_image(self, params):
         """Export image to raster format (alpha-preserving defaults for PNG/WEBP/TIFF)."""
         try:
-            image_index = int(params.get("image_index", 0))
             file_path = params.get("file_path", "")
             safe, err = self._jail_path(file_path)
             if err is not None:
@@ -4104,7 +4105,10 @@ class MCPPlugin(Gimp.PlugIn):
             flatten = _exp.coerce_bool(params.get("flatten", False), default=False)
             preserve_alpha = _exp.coerce_optional_bool(params.get("preserve_alpha", None))
             verify = _exp.coerce_bool(params.get("verify", True), default=True)
-            image = self._get_image(image_index)
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             result = self._export_to_path(
                 image,
                 file_path,
@@ -4218,8 +4222,10 @@ class MCPPlugin(Gimp.PlugIn):
     def _verify_alpha_channel(self, params):
         """Read-only preflight: image-level alpha + format capability matrix."""
         try:
-            image_index = int(params.get("image_index", 0))
-            image = self._get_image(image_index)
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             layers_with_alpha = []
             try:
                 layers = list(image.get_layers() or [])
@@ -5019,14 +5025,10 @@ class MCPPlugin(Gimp.PlugIn):
                 image, _iid = self._resolve_image_from_params(params)
             except _handles.HandleError as e:
                 return self._handle_error_response(e)
-            # Prefer layer_id when provided (create_selection layer_handle path)
+            # Prefer layer_id when provided (create_selection layer_handle path).
+            # Explicit layer_id must not silently fall back to the active layer.
             if layer_id is not None and layer_name is None:
-                try:
-                    drawable = Gimp.Layer.get_by_id(int(layer_id))
-                    if drawable is None:
-                        drawable = self._resolve_layer(image, None, None)
-                except Exception:
-                    drawable = self._resolve_layer(image, None, None)
+                drawable = self._resolve_layer(image, None, None, layer_id=int(layer_id))
             else:
                 drawable = self._resolve_layer(image, layer_name, None)
             op = self._channel_ops_from_string(operation)
@@ -7695,9 +7697,11 @@ class MCPPlugin(Gimp.PlugIn):
         try:
             from gi.repository import Gio
 
-            image_index = int(params.get("image_index", 0))
             save_first = bool(params.get("save_first", False))
-            image = self._get_image(image_index)
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             if save_first:
                 img_file = image.get_file()
                 if img_file and img_file.get_path():
