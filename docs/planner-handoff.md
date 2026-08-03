@@ -98,14 +98,17 @@ minting. Track IDs are creation order, not execution order.
   → 0006 StateManifestOrientation — Completed
   → 0007 StableHandleRegistry — Completed
   → 0008 CoordinateModelAndExif — Completed
-  → 0009 LayerPolicyAndCheckpoints … through 0028 Final product polish (v1)
+  → 0009 LayerPolicyAndCheckpoints — Completed
+  → 0010 HighLevelMcpSurface — Completed
+  → 0011 StructuredErrorsAndAudit … through 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. **0001–0008 Completed.** Orientation SoT is
+recipes → packaging → golden path → v1 polish. **0001–0010 Completed.** Orientation SoT is
 `orient_workspace` (state-manifest v1). Stable handles + STALE_HANDLE + `select_*` in **0007**.
 Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF normalize + coordinate math in **0008**.
-Source_Immutable + checkpoints → **0009 Ready**. Authoritative table: `conductor/conductor.md`.
+Source_Immutable + checkpoints in **0009**. Default high-level MCP surface (~18 tools) in **0010**.
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -200,7 +203,8 @@ Known upstream defects (must remain visible until fixed by tracks):
 | Orientation | Agents need schema-versioned workspace model before edit | **0006** (Completed: `orient_workspace` state-manifest v1) |
 | Handles | Track by handle not name; STALE after structural mutation | **0007** (Completed: gen registry, select_*, STALE_HANDLE) |
 | Coords / EXIF | Preview map + normalize | **0008** (Completed) |
-| Source integrity | Source_Immutable + checkpoints + destructive confirm | **0009** (Ready plan) |
+| Source integrity | Source_Immutable + checkpoints + destructive confirm | **0009** (Completed) |
+| Default MCP surface | ~18 HL tools; advanced env for full set | **0010** (Completed) |
 | Trust boundary | TCP auth + loopback + exec gated + path jail (0003 defaults) | 0003 |
 | Tests | Exception-only “pass” without pixel truth | 0014 / 0022 |
 
@@ -212,7 +216,8 @@ Hard rules for product work:
 - Never trust `status: success` alone — require composite/alpha/objective checks when vision matters.
 - Track layers by **stable handles**, not names (`orient_workspace` + `select_*`; re-orient or use mutator gen after structural ops; STALE_HANDLE on stale gen).
 - Spatial edits: use snapshot **mapping** + **0008** coordinate helpers; normalize EXIF before phase-sensitive work.
-- **Source integrity (0009 plan):** `ensure_source_immutable` before first mutation; `checkpoint_create`; flatten/live-merge need `confirm_destructive`; restore → re-orient.
+- **Source integrity (0009):** `ensure_source_immutable` before first mutation; `checkpoint_create`; flatten/live-merge need `confirm_destructive`; restore → re-orient.
+- **Default MCP surface (0010):** ~18 high-level tools via real FastMCP `include_tags={"hl"}`; design names (`session_probe`, `render_visible_composite`, `create_selection`); full ~90 tools only with `GIMP_MCP_ADVANCED_TOOLS=1` (restart MCP **and** LLM client). Prefer HL tools; do not major-bump mcp/fastmcp for 3.x visibility API.
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
@@ -280,9 +285,9 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0010-HighLevelMcpSurface** — Proposed (needs full plan); prior **0009 Completed** PR #10 / main@25e93ba |
+| Active focus | **0011-StructuredErrorsAndAudit** — Proposed (needs full plan); prior **0010 Completed** PR #12 / main@ee606bc |
 | Track count | 0001–0028 (see conductor.md) |
-| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock); jsonschema 4.24.0 transitive via mcp (not prod dep). PyPI has mcp 2.x / fastmcp 3.4+ — **do not major-bump** casually. No Pillow. |
+| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
 ### 0005 completion notes (planners)
 
@@ -343,7 +348,21 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Codes:** POLICY_DENIED, CONFIRM_REQUIRED, CHECKPOINT_*.
 - **Codex final:** **PASS WITH DEFERRED P3** (live matrix waived).
 - **Residuals:** live matrix (ops); atomic XCF **0013**; tattoo rebind later; auto-ensure on open later.
-- **Next:** **0010-HighLevelMcpSurface** (placeholder — needs full plan).
+- **Next:** **0010 Ready** — high-level MCP surface (implement when asked).
+
+### 0010 completion notes (planners / implementers)
+
+- **Completed (PR #12 / main@ee606bc):** default **~18** high-level MCP tools via **real** FastMCP 2.10 `include_tags={"hl"}` (not mcp shim; not FastMCP 3 `enable`).
+- **H1 migration:** `from fastmcp import Context, FastMCP` + `instructions=`; drop FuncMetadata ToolResult monkeypatch; keep content `Annotations` + `ToolAnnotations`.
+- **Factory:** `create_mcp_server(advanced_mode=…)`; module `mcp = create_mcp_server()`.
+- **Advanced:** `GIMP_MCP_ADVANCED_TOOLS=1` (truthy = sec `_env_truthy`) → `include_tags=None` (~94 tools). Restart **MCP process and LLM client**.
+- **Design tools:** `session_probe`, `render_visible_composite` (shared composite path), `create_selection` (strict validate + feather; invert/modify stay advanced).
+- **Handle-first:** ensure/checkpoint/save/export/verify/close/render; plugin `_resolve_image_from_params`; fail-closed explicit `layer_id` / prior handle.
+- **Host-only** `gimp_mcp_surface.py` (catalog, mode, validation) — not a 9th plug-in file.
+- **Capability:** `high_level_mcp_surface: true`. Pins: `mcp>=1.10,<2`, `fastmcp>=2.10,<3`.
+- **Honesty:** save/export non-atomic until **0013**; no HL undo until **0017** (checkpoint_restore / advanced).
+- **Codex final:** **PASS**. Live GIMP matrix waived offline (operator checklist in track review/spec).
+- **Next:** **0011-StructuredErrorsAndAudit** (placeholder — needs full plan).
 
 ---
 
