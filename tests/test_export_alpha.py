@@ -746,6 +746,14 @@ def test_save_xcf_atomic_flat_results() -> None:
     assert "policy.preserve_alpha" in export_body
 
 
+def test_export_image_flat_results_no_nested_status() -> None:
+    """0013 DoD-4: public export_image strips helper status from results."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_export_image")
+    assert 'k != "status"' in body
+    assert '"results": flat' in body or "'results': flat" in body
+
+
 def test_export_drawable_fail_closed_when_preserve_alpha() -> None:
     """IR1-04: alpha-preserving export must not run without drawable set."""
     text = PLUGIN.read_text(encoding="utf-8")

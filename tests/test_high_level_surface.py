@@ -466,7 +466,6 @@ def test_export_image_forwards_collision(monkeypatch: pytest.MonkeyPatch) -> Non
             return {
                 "status": "success",
                 "results": {
-                    "status": "success",
                     "file_path": "out.png",
                     "format": "png",
                     "file_size_bytes": 10,

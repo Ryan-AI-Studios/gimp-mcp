@@ -535,7 +535,6 @@ def test_cli_export_happy_path(
         return {
             "status": "success",
             "results": {
-                "status": "success",
                 "file_path": params["file_path"],
                 "format": "png",
                 "file_size_bytes": 99,

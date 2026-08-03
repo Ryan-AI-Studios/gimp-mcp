@@ -4360,9 +4360,12 @@ class MCPPlugin(Gimp.PlugIn):
             if result.get("status") == "error":
                 # Preserve structured export errors (ALPHA_LOST, POLICY_CONFLICT, …)
                 return result
+            # Flat agent-facing results: drop helper ``status`` so envelope owns it
+            # (DoD-4 / 0013 — same honesty as save_xcf, no nested results.status).
+            flat = {k: v for k, v in result.items() if k != "status"}
             return {
                 "status": "success",
-                "results": result,
+                "results": flat,
             }
         except _sec.SecurityError as e:
             return e.as_error()
