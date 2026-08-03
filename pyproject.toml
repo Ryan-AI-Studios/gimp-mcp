@@ -11,8 +11,8 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
-    "mcp",
-    "fastmcp",
+    "mcp>=1.10,<2",
+    "fastmcp>=2.10,<3",
 ]
 
 [project.scripts]
@@ -28,6 +28,7 @@ py-modules = [
     "gimp_mcp_handles",
     "gimp_mcp_coords",
     "gimp_mcp_policy",
+    "gimp_mcp_surface",
 ]
 
 [dependency-groups]
@@ -85,6 +86,7 @@ known-first-party = [
     "gimp_mcp_handles",
     "gimp_mcp_coords",
     "gimp_mcp_policy",
+    "gimp_mcp_surface",
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -116,6 +118,7 @@ include = [
     "gimp_mcp_handles.py",
     "gimp_mcp_coords.py",
     "gimp_mcp_policy.py",
+    "gimp_mcp_surface.py",
     "tests",
 ]
 exclude = [

@@ -55,9 +55,16 @@ PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `f
 
 ## Available MCP Tools
 
+> **Default surface (0010):** hosts list ~18 high-level tools unless
+> `GIMP_MCP_ADVANCED_TOOLS=1`. Prefer design names: `session_probe`,
+> `render_visible_composite` (alias of the composite path below), `create_selection`,
+> `orient_workspace`. Legacy names such as `get_image_bitmap` / `check_server` remain
+> available in **advanced** mode only.
+
 ### 1. Image Export Tools
 
-#### `get_image_bitmap(image_index=0, max_width=None, max_height=None, region=None)`
+#### `render_visible_composite` / `get_image_bitmap(image_index=0, max_width=None, max_height=None, region=None)`
+**Default (HL):** `render_visible_composite`. **Advanced alias:** `get_image_bitmap`.
 Returns the **visible composite** of a specified open image as PNG (MCP ImageContent)
 plus mapping metadata in MCP **`structuredContent`**.
 
