@@ -456,10 +456,14 @@ See **[SECURITY.md](SECURITY.md)** for the full threat model and residuals.
 | `GIMP_MCP_ALLOW_EXEC` | Plugin `cmds` + MCP `call_api` | **off** |
 | `GIMP_MCP_ALLOW_NON_LOOPBACK` | Allow non-loopback bind | **off** |
 | `GIMP_MCP_DEBUG` | Tracebacks / verbose diagnostics only | **off** |
-| `GIMP_MCP_AUDIT_LOG` | JSONL audit path | platform app data |
+| `GIMP_MCP_AUDIT_LOG` | Audit dir or `.jsonl` path → split `audit-server` / `audit-plugin` | platform app data |
 
 **Posture:** typed tools only; per-message auth; loopback `AF_INET`; workspace path confinement.
 `call_api` and plugin-internal arbitrary Python are **disabled by default**.
+
+**Structured errors (0011):** tool failures are MCP `isError` with a single-line envelope
+(`CODE: message (request_id=req_…) | {json}`). Capability `structured_errors: true`.
+See [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md) recovery table.
 
 ### Advanced: enabling exec (footgun)
 

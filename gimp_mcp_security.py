@@ -62,6 +62,13 @@ CODE_CONFIRM_REQUIRED = "CONFIRM_REQUIRED"
 CODE_CHECKPOINT_EXISTS = "CHECKPOINT_EXISTS"
 CODE_CHECKPOINT_NOT_FOUND = "CHECKPOINT_NOT_FOUND"
 CODE_CHECKPOINT_CORRUPTED = "CHECKPOINT_CORRUPTED"
+# Export alpha (track 0005) — also used in envelope matrix
+CODE_ALPHA_LOST = "ALPHA_LOST"
+# Structured errors envelope (track 0011)
+CODE_PARTIAL_MUTATION = "PARTIAL_MUTATION"
+CODE_CONNECTION_FAILED = "CONNECTION_FAILED"
+CODE_TIMEOUT = "TIMEOUT"  # reserved
+CODE_UNSUPPORTED = "UNSUPPORTED"  # reserved
 
 
 class SecurityError(Exception):
@@ -74,6 +81,220 @@ class SecurityError(Exception):
 
     def as_error(self) -> dict[str, Any]:
         return make_error(self.code, self.message)
+
+
+# ---------------------------------------------------------------------------
+# Error envelope v1 (track 0011)
+# ---------------------------------------------------------------------------
+
+
+class ErrorSpec(dict):
+    """Defaults for a code: retryable, approval_required, state_may_have_changed."""
+
+
+def _spec(
+    *,
+    retryable: bool = False,
+    approval_required: bool = False,
+    state_may_have_changed: bool = False,
+) -> ErrorSpec:
+    return ErrorSpec(
+        retryable=retryable,
+        approval_required=approval_required,
+        state_may_have_changed=state_may_have_changed,
+    )
+
+
+CODE_DEFAULTS: dict[str, ErrorSpec] = {
+    CODE_AUTH_FAILED: _spec(),
+    CODE_EXEC_DISABLED: _spec(),
+    CODE_PATH_DENIED: _spec(),
+    CODE_BIND_DENIED: _spec(),
+    CODE_INTERNAL: _spec(state_may_have_changed=True),
+    CODE_STALE_HANDLE: _spec(retryable=True),
+    CODE_FOREIGN_SESSION: _spec(),
+    CODE_INVALID_HANDLE: _spec(),
+    CODE_HANDLE_NOT_FOUND: _spec(),
+    CODE_SELECTION_CONFLICT: _spec(retryable=True),
+    CODE_METADATA_WRITE_FAILED: _spec(state_may_have_changed=True),
+    CODE_POLICY_DENIED: _spec(),
+    CODE_CONFIRM_REQUIRED: _spec(approval_required=True),
+    CODE_CHECKPOINT_EXISTS: _spec(),
+    CODE_CHECKPOINT_NOT_FOUND: _spec(),
+    CODE_CHECKPOINT_CORRUPTED: _spec(state_may_have_changed=True),
+    CODE_ALPHA_LOST: _spec(state_may_have_changed=True),
+    CODE_PARTIAL_MUTATION: _spec(state_may_have_changed=True),
+    CODE_CONNECTION_FAILED: _spec(retryable=True),
+    CODE_TIMEOUT: _spec(retryable=True, state_may_have_changed=True),
+    CODE_UNSUPPORTED: _spec(),
+}
+
+
+def new_request_id() -> str:
+    """Mint a product request id: ``req_`` + uuid4.hex (32 hex chars)."""
+    import uuid
+
+    return "req_" + uuid.uuid4().hex
+
+
+def _defaults_for(code: str) -> ErrorSpec:
+    return CODE_DEFAULTS.get(code) or _spec(state_may_have_changed=True)
+
+
+class GimpMcpError(Exception):
+    """Product exception carrying envelope fields (host-side raises)."""
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, Any] | None = None,
+        affected_handles: list[Any] | None = None,
+        retryable: bool | None = None,
+        approval_required: bool | None = None,
+        state_may_have_changed: bool | None = None,
+        rollback_available: bool = False,
+        transaction_id: str | None = None,
+    ) -> None:
+        self.code = code
+        self.message = message
+        self.details = details
+        self.affected_handles = list(affected_handles) if affected_handles else []
+        defaults = _defaults_for(code)
+        self.retryable = defaults["retryable"] if retryable is None else bool(retryable)
+        self.approval_required = (
+            defaults["approval_required"] if approval_required is None else bool(approval_required)
+        )
+        self.state_may_have_changed = (
+            defaults["state_may_have_changed"]
+            if state_may_have_changed is None
+            else bool(state_may_have_changed)
+        )
+        self.rollback_available = bool(rollback_available)
+        self.transaction_id = transaction_id
+        super().__init__(message)
+
+    def envelope(self, request_id: str | None = None) -> dict[str, Any]:
+        return build_error_envelope(
+            self.code,
+            self.message,
+            request_id=request_id or new_request_id(),
+            details=self.details,
+            affected_handles=self.affected_handles,
+            transaction_id=self.transaction_id,
+            retryable=self.retryable,
+            approval_required=self.approval_required,
+            state_may_have_changed=self.state_may_have_changed,
+            rollback_available=self.rollback_available,
+        )
+
+
+def build_error_envelope(
+    code: str,
+    message: str,
+    *,
+    request_id: str,
+    details: dict[str, Any] | None = None,
+    affected_handles: list[Any] | None = None,
+    transaction_id: str | None = None,
+    retryable: bool | None = None,
+    approval_required: bool | None = None,
+    state_may_have_changed: bool | None = None,
+    rollback_available: bool = False,
+    **_overrides: Any,
+) -> dict[str, Any]:
+    """Full product envelope: ``{ok: false, error: {...}}`` (v1).
+
+    ``rollback_available`` is always false until track 0017 (undo groups).
+    """
+    defaults = _defaults_for(code)
+    err: dict[str, Any] = {
+        "code": code,
+        "message": str(message),
+        "retryable": defaults["retryable"] if retryable is None else bool(retryable),
+        "approval_required": (
+            defaults["approval_required"] if approval_required is None else bool(approval_required)
+        ),
+        "request_id": request_id,
+        "transaction_id": transaction_id,
+        "state_may_have_changed": (
+            defaults["state_may_have_changed"]
+            if state_may_have_changed is None
+            else bool(state_may_have_changed)
+        ),
+        # v1: honest false until 0017
+        "rollback_available": False if rollback_available is False else bool(rollback_available),
+        "affected_handles": list(affected_handles) if affected_handles else [],
+        "details": details,
+    }
+    # Force v1 policy: never claim rollback without 0017
+    err["rollback_available"] = False
+    return {"ok": False, "error": err}
+
+
+def format_tool_error_text(envelope: dict[str, Any]) -> str:
+    """Single-line ToolError wire text (exactly one line).
+
+    Format::
+
+        {CODE}: {message} (request_id={req_…}) | {"ok":false,"error":{...}}
+
+    Newlines in message are sanitized to spaces. JSON uses compact separators.
+    """
+    err = envelope.get("error") if isinstance(envelope, dict) else None
+    if not isinstance(err, dict):
+        err = {}
+    code = str(err.get("code") or CODE_INTERNAL)
+    message = str(err.get("message") or "").replace("\n", " ").replace("\r", " ")
+    rid = str(err.get("request_id") or "")
+    # Ensure message in JSON body is also sanitized for single-line wire
+    wire_env = dict(envelope)
+    if isinstance(wire_env.get("error"), dict):
+        wire_err = dict(wire_env["error"])
+        wire_err["message"] = message
+        wire_env["error"] = wire_err
+    compact = json.dumps(wire_env, ensure_ascii=False, separators=(",", ":"), default=str)
+    return f"{code}: {message} (request_id={rid}) | {compact}"
+
+
+def parse_tool_error_text(text: str) -> dict[str, Any] | None:
+    """Parse single-line ToolError text → envelope dict, or None if malformed.
+
+    The wire format is ``{CODE}: {message} (request_id=…) | {json}``. Both the
+    human message and the JSON body may contain ``" | "`` (the message is
+    duplicated in the JSON ``error.message`` field). A single ``rfind(" | ")``
+    therefore selects the wrong split when the message contains that sequence.
+
+    Strategy: try every ``" | "`` candidate from the right until the right-hand
+    side parses as a valid envelope (``ok is False`` + ``error`` object).
+    """
+    if not text or not isinstance(text, str):
+        return None
+    marker = " | "
+    starts: list[int] = []
+    pos = 0
+    while True:
+        idx = text.find(marker, pos)
+        if idx < 0:
+            break
+        starts.append(idx)
+        pos = idx + 1
+    if not starts:
+        return None
+    for idx in reversed(starts):
+        json_part = text[idx + len(marker) :].strip()
+        try:
+            data = json.loads(json_part)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("ok") is not False:
+            continue
+        err = data.get("error")
+        if not isinstance(err, dict):
+            continue
+        return data
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -426,9 +647,42 @@ def check_path_under_root(
 # ---------------------------------------------------------------------------
 
 
-def make_error(code: str, message: str) -> dict[str, Any]:
-    """Structured error envelope shared by plugin and server."""
-    return {"status": "error", "error": message, "code": code}
+def make_error(
+    code: str,
+    message: str,
+    *,
+    request_id: str | None = None,
+    retryable: bool | None = None,
+    approval_required: bool | None = None,
+    state_may_have_changed: bool | None = None,
+    rollback_available: bool | None = None,
+    affected_handles: list[Any] | None = None,
+    details: dict[str, Any] | None = None,
+    transaction_id: str | None = None,
+) -> dict[str, Any]:
+    """TCP/plugin structured error dict (status/error/code + optional additive fields).
+
+    Base shape is unchanged when no optional kwargs are passed (back-compat).
+    Additive fields support request_id audit correlation and envelope matrix flags.
+    """
+    body: dict[str, Any] = {"status": "error", "error": message, "code": code}
+    if request_id is not None:
+        body["request_id"] = request_id
+    if retryable is not None:
+        body["retryable"] = bool(retryable)
+    if approval_required is not None:
+        body["approval_required"] = bool(approval_required)
+    if state_may_have_changed is not None:
+        body["state_may_have_changed"] = bool(state_may_have_changed)
+    if rollback_available is not None:
+        body["rollback_available"] = bool(rollback_available)
+    if affected_handles is not None:
+        body["affected_handles"] = list(affected_handles)
+    if details is not None:
+        body["details"] = details
+    if transaction_id is not None:
+        body["transaction_id"] = transaction_id
+    return body
 
 
 def redact_error(
@@ -473,27 +727,64 @@ def strip_traceback_unless_debug(response: Mapping[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Audit log
+# Audit log (split server / plugin files — track 0011)
 # ---------------------------------------------------------------------------
+#
+# Default: ``…/gimp-mcp/audit-server.jsonl`` and ``…/gimp-mcp/audit-plugin.jsonl``.
+#
+# ``GIMP_MCP_AUDIT_LOG`` override rules:
+# - If the value ends with ``.jsonl`` (file path), use that path's **directory**
+#   and write sibling names ``audit-server.jsonl`` / ``audit-plugin.jsonl``.
+# - Otherwise treat the value as a **directory** and place those filenames under it.
+#
+# Split files avoid Windows WinError 32 sharing violations when host and plugin
+# append concurrently. Join events by ``request_id``.
+# Never log tokens, auth secrets, or file bytes.
 
 
-def default_audit_log_path() -> Path:
-    override = os.environ.get(ENV_AUDIT_LOG)
-    if override and str(override).strip():
-        return Path(str(override).strip())
+def _default_audit_dir() -> Path:
+    """Platform default directory for audit JSONL files (no filename)."""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:
-            return Path(base) / "gimp-mcp" / "audit.jsonl"
-        return Path.home() / "AppData" / "Local" / "gimp-mcp" / "audit.jsonl"
+            return Path(base) / "gimp-mcp"
+        return Path.home() / "AppData" / "Local" / "gimp-mcp"
     xdg = os.environ.get("XDG_STATE_HOME") or os.environ.get("XDG_CONFIG_HOME")
     if xdg:
-        return Path(xdg) / "gimp-mcp" / "audit.jsonl"
-    return Path.home() / ".local" / "state" / "gimp-mcp" / "audit.jsonl"
+        return Path(xdg) / "gimp-mcp"
+    return Path.home() / ".local" / "state" / "gimp-mcp"
+
+
+def audit_dir() -> Path:
+    """Resolve audit directory from ``GIMP_MCP_AUDIT_LOG`` or platform default."""
+    override = os.environ.get(ENV_AUDIT_LOG)
+    if override and str(override).strip():
+        p = Path(str(override).strip())
+        # File path ending in .jsonl → sibling files in same directory
+        if p.suffix.lower() == ".jsonl" or str(p).lower().endswith(".jsonl"):
+            return p.parent if str(p.parent) not in ("", ".") else Path(".")
+        return p
+    return _default_audit_dir()
+
+
+def audit_server_path() -> Path:
+    """Host MCP tool audit log (mcp_tool_start / mcp_tool_end)."""
+    return audit_dir() / "audit-server.jsonl"
+
+
+def audit_plugin_path() -> Path:
+    """Plugin TCP command audit log (command / command_complete / auth / …)."""
+    return audit_dir() / "audit-plugin.jsonl"
+
+
+def default_audit_log_path() -> Path:
+    """Deprecated alias: plugin audit path (pre-0011 single-file default)."""
+    return audit_plugin_path()
 
 
 def audit_log_path() -> Path:
-    return default_audit_log_path()
+    """Back-compat alias for ``audit_plugin_path()`` (pre-0011 callers)."""
+    return audit_plugin_path()
 
 
 def write_audit_event(
@@ -503,8 +794,9 @@ def write_audit_event(
     """Append one JSONL audit record. Never log tokens or file contents.
 
     Audit log is diagnostics only — not a secret and not tamper-evident.
+    Prefer ``audit_server_path()`` / ``audit_plugin_path()`` over the default.
     """
-    dest = Path(path) if path is not None else audit_log_path()
+    dest = Path(path) if path is not None else audit_plugin_path()
     # Strip any accidental sensitive keys
     safe = {k: v for k, v in event.items() if k.lower() not in ("auth", "token", "secret")}
     if "timestamp" not in safe:

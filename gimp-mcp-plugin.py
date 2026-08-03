@@ -124,8 +124,11 @@ class MCPPlugin(Gimp.PlugIn):
         self.expected_token = token
         self.token_path = token_path
         self.workspace_root = _sec.workspace_root()
-        self.audit_path = _sec.audit_log_path()
+        # Split audit files (0011): plugin writes audit-plugin.jsonl only
+        self.audit_path = _sec.audit_plugin_path()
         self._last_peer = None
+        # Per-connection request_id from host (thread-local — no shared-self race)
+        self._request_ctx = threading.local()
 
         # Session identity for stable handles / state-manifest (tracks 0006/0007).
         # session_epoch is process-bound (stable for this process lifetime, not
@@ -401,26 +404,31 @@ class MCPPlugin(Gimp.PlugIn):
             request = str(buffer)
 
         # print(f"Parsed request: {request}")
-        response = self.execute_command(request, peer=peer)
-        print(f"response type: {type(response)}")
+        try:
+            response = self.execute_command(request, peer=peer)
+            print(f"response type: {type(response)}")
 
-        if isinstance(response, dict):
-            response = _sec.strip_traceback_unless_debug(response)
-            # Completion audit for typed tools (auth/path/exec already audited).
-            try:
-                status = response.get("status")
-                code = response.get("code")
-                self._audit(
-                    event="command_complete",
-                    success=(status == "success"),
-                    status=status,
-                    code=code,
-                )
-            except Exception:
-                pass
-            response_str = json.dumps(response)
-        else:
-            response_str = str(response)
+            if isinstance(response, dict):
+                response = _sec.strip_traceback_unless_debug(response)
+                # Completion audit for typed tools (auth/path/exec already audited).
+                # request_id still on thread-local until finally below.
+                try:
+                    status = response.get("status")
+                    code = response.get("code")
+                    self._audit(
+                        event="command_complete",
+                        success=(status == "success"),
+                        status=status,
+                        code=code,
+                    )
+                except Exception:
+                    pass
+                response_str = json.dumps(response)
+            else:
+                response_str = str(response)
+        finally:
+            # Avoid leaking request_id across reused worker threads
+            self._clear_request_id()
 
         # Send response in chunks for large data
         response_bytes = response_str.encode("utf-8")
@@ -434,9 +442,22 @@ class MCPPlugin(Gimp.PlugIn):
             client.close()
         return
 
+    def _current_request_id(self):
+        """Host-minted request_id stashed after auth (thread-local)."""
+        return getattr(self._request_ctx, "request_id", None)
+
+    def _set_request_id(self, request_id):
+        self._request_ctx.request_id = request_id
+
+    def _clear_request_id(self):
+        self._request_ctx.request_id = None
+
     def _audit(self, **fields):
-        """Append audit JSONL (no tokens / file contents)."""
+        """Append audit JSONL (no tokens / file contents). Includes request_id when set."""
         event = {"peer": str(self._last_peer) if self._last_peer else None}
+        rid = self._current_request_id()
+        if rid:
+            event["request_id"] = rid
         event.update(fields)
         _sec.write_audit_event(event, self.audit_path)
 
@@ -503,6 +524,16 @@ class MCPPlugin(Gimp.PlugIn):
                 success=True,
                 type=cmd_type or ("cmds" if "cmds" in j else "unknown"),
             )
+
+            # ── request_id strip (host TCP correlation; never pass to handlers) ─
+            # Pop from params copy/mutation BEFORE any handler dispatch so
+            # handlers never see ``_request_id`` in kwargs (0011 BS1/H4).
+            raw_params = j.get("params")
+            if isinstance(raw_params, dict):
+                rid = raw_params.pop("_request_id", None)
+                self._set_request_id(rid if rid else None)
+            else:
+                self._set_request_id(None)
 
             # Authenticated JSON equivalent of deprecated string command
             if cmd_type == "disable_auto_disconnect":

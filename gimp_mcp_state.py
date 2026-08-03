@@ -209,6 +209,7 @@ def default_capabilities() -> dict[str, bool]:
         "source_immutable_policy": True,  # 0009
         "checkpoints": True,  # 0009
         "high_level_mcp_surface": True,  # 0010
+        "structured_errors": True,  # 0011
     }
 
 
