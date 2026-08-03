@@ -65,21 +65,23 @@ def _recv_json(sock: socket.socket) -> dict[str, Any]:
     return {"status": "error", "error": "non-object JSON response", "code": sec.CODE_INTERNAL}
 
 
-def send_get_gimp_info(
+def send_plugin_command(
+    command_type: str,
+    params: dict[str, Any] | None = None,
     *,
     host: str,
     port: int,
     token: str,
     timeout: float,
 ) -> dict[str, Any]:
-    """Minimal local client: connect, send authenticated get_gimp_info, parse JSON.
+    """Minimal local client: connect, send authenticated plugin command, parse JSON.
 
     Does **not** import ``gimp_mcp_server``. Framing matches GimpConnection:
     ``json.dumps(...) + b"\\n"`` then recv until ``json.loads`` succeeds.
     """
     payload = {
-        "type": "get_gimp_info",
-        "params": {},
+        "type": command_type,
+        "params": params or {},
         "auth": token,
     }
     raw = json.dumps(payload).encode("utf-8") + b"\n"
@@ -87,6 +89,53 @@ def send_get_gimp_info(
         sock.settimeout(timeout)
         sock.sendall(raw)
         return _recv_json(sock)
+
+
+def send_get_gimp_info(
+    *,
+    host: str,
+    port: int,
+    token: str,
+    timeout: float,
+) -> dict[str, Any]:
+    """Authenticated get_gimp_info (probe convenience wrapper)."""
+    return send_plugin_command(
+        "get_gimp_info",
+        {},
+        host=host,
+        port=port,
+        token=token,
+        timeout=timeout,
+    )
+
+
+def send_authenticated_command(
+    command_type: str,
+    params: dict[str, Any] | None = None,
+    *,
+    timeout: float = 30.0,
+) -> dict[str, Any]:
+    """Resolve host/port/token and send a plugin TCP command.
+
+    Raises ``OSError`` / ``TimeoutError`` on transport failure.
+    Raises ``RuntimeError`` with code AUTH_FAILED when no token is available.
+    """
+    host = _resolve_host()
+    port = sec.get_port()
+    token = load_probe_token()
+    if not token:
+        raise RuntimeError(
+            f"{sec.CODE_AUTH_FAILED}: no session token "
+            f"(set {sec.ENV_TOKEN} or start the GIMP MCP plugin)"
+        )
+    return send_plugin_command(
+        command_type,
+        params,
+        host=host,
+        port=port,
+        token=token,
+        timeout=timeout,
+    )
 
 
 def _extract_version(result: dict[str, Any]) -> str | None:

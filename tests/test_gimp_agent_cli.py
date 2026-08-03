@@ -108,10 +108,22 @@ def test_expected_plugin_files_completeness() -> None:
         "gimp_mcp_handles.py",
         "gimp_mcp_coords.py",
         "gimp_mcp_policy.py",
+        "gimp_mcp_atomic.py",
     }
     assert set(pathmod.EXPECTED_PLUGIN_FILES) == expected
+    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 8
     assert "gimp_mcp_state.py" not in pathmod.EXPECTED_PLUGIN_FILES
     assert "gimp_mcp_surface.py" not in pathmod.EXPECTED_PLUGIN_FILES
+
+
+def test_exit_output_collision_is_11() -> None:
+    assert ec.exit_code_for(sec.CODE_OUTPUT_COLLISION) == 11
+    reverse = ec.exit_to_codes_table()
+    assert sec.CODE_OUTPUT_COLLISION in reverse[11]
+
+
+def test_exit_verify_failed_is_8() -> None:
+    assert ec.exit_code_for(sec.CODE_VERIFY_FAILED) == 8
 
 
 def test_semver_int_tuple_picks_3_10_over_3_2(
@@ -445,7 +457,115 @@ def test_cli_global_json_before_subcommand(capsys: pytest.CaptureFixture[str]) -
     assert body["ok"] is True
     assert body["exit_code"] == 0
     assert "code_to_exit" in body["data"]
-    assert body["data"]["code_to_exit"][sec.CODE_STALE_HANDLE] == 5
+
+
+# ---------------------------------------------------------------------------
+# save-xcf / export (mocked TCP — track 0013)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_save_xcf_happy_path(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _ok(cmd: str, params: dict[str, Any] | None = None, *, timeout: float = 30.0) -> dict:
+        assert cmd == "save_xcf"
+        assert params is not None
+        assert params["collision"] == "fail"
+        assert params["verify_reopen"] is True
+        return {
+            "status": "success",
+            "results": {
+                "file_path": params["file_path"],
+                "bytes": 12,
+                "sha256": "a" * 64,
+                "collision": "fail",
+                "collision_resolved": False,
+                "backup_path": None,
+                "atomic": True,
+                "reopen_verified": True,
+            },
+        }
+
+    monkeypatch.setattr(probe_mod, "send_authenticated_command", _ok)
+    code = main(["save-xcf", r"C:\ws\out.xcf", "--json"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["data"]["sha256"] == "a" * 64
+    assert body["data"]["atomic"] is True
+
+
+def test_cli_save_xcf_collision_exit_11(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _collide(cmd: str, params: dict[str, Any] | None = None, *, timeout: float = 30.0) -> dict:
+        return sec.make_error(sec.CODE_OUTPUT_COLLISION, "output path already exists")
+
+    monkeypatch.setattr(probe_mod, "send_authenticated_command", _collide)
+    code = main(["save-xcf", r"C:\ws\out.xcf", "--json"])
+    assert code == 11
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False
+    assert body["code"] == sec.CODE_OUTPUT_COLLISION
+    assert body["exit_code"] == 11
+
+
+def test_cli_export_connection_fail_exit_4(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _raise(cmd: str, params: dict[str, Any] | None = None, *, timeout: float = 30.0) -> dict:
+        raise ConnectionRefusedError("Connection refused")
+
+    monkeypatch.setattr(probe_mod, "send_authenticated_command", _raise)
+    code = main(["export", r"C:\ws\out.png", "--format", "png", "--json"])
+    assert code == 4
+    body = json.loads(capsys.readouterr().out)
+    assert body["code"] == sec.CODE_CONNECTION_FAILED
+    assert body["exit_code"] == 4
+
+
+def test_cli_export_happy_path(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def _ok(cmd: str, params: dict[str, Any] | None = None, *, timeout: float = 30.0) -> dict:
+        assert cmd == "export_image"
+        assert params is not None
+        assert params["format"] == "png"
+        assert params["collision"] == "replace"
+        return {
+            "status": "success",
+            "results": {
+                "status": "success",
+                "file_path": params["file_path"],
+                "format": "png",
+                "file_size_bytes": 99,
+                "sha256": "b" * 64,
+                "atomic": True,
+                "collision": "replace",
+            },
+        }
+
+    monkeypatch.setattr(probe_mod, "send_authenticated_command", _ok)
+    code = main(
+        [
+            "export",
+            r"C:\ws\out.png",
+            "--format",
+            "png",
+            "--collision",
+            "replace",
+            "--json",
+        ]
+    )
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["data"]["atomic"] is True
+
+
+def test_cli_invalid_collision_exit_2() -> None:
+    code = main(["save-xcf", r"C:\ws\out.xcf", "--collision", "overwrite"])
+    assert code == 2
 
 
 def test_probe_empty_or_unexpected_status_not_success(

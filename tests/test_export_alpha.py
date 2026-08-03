@@ -695,6 +695,46 @@ def test_internal_callers_pass_flatten_true() -> None:
     assert len(flatten_true_calls) >= 4, (
         f"expected >=4 internal flatten=True export call sites, found {len(flatten_true_calls)}"
     )
+
+
+def test_internal_callers_pass_collision_replace() -> None:
+    """0013 H2: derivative exporters must pass collision=replace."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    replace_calls = re.findall(
+        r'_export_to_path\([^;]*?collision\s*=\s*["\']replace["\']',
+        text,
+        re.DOTALL,
+    )
+    assert len(replace_calls) >= 5, (
+        f"expected >=5 collision=replace call sites "
+        f"(batch+icons+web x2+sprite+social), found {len(replace_calls)}"
+    )
+
+
+def test_export_to_path_atomic_temp_before_replace() -> None:
+    """0013: verify on temp; ALPHA_LOST leaves final intact."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_export_to_path")
+    assert "make_temp_path" in body
+    assert "os.replace" in body
+    assert "final_intact" in body
+    assert "write_path" in body
+    assert "sha256_file" in body or "_policy.sha256_file" in body
+    # ALPHA_LOST should prefer left_on_disk=False after verify-on-temp
+    assert "left_on_disk=False" in body or 'left_on_disk": False' in body
+
+
+def test_save_xcf_atomic_flat_results() -> None:
+    """0013: public save_xcf uses collision + flat results (no nested status)."""
+    text = PLUGIN.read_text(encoding="utf-8")
+    body = _method_body(text, "_save_xcf")
+    assert "parse_collision" in body
+    assert "resolve_output_path" in body
+    assert "_save_xcf_to_path" in body
+    assert "reopen_verified" in body
+    assert '"atomic": True' in body or "'atomic': True" in body
+    # No nested results.status double-success
+    assert '"status": "success", "file_path"' not in body
     # preserve_alpha path must not call .flatten( unguarded when preserve_alpha
     export_body = _method_body(text, "_export_to_path")
     # Flatten only under policy.flatten / elif policy.flatten branch

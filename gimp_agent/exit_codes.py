@@ -21,7 +21,7 @@ EXIT_INTERNAL = 7
 EXIT_VERIFICATION = 8
 EXIT_TIMEOUT = 9
 EXIT_PARTIAL = 10
-EXIT_COLLISION = 11  # reserved 0013 — no product code yet
+EXIT_COLLISION = 11  # OUTPUT_COLLISION (track 0013)
 EXIT_UNSUPPORTED = 12
 
 # Explicit code → exit map (unmapped CODE_* fall through to EXIT_INTERNAL)
@@ -53,6 +53,9 @@ _CODE_TO_EXIT: dict[str, int] = {
     sec.CODE_METADATA_WRITE_FAILED: EXIT_INTERNAL,
     # Verification
     sec.CODE_ALPHA_LOST: EXIT_VERIFICATION,
+    sec.CODE_VERIFY_FAILED: EXIT_VERIFICATION,
+    # Collision (0013)
+    sec.CODE_OUTPUT_COLLISION: EXIT_COLLISION,
     # Timeout / partial / unsupported
     sec.CODE_TIMEOUT: EXIT_TIMEOUT,
     sec.CODE_PARTIAL_MUTATION: EXIT_PARTIAL,
@@ -86,19 +89,18 @@ def code_to_exit_table() -> dict[str, int]:
 def exit_to_codes_table() -> dict[int, list[str]]:
     """Reverse map: exit int → sorted list of codes that map to it.
 
-    Exit 0, 1, and 11 have no product CODE_* entries by design
-    (0 = success, 1 = generic/null code, 11 = reserved collision).
+    Exit 0 and 1 have no product CODE_* entries by design
+    (0 = success, 1 = generic/null code). Exit 11 maps to OUTPUT_COLLISION.
     """
     reverse: dict[int, list[str]] = {}
     for code, exit_n in _CODE_TO_EXIT.items():
         reverse.setdefault(exit_n, []).append(code)
     for codes in reverse.values():
         codes.sort()
-    # Document reserved / special exits with empty lists for operator clarity
+    # Document special exits with empty lists when no product codes map there
     for exit_n in (
         EXIT_SUCCESS,
         EXIT_GENERIC,
-        EXIT_COLLISION,
     ):
         reverse.setdefault(exit_n, [])
     return dict(sorted(reverse.items(), key=lambda kv: kv[0]))

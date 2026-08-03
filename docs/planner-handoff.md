@@ -351,7 +351,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Guard:** `_resolve_mutable_layer` on all resolve+mutate handlers; durable deny via group ancestry after restart/restore; hydrate on open/orient/restore/ensure.
 - **confirm_destructive:** live flatten, merge_visible, free-angle rotate, non-transparent resize fill; `coerce_bool` fail-closed (stringly false + non-scalars).
 - **Checkpoints:** XCF via `.partial`+`os.replace` then sidecar; restore new handles + re-orient; tattoos write-only; `close_prior` optional.
-- **Capabilities:** `source_immutable_policy` + `checkpoints` true; `atomic_xcf_save` **false** until **0013**.
+- **Capabilities:** `source_immutable_policy` + `checkpoints` true; `atomic_xcf_save` / `atomic_export` **true** (track **0013**).
 - **Codes:** POLICY_DENIED, CONFIRM_REQUIRED, CHECKPOINT_*.
 - **Codex final:** **PASS WITH DEFERRED P3** (live matrix waived).
 - **Residuals:** live matrix (ops); atomic XCF **0013**; tattoo rebind later; auto-ensure on open later.
@@ -391,7 +391,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Completed (PR #16 / main@691aaa9):** host package `gimp_agent/` + **`gimp-agent`** entrypoint (argparse; no click/typer).
 - **Commands:** `doctor [--strict]`, `probe [--timeout]`, `version`, `codes` + `--json` (flag before/after subcommand; flag > `GIMP_AGENT_JSON`).
 - **Exit map:** 0 success; **1** generic; **2** CLI_USAGE (help→0); 3 GIMP/plugin missing; 4 AUTH/CONNECTION; 5 handles; 6 policy/path; 7 internal/unmapped; 8 ALPHA_LOST; 9 TIMEOUT; 10 PARTIAL; 11 reserved; 12 UNSUPPORTED. Reverse map via `codes`.
-- **doctor:** ordered checks; first required fail under `--strict`; TCP = **connect-only**; EXPECTED_PLUGIN_FILES = 7 (plugin+6 shared); workspace **info**; exiftool `which`; `batch_interpreter: false`.
+- **doctor:** ordered checks; first required fail under `--strict`; TCP = **connect-only**; EXPECTED_PLUGIN_FILES = 8 (plugin+7 shared, includes `gimp_mcp_atomic.py`); workspace **info**; exiftool `which`; `batch_interpreter: false`.
 - **probe:** token + JSON `auth` + `get_gimp_info`; require `status=="success"`; no `gimp_mcp_server` import.
 - **Packaging:** `packages = ["gimp_agent"]` explicit + py-modules; ruff/basedpyright include.
 - **Codex final:** **PASS** (after P1/P2 fixes: global `--json`, probe success, version rc, env JSON, NaN JSON).

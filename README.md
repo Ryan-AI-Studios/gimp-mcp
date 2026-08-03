@@ -124,10 +124,11 @@ uv sync
 ### 2. Install the GIMP Plugin
 
 Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, **`gimp_mcp_snapshot.py`**,
-**`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, **`gimp_mcp_coords.py`**, and
-**`gimp_mcp_policy.py`** to GIMP's plug-ins directory (same folder) and restart GIMP.
-The security, snapshot, export, handles, coords, and policy modules are stdlib-only and
-must sit next to the plugin (**7 files** total: plugin + 6 shared modules).
+**`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, **`gimp_mcp_coords.py`**,
+**`gimp_mcp_policy.py`**, and **`gimp_mcp_atomic.py`** to GIMP's plug-ins directory
+(same folder) and restart GIMP.
+The security, snapshot, export, handles, coords, policy, and atomic modules are
+stdlib-only and must sit next to the plugin (**8 files** total: plugin + 7 shared modules).
 (`gimp_mcp_state.py` / `gimp_mcp_surface.py` are host-side only.)
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
@@ -153,7 +154,7 @@ if [ -z "$GIMP_DIR" ]; then
 fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
 cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py gimp_mcp_export.py \
-  gimp_mcp_handles.py gimp_mcp_coords.py gimp_mcp_policy.py \
+  gimp_mcp_handles.py gimp_mcp_coords.py gimp_mcp_policy.py gimp_mcp_atomic.py \
   "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
@@ -168,8 +169,9 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_handles.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_coords.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_policy.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_atomic.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **six** shared modules listed above (7 files total) and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **seven** shared modules listed above (8 files total) and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
@@ -527,6 +529,7 @@ gimp-mcp-plugin.py          ← Runs inside GIMP process (generation registry + 
   + gimp_mcp_handles.py     ← shared pure require_*/builders (host + plug-in install)
   + gimp_mcp_coords.py      ← pure preview/layer math + EXIF op table (shared install file)
   + gimp_mcp_policy.py      ← Source_Immutable + checkpoint paths/sidecar (shared install file)
+  + gimp_mcp_atomic.py      ← collision resolve + same-dir temp/backup paths (shared install)
       │  PyGObject
       ▼
 GIMP 3.2 (gi.repository.Gimp)
@@ -559,8 +562,8 @@ GIMP 3.2 (gi.repository.Gimp)
 Export prep always runs on a **duplicate** (user document unchanged). Alpha path uses
 `merge_visible_layers(CLIP_TO_IMAGE)` + GIMP 3 `file-*-export` only (no `file-*-save`).
 Install must include **`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**,
-**`gimp_mcp_coords.py`**, and **`gimp_mcp_policy.py`** next to the plugin
-(7 files total with security/snapshot/plugin).
+**`gimp_mcp_coords.py`**, **`gimp_mcp_policy.py`**, and **`gimp_mcp_atomic.py`**
+next to the plugin (8 files total with security/snapshot/plugin).
 
 For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).
 Do **not** confuse with `flatten_image`, which mutates the open document.
