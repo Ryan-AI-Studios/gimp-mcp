@@ -126,7 +126,7 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 `ensure_source_immutable` (single bump at end), and live `flatten` paths inside
 `rotate_image` / `resize_canvas` when they flatten.
 
-**Error codes (handle validation + select_* + policy 0009):**
+**Error codes (handle validation + select_* + policy 0009 + structured envelope 0011):**
 
 | Code | Recovery |
 |---|---|
@@ -136,10 +136,37 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 | `INVALID_HANDLE` | Bad shape, empty/>64 select list, mixed `image_id`s, non-layer id in `select_layers` |
 | `SELECTION_CONFLICT` | Floating selection blocks `set_selected_layers` — anchor or remove float first |
 | `POLICY_DENIED` | Target is Source_Immutable protected, or policy name collision / bad checkpoint label |
-| `CONFIRM_REQUIRED` | Live flatten/merge without `confirm_destructive=true` |
+| `CONFIRM_REQUIRED` | Live flatten/merge without `confirm_destructive=true`. Wire is MCP `isError` + envelope `approval_required: true` (not 2026-07-28 `InputRequiredResult` on this pin) |
 | `CHECKPOINT_EXISTS` | Label dir/xcf exists and `overwrite=false` |
 | `CHECKPOINT_NOT_FOUND` | Restore label missing |
 | `CHECKPOINT_CORRUPTED` | Soft integrity hash mismatch on restore (optional) |
+| `PARTIAL_MUTATION` | Mutation incomplete; **do not** blind-retry. Re-orient and inspect state (`state_may_have_changed: true`) |
+| `CONNECTION_FAILED` | TCP/socket/timeout to GIMP plugin — ensure plugin running, retry (`retryable: true`) |
+| `INTERNAL_ERROR` | Unexpected host/plugin failure; re-orient; check `GIMP_MCP_DEBUG` diagnostics |
+| `ALPHA_LOST` | Export lost alpha; check envelope `details.left_on_disk` / `png_color_type`; re-export with `preserve_alpha` / non-flatten |
+
+#### Structured error wire format (track 0011)
+
+Capability: `structured_errors: true`.
+
+MCP tool failures raise FastMCP `ToolError` → client `isError: true` with **single-line** text:
+
+```text
+{CODE}: {message} (request_id=req_<hex>) | {"ok":false,"error":{...full envelope...}}
+```
+
+- Exactly one line (newlines in message sanitized to spaces).
+- JSON uses compact separators `(",", ":")`.
+- Envelope fields: `code`, `message`, `retryable`, `approval_required`, `request_id`,
+  `transaction_id`, `state_may_have_changed`, `rollback_available` (always `false` until 0017),
+  `affected_handles`, `details`.
+- Pure helper: `parse_tool_error_text(text) -> dict | None` in `gimp_mcp_security`.
+- **Never** return plugin error dicts as successful tool results (`export_image` ALPHA_LOST included).
+- `request_id` is a product TCP/audit correlation id (`req_` + uuid4.hex) — **not** MCP
+  `_meta.traceparent` / W3C Trace Context (align post major when pin supports it).
+- CONFIRM_REQUIRED stays `isError` + `approval_required` on mcp/fastmcp 1.10/2.10 pin;
+  MCP **2026-07-28** `InputRequiredResult` / MRTR is deferred.
+- CLI exit-code mapping is reserved for track **0012**.
 
 #### Layer policy + checkpoints (track 0009)
 

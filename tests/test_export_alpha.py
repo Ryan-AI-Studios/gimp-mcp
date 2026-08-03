@@ -628,25 +628,20 @@ def test_server_export_defaults() -> None:
     assert "file_type" not in body
 
 
-def test_server_export_image_returns_structured_error_dict() -> None:
-    """IR1-02 / DoD-5: MCP export_image must return structured error fields, not drop them."""
+def test_server_export_image_raises_tool_error_not_return_dict() -> None:
+    """0011 H1: export_image must raise ToolError / raise_from_plugin_result, not return error dict."""
     text = SERVER.read_text(encoding="utf-8")
     body = _function_body(text, "export_image")
-    # Must return the error payload (with code) rather than only raising Exception(code)
-    assert 'result.get("code")' in body or 'result.get("status")' in body
-    assert "return result" in body
+    assert "raise_from_plugin_result" in body
+    # Must not return the plugin error dict as a successful tool result
+    assert "return result\n" not in body and "return result\r\n" not in body
     # Must not be the old pattern that only raises with code in the message
     assert not re.search(
         r'raise Exception\(f"\{code\}: \{err\}"\)',
         body,
     ), "export_image must not raise only code:err (drops left_on_disk etc.)"
-    # left_on_disk / structured fields mentioned in contract path
-    assert "left_on_disk" in body or ("status" in body and "error" in body)
-    assert (
-        'status") == "error"' in body
-        or 'status"] == "error"' in body
-        or ('get("status")' in body and "error" in body)
-    )
+    # left_on_disk / structured fields preserved via raise_from_plugin_result details
+    assert "left_on_disk" in body or "raise_from_plugin_result" in body
 
 
 def test_server_batch_export_params() -> None:

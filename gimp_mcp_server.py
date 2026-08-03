@@ -2,18 +2,23 @@
 # GIMP MCP Server Script — improved fork
 # Adds: new_canvas, check_server, restart_server, no bitmap size restrictions
 # Security (0003): loopback AF_INET, session auth, path jail, call_api gated
+# Structured errors (0011): ToolError envelope + request_id audit correlation
 
 import base64
+import contextvars
+import functools
 import json
 import logging
 import os
 import socket
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn, TypeVar
 
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.tools.tool import ToolResult
 from fastmcp.utilities.types import Image
 from mcp.types import Annotations, ToolAnnotations
@@ -23,6 +28,13 @@ import gimp_mcp_security as sec
 import gimp_mcp_snapshot as snap
 import gimp_mcp_surface as surface
 from gimp_mcp_state import default_capabilities, finalize_manifest
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+# Per-tool-invocation request_id (send_command reads this for TCP _request_id)
+_current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "gimp_mcp_request_id", default=None
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("GimpMCPServer")
@@ -75,12 +87,21 @@ def _ensure_session_token(*, force_reload: bool = False) -> str | None:
     return _session_token
 
 
+def get_current_request_id() -> str | None:
+    """Return the request_id minted by ``with_structured_error`` for this call."""
+    return _current_request_id.get()
+
+
 def _jail_path_or_raise(path: str, label: str = "path") -> str:
-    """Defense-in-depth path check before sending to the plug-in."""
+    """Defense-in-depth path check before sending to the plug-in.
+
+    Re-raises ``sec.SecurityError`` with its ``.code`` intact (0011 H5) so
+    callers / ``raise_from_exception`` map PATH_DENIED correctly.
+    """
     try:
         return str(sec.resolve_under_root(path))
-    except sec.SecurityError as e:
-        raise RuntimeError(f"{e.code}: {e.message} ({label})") from e
+    except sec.SecurityError:
+        raise
 
 
 def _snapshot_tool_result(
@@ -203,14 +224,27 @@ class GimpConnection:
                 pass
             self.sock = None
 
-    def send_command(self, command_type: str, params: dict[str, Any] | None = None):
-        """Send authenticated JSON; reload token once on AUTH_FAILED (plugin rotated)."""
+    def send_command(
+        self,
+        command_type: str,
+        params: dict[str, Any] | None = None,
+        *,
+        request_id: str | None = None,
+    ):
+        """Send authenticated JSON; reload token once on AUTH_FAILED (plugin rotated).
+
+        Copies ``params`` and injects ``_request_id`` from the explicit arg or the
+        current contextvar (minted by ``with_structured_error``). Never mutates
+        the caller's dict (0011 M1).
+        """
+        p = dict(params) if params else {}
+        rid = request_id if request_id is not None else get_current_request_id()
+        if rid:
+            p["_request_id"] = rid
         last_error: Exception | None = None
         for attempt in range(2):
             try:
-                return self._send_command_once(
-                    command_type, params, force_reload_token=(attempt > 0)
-                )
+                return self._send_command_once(command_type, p, force_reload_token=(attempt > 0))
             except Exception as e:
                 last_error = e
                 raise
@@ -229,7 +263,7 @@ class GimpConnection:
             self.connect()
         sock = self.sock
         if sock is None:
-            raise Exception(
+            raise ConnectionError(
                 f"Could not connect to GIMP at {self.host}:{self.port}. "
                 "Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
             )
@@ -240,9 +274,11 @@ class GimpConnection:
                 f"JSON. Set {sec.ENV_TOKEN} or start the GIMP MCP plugin first so it "
                 f"writes {sec.default_token_path()}."
             )
+        # params already copied + _request_id injected by send_command
+        wire_params = dict(params) if params else {}
         command: dict[str, Any] = {
             "type": command_type,
-            "params": params if params is not None else {},
+            "params": wire_params,
             "auth": token,
         }
         try:
@@ -271,9 +307,13 @@ class GimpConnection:
                 self.disconnect()
                 return self._send_command_once(command_type, params, force_reload_token=True)
             return result
+        except (ConnectionError, TimeoutError, OSError) as e:
+            logger.error("Communication error: %s", e)
+            # M8: map transport failures to CONNECTION_FAILED via raise path
+            raise ConnectionError(f"Error communicating with GIMP: {e}") from e
         except Exception as e:
-            logger.error(f"Communication error: {e}")
-            raise Exception(f"Error communicating with GIMP: {e}")
+            logger.error("Communication error: %s", e)
+            raise ConnectionError(f"Error communicating with GIMP: {e}") from e
         finally:
             self.disconnect()
 
@@ -297,6 +337,237 @@ def reset_gimp_connection() -> None:
     _gimp_connection = None
     # Plugin may regenerate file token on restart; drop cached secret.
     _clear_session_token()
+
+
+# ---------------------------------------------------------------------------
+# Structured error helpers (track 0011)
+# ---------------------------------------------------------------------------
+
+# Extra top-level keys on plugin TCP error dicts that become envelope.details
+_PLUGIN_DETAIL_KEYS = (
+    "left_on_disk",
+    "png_color_type",
+    "property_errors",
+    "preflight_has_alpha",
+    "preserve_alpha",
+    "file_path",
+    "format",
+    "export_method",
+    "pdb_procedure",
+    "alpha_verified",
+)
+
+
+def _host_audit(event: str, **fields: Any) -> None:
+    """Append one host-side audit line to audit-server.jsonl (never tokens)."""
+    payload: dict[str, Any] = {"event": event, "side": "server"}
+    payload.update(fields)
+    sec.write_audit_event(payload, sec.audit_server_path())
+
+
+def tool_fail(
+    code: str,
+    message: str,
+    *,
+    request_id: str | None = None,
+    affected_handles: list[Any] | None = None,
+    details: dict[str, Any] | None = None,
+    cause: BaseException | None = None,
+    **kw: Any,
+) -> NoReturn:
+    """Build envelope, raise single-line ToolError (MCP isError path)."""
+    rid = request_id or get_current_request_id() or sec.new_request_id()
+    envelope = sec.build_error_envelope(
+        code,
+        message,
+        request_id=rid,
+        affected_handles=affected_handles,
+        details=details,
+        **{
+            k: v
+            for k, v in kw.items()
+            if k
+            in (
+                "retryable",
+                "approval_required",
+                "state_may_have_changed",
+                "transaction_id",
+                "rollback_available",
+            )
+        },
+    )
+    text = sec.format_tool_error_text(envelope)
+    if cause is not None:
+        raise ToolError(text) from cause
+    raise ToolError(text) from None
+
+
+def raise_from_plugin_result(
+    result: dict[str, Any],
+    tool_name: str,
+    *,
+    request_id: str | None = None,
+    affected_handles: list[Any] | None = None,
+) -> NoReturn:
+    """Map plugin TCP error dict → ToolError with full envelope (incl. details)."""
+    code = str(result.get("code") or sec.CODE_INTERNAL)
+    raw_msg = result.get("error", "Unknown error")
+    message = str(raw_msg) if raw_msg is not None else "Unknown error"
+    if not message.startswith(tool_name):
+        message = f"{tool_name} failed: {message}"
+
+    details: dict[str, Any] = {}
+    nested = result.get("details")
+    if isinstance(nested, dict):
+        details.update(nested)
+    for key in _PLUGIN_DETAIL_KEYS:
+        if key in result:
+            details[key] = result[key]
+    # Also accept request_id from plugin TCP if host lost context
+    rid = request_id or result.get("request_id") or get_current_request_id()
+    handles = affected_handles
+    if handles is None and result.get("affected_handles") is not None:
+        ah = result.get("affected_handles")
+        handles = list(ah) if isinstance(ah, list) else None
+
+    tool_fail(
+        code,
+        message,
+        request_id=rid if isinstance(rid, str) else None,
+        affected_handles=handles,
+        details=details or None,
+    )
+
+
+def raise_from_exception(
+    exc: BaseException,
+    *,
+    request_id: str | None = None,
+    tool_name: str | None = None,
+    affected_handles: list[Any] | None = None,
+) -> NoReturn:
+    """Map host exceptions → structured ToolError.
+
+    - ToolError: re-raise unchanged
+    - SecurityError / GimpMcpError: use their code
+    - ConnectionError / TimeoutError / OSError: CONNECTION_FAILED
+    - else: INTERNAL_ERROR (pass affected_handles when known)
+    """
+    rid = request_id or get_current_request_id() or sec.new_request_id()
+
+    if isinstance(exc, ToolError):
+        raise exc
+
+    if isinstance(exc, sec.GimpMcpError):
+        tool_fail(
+            exc.code,
+            exc.message,
+            request_id=rid,
+            affected_handles=affected_handles or exc.affected_handles or None,
+            details=exc.details,
+            cause=exc,
+            retryable=exc.retryable,
+            approval_required=exc.approval_required,
+            state_may_have_changed=exc.state_may_have_changed,
+        )
+
+    if isinstance(exc, sec.SecurityError):
+        tool_fail(
+            exc.code, exc.message, request_id=rid, affected_handles=affected_handles, cause=exc
+        )
+
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        tool_fail(
+            sec.CODE_CONNECTION_FAILED,
+            str(exc) or "Connection to GIMP failed",
+            request_id=rid,
+            affected_handles=affected_handles,
+            cause=exc,
+        )
+
+    if isinstance(exc, OSError):
+        # Broken pipe / refused / reset → transport
+        tool_fail(
+            sec.CODE_CONNECTION_FAILED,
+            str(exc) or "OS transport error talking to GIMP",
+            request_id=rid,
+            affected_handles=affected_handles,
+            cause=exc,
+        )
+
+    prefix = f"{tool_name} failed: " if tool_name else ""
+    msg = f"{prefix}{exc}" if str(exc) else f"{prefix}Internal error"
+    if sec.debug_enabled():
+        logger.exception("tool error (%s)", tool_name or "?")
+    tool_fail(
+        sec.CODE_INTERNAL,
+        msg,
+        request_id=rid,
+        affected_handles=affected_handles,
+        cause=exc,
+    )
+
+
+def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
+    """Decorator: mint request_id, host audit start/end, map exceptions → ToolError.
+
+    Success path does **not** inject request_id into return dicts (v1 M4).
+    """
+
+    def decorator(fn: F) -> F:
+        name = tool_name or fn.__name__
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            rid = sec.new_request_id()
+            token = _current_request_id.set(rid)
+            _host_audit("mcp_tool_start", tool=name, request_id=rid)
+            try:
+                out = fn(*args, **kwargs)
+                _host_audit("mcp_tool_end", tool=name, request_id=rid, success=True)
+                return out
+            except ToolError as te:
+                parsed = sec.parse_tool_error_text(str(te))
+                code = None
+                if parsed and isinstance(parsed.get("error"), dict):
+                    code = parsed["error"].get("code")
+                _host_audit(
+                    "mcp_tool_end",
+                    tool=name,
+                    request_id=rid,
+                    success=False,
+                    code=code,
+                )
+                raise
+            except Exception as e:
+                if sec.debug_enabled():
+                    traceback.print_exc()
+                try:
+                    raise_from_exception(e, request_id=rid, tool_name=name)
+                except ToolError as te:
+                    parsed = sec.parse_tool_error_text(str(te))
+                    code = None
+                    if parsed and isinstance(parsed.get("error"), dict):
+                        code = parsed["error"].get("code")
+                    _host_audit(
+                        "mcp_tool_end",
+                        tool=name,
+                        request_id=rid,
+                        success=False,
+                        code=code,
+                    )
+                    raise
+            finally:
+                _current_request_id.reset(token)
+
+        return wrapper  # type: ignore[return-value]
+
+    return decorator
+
+
+def _raise_plugin_error(result: dict[str, Any], tool_name: str) -> NoReturn:
+    """Back-compat alias → raise_from_plugin_result (ToolError, not bare Exception)."""
+    raise_from_plugin_result(result, tool_name)
 
 
 # MCP server
@@ -382,6 +653,7 @@ def _surface_probe_fields(
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
 def session_probe(
     ctx: Context,
     nonce: str | None = None,
@@ -419,6 +691,7 @@ def session_probe(
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def check_server(ctx: Context) -> dict:
     """Check whether the GIMP MCP plugin socket is reachable (advanced surface).
 
@@ -437,6 +710,7 @@ def check_server(ctx: Context) -> dict:
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
 def restart_server(ctx: Context) -> dict:
     """Drop and re-establish the connection to the GIMP MCP plugin.
 
@@ -457,6 +731,7 @@ def restart_server(ctx: Context) -> dict:
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
+@with_structured_error()
 def new_canvas(
     ctx: Context,
     width: int,
@@ -502,12 +777,15 @@ def new_canvas(
                 "resolution": resolution,
             },
         )
-        if result["status"] != "success":
-            raise Exception(result.get("error", "Unknown error"))
+        if result.get("status") != "success":
+            raise_from_plugin_result(result, "tool")
         return result["results"]
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"Failed to create new canvas: {e}")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 def _render_visible_composite_impl(
@@ -548,10 +826,11 @@ def _render_visible_composite_impl(
         else:
             idx = int(image_index) if image_index is not None else 0
         return _snapshot_tool_result(results, image_index=idx)
-    raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
+    raise_from_plugin_result(result, "gimp")
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
 def render_visible_composite(
     ctx: Context,
     handle: dict | None = None,
@@ -584,12 +863,16 @@ def render_visible_composite(
             max_height=max_height,
             region=region,
         )
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"Failed to render visible composite: {e}")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def get_image_bitmap(
     ctx: Context,
     image_index: int = 0,
@@ -620,12 +903,16 @@ def get_image_bitmap(
             max_height=max_height,
             region=region,
         )
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"Failed to get image bitmap: {e}")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def get_image_metadata(ctx: Context, image_index: int = 0) -> dict:
     """Get metadata about an open image in GIMP without the bitmap data.
 
@@ -645,13 +932,17 @@ def get_image_metadata(ctx: Context, image_index: int = 0) -> dict:
         if result["status"] == "success":
             return result["results"]
         else:
-            raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"Failed to get image metadata: {e}")
+            raise_from_plugin_result(result, "gimp")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
 def orient_workspace(
     ctx: Context,
     image_index: int | None = None,
@@ -684,8 +975,8 @@ def orient_workspace(
             params["image_index"] = int(image_index)
         conn = get_gimp_connection()
         result = conn.send_command("orient_workspace", params)
-        if result["status"] != "success":
-            raise Exception(result.get("error", "Unknown error"))
+        if result.get("status") != "success":
+            raise_from_plugin_result(result, "tool")
         raw = result["results"]
         if not isinstance(raw, dict):
             raise Exception("orient_workspace returned non-object results")
@@ -696,21 +987,16 @@ def orient_workspace(
             port=GIMP_PORT,
             transport="stdio-proxy",
         )
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"orient_workspace failed: {e}")
-
-
-def _raise_plugin_error(result: dict[str, Any], tool_name: str) -> None:
-    """Raise with code string in message when plugin returns structured error."""
-    err = result.get("error", "Unknown error")
-    code = result.get("code")
-    if code:
-        raise Exception(f"{tool_name} failed: {code}: {err}")
-    raise Exception(f"{tool_name} failed: {err}")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=True))
+@with_structured_error()
 def select_image(ctx: Context, handle: dict) -> dict:
     """Validate/bind an image handle for agent targeting (handles only).
 
@@ -739,14 +1025,16 @@ def select_image(ctx: Context, handle: dict) -> dict:
             return result["results"]
         _raise_plugin_error(result, "select_image")
         raise AssertionError("unreachable")  # pragma: no cover
-    except Exception as e:
-        traceback.print_exc()
-        if str(e).startswith("select_image failed:"):
-            raise
-        raise Exception(f"select_image failed: {e}")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
 def normalize_image_orientation(
     ctx: Context,
     handle: dict | None = None,
@@ -789,14 +1077,16 @@ def normalize_image_orientation(
             return result["results"]
         _raise_plugin_error(result, "normalize_image_orientation")
         raise AssertionError("unreachable")  # pragma: no cover
-    except Exception as e:
-        traceback.print_exc()
-        if str(e).startswith("normalize_image_orientation failed:"):
-            raise
-        raise Exception(f"normalize_image_orientation failed: {e}")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
 def map_preview_to_image(
     ctx: Context,
     preview_x: float,
@@ -842,12 +1132,16 @@ def map_preview_to_image(
         }
     except ValueError as e:
         raise Exception(f"map_preview_to_image failed: {e}") from e
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"map_preview_to_image failed: {e}") from e
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def map_image_to_preview(
     ctx: Context,
     image_x: float,
@@ -885,12 +1179,16 @@ def map_image_to_preview(
         }
     except ValueError as e:
         raise Exception(f"map_image_to_preview failed: {e}") from e
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"map_image_to_preview failed: {e}") from e
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def map_layer_local_to_image(
     ctx: Context,
     local_x: float,
@@ -914,12 +1212,16 @@ def map_layer_local_to_image(
         }
     except ValueError as e:
         raise Exception(f"map_layer_local_to_image failed: {e}") from e
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"map_layer_local_to_image failed: {e}") from e
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def map_image_to_layer_local(
     ctx: Context,
     image_x: float,
@@ -940,12 +1242,16 @@ def map_image_to_layer_local(
         }
     except ValueError as e:
         raise Exception(f"map_image_to_layer_local failed: {e}") from e
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"map_image_to_layer_local failed: {e}") from e
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=True))
+@with_structured_error()
 def select_layers(ctx: Context, handles: list) -> dict:
     """Select layers by stable item handles (handles only; max 64).
 
@@ -972,14 +1278,16 @@ def select_layers(ctx: Context, handles: list) -> dict:
             return result["results"]
         _raise_plugin_error(result, "select_layers")
         raise AssertionError("unreachable")  # pragma: no cover
-    except Exception as e:
-        traceback.print_exc()
-        if str(e).startswith("select_layers failed:"):
-            raise
-        raise Exception(f"select_layers failed: {e}")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def get_gimp_info(ctx: Context) -> dict:
     """Get comprehensive information about the GIMP installation and environment.
 
@@ -1009,13 +1317,17 @@ def get_gimp_info(ctx: Context) -> dict:
         if result["status"] == "success":
             return result["results"]
         else:
-            raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"Failed to get GIMP info: {e}")
+            raise_from_plugin_result(result, "gimp")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def get_state_snapshot(
     ctx: Context,
     image_index: int = 0,
@@ -1083,13 +1395,17 @@ def get_state_snapshot(
         result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
             return _snapshot_tool_result(result["results"], image_index=image_index)
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"get_state_snapshot failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def get_context_state(ctx: Context) -> dict:
     """Get the current GIMP context state (colors, brush, settings).
 
@@ -1122,13 +1438,17 @@ def get_context_state(ctx: Context) -> dict:
         if result["status"] == "success":
             return result["results"]
         else:
-            raise Exception(f"GIMP error: {result.get('error', 'Unknown error')}")
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"Failed to get context state: {e}")
+            raise_from_plugin_result(result, "gimp")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def call_api(
     ctx: Context,
     api_path: str,
@@ -1272,6 +1592,7 @@ def gimp_iterative_workflow() -> str:
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
+@with_structured_error()
 def open_image(ctx: Context, file_path: str) -> dict:
     """Open an image file in GIMP and create a display window.
 
@@ -1291,13 +1612,17 @@ def open_image(ctx: Context, file_path: str) -> dict:
         result = conn.send_command("open_image", {"file_path": file_path})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"open_image failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
 def save_xcf(
     ctx: Context,
     file_path: str,
@@ -1330,13 +1655,17 @@ def save_xcf(
         result = conn.send_command("save_xcf", params)
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"save_xcf failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
 def export_image(
     ctx: Context,
     file_path: str,
@@ -1379,10 +1708,10 @@ def export_image(
     preflight_has_alpha, alpha_verified (true|false|"not_applicable"), export_method,
     pdb_procedure, optional png_color_type.
 
-    Structured errors (returned as a dict with ``status="error"``, not raised):
-    ALPHA_LOST (``left_on_disk=true``, optional ``png_color_type`` /
-    ``property_errors``), ALPHA_UNSUPPORTED_FORMAT, POLICY_CONFLICT, EXPORT_FAILED.
-    Agents should inspect ``code`` / ``left_on_disk`` on the return value.
+    Structured errors raise ToolError (MCP isError) with single-line envelope JSON:
+    ALPHA_LOST (details.left_on_disk, optional png_color_type / property_errors),
+    ALPHA_UNSUPPORTED_FORMAT, POLICY_CONFLICT, EXPORT_FAILED. Parse with
+    ``parse_tool_error_text``; never returned as a successful tool result (0011 H1).
     """
     try:
         if handle is None and image_index is None:
@@ -1402,26 +1731,24 @@ def export_image(
         if image_index is not None:
             payload["image_index"] = int(image_index)
         result = conn.send_command("export_image", payload)
-        if result["status"] == "success":
+        if result.get("status") == "success":
             return result["results"]
-        # Structured export errors (ALPHA_LOST, POLICY_CONFLICT, …): return the
-        # full plugin payload so agents can machine-read left_on_disk,
-        # png_color_type, property_errors, code (DoD-5 / §2.7). Do not raise —
-        # raising would drop those fields and double-wrap the message.
-        if isinstance(result, dict) and result.get("status") == "error" and result.get("code"):
-            return result
-        # Generic / unknown errors: keep Exception path for host convention
-        err = result.get("error", "Unknown error") if isinstance(result, dict) else str(result)
-        raise Exception(err)
-    except Exception as e:
-        # Avoid double-wrapping if we re-raise a non-structured failure
-        if isinstance(e, Exception) and str(e).startswith("export_image failed:"):
-            raise
-        traceback.print_exc()
-        raise Exception(f"export_image failed: {e}")
+        # H1 (0011): always raise ToolError — never return error dict as success.
+        # ALPHA_LOST details (left_on_disk, png_color_type, property_errors) go in envelope.details.
+        raise_from_plugin_result(
+            result if isinstance(result, dict) else {"error": str(result)},
+            "export_image",
+        )
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def batch_export(
     ctx: Context,
     output_dir: str,
@@ -1469,13 +1796,17 @@ def batch_export(
         result = conn.send_command("batch_export", params)
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"batch_export failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
 def verify_alpha_channel(
     ctx: Context,
     handle: dict | None = None,
@@ -1508,10 +1839,13 @@ def verify_alpha_channel(
         result = conn.send_command("verify_alpha_channel", params)
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"verify_alpha_channel failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1520,6 +1854,7 @@ def verify_alpha_channel(
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = None) -> dict:
     """Automatically stretch the tonal range of an image (auto levels / auto stretch contrast).
 
@@ -1536,13 +1871,17 @@ def auto_levels(ctx: Context, image_index: int = 0, layer_name: str | None = Non
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"auto_levels failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def adjust_curves(
     ctx: Context,
     preset: str = "s_curve",
@@ -1576,13 +1915,17 @@ def adjust_curves(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"adjust_curves failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def adjust_brightness_contrast(
     ctx: Context,
     brightness: int = 0,
@@ -1613,13 +1956,17 @@ def adjust_brightness_contrast(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"adjust_brightness_contrast failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def adjust_hue_saturation(
     ctx: Context,
     hue: float = 0,
@@ -1656,13 +2003,17 @@ def adjust_hue_saturation(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"adjust_hue_saturation failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def adjust_color_balance(
     ctx: Context,
     cyan_red: float = 0,
@@ -1699,13 +2050,17 @@ def adjust_color_balance(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"adjust_color_balance failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def sharpen(
     ctx: Context,
     amount: float = 50.0,
@@ -1739,13 +2094,17 @@ def sharpen(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"sharpen failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def blur(
     ctx: Context,
     radius_x: float = 5.0,
@@ -1776,13 +2135,17 @@ def blur(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"blur failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def denoise(
     ctx: Context, strength: int = 50, image_index: int = 0, layer_name: str | None = None
 ) -> dict:
@@ -1807,13 +2170,17 @@ def denoise(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"denoise failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def desaturate(
     ctx: Context, mode: str = "luminosity", image_index: int = 0, layer_name: str | None = None
 ) -> dict:
@@ -1838,13 +2205,17 @@ def desaturate(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"desaturate failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def invert_colors(ctx: Context, image_index: int = 0, layer_name: str | None = None) -> dict:
     """Invert all colors in a layer (create a negative).
 
@@ -1865,10 +2236,13 @@ def invert_colors(ctx: Context, image_index: int = 0, layer_name: str | None = N
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"invert_colors failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1877,6 +2251,7 @@ def invert_colors(ctx: Context, image_index: int = 0, layer_name: str | None = N
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def scale_image(
     ctx: Context, width: int, height: int, interpolation: str = "cubic", image_index: int = 0
 ) -> dict:
@@ -1903,13 +2278,17 @@ def scale_image(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"scale_image failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def scale_to_fit(
     ctx: Context,
     max_width: int,
@@ -1940,13 +2319,17 @@ def scale_to_fit(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"scale_to_fit failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def crop_to_selection(ctx: Context, autocrop: bool = False, image_index: int = 0) -> dict:
     """Crop the image canvas to the current selection bounds.
 
@@ -1967,13 +2350,17 @@ def crop_to_selection(ctx: Context, autocrop: bool = False, image_index: int = 0
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"crop_to_selection failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def crop_to_rect(
     ctx: Context, x: int, y: int, width: int, height: int, image_index: int = 0
 ) -> dict:
@@ -2000,13 +2387,17 @@ def crop_to_rect(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"crop_to_rect failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def rotate_image(
     ctx: Context,
     angle: float,
@@ -2036,17 +2427,17 @@ def rotate_image(
         )
         if result["status"] == "success":
             return result["results"]
-        code = result.get("code")
-        err = result.get("error", "Unknown error")
-        if code:
-            raise Exception(f"{code}: {err}")
-        raise Exception(err)
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"rotate_image failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def flip_image(ctx: Context, direction: str = "horizontal", image_index: int = 0) -> dict:
     """Flip the entire image horizontally or vertically.
 
@@ -2067,13 +2458,17 @@ def flip_image(ctx: Context, direction: str = "horizontal", image_index: int = 0
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"flip_image failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def resize_canvas(
     ctx: Context,
     width: int,
@@ -2111,14 +2506,13 @@ def resize_canvas(
         )
         if result["status"] == "success":
             return result["results"]
-        code = result.get("code")
-        err = result.get("error", "Unknown error")
-        if code:
-            raise Exception(f"{code}: {err}")
-        raise Exception(err)
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"resize_canvas failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2127,6 +2521,7 @@ def resize_canvas(
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
+@with_structured_error()
 def create_selection(
     ctx: Context,
     type: str,
@@ -2232,15 +2627,17 @@ def create_selection(
         result = conn.send_command(cmd, params)
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        if str(e).startswith("create_selection"):
-            raise
-        raise Exception(f"create_selection failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def select_rectangle(
     ctx: Context,
     x: int,
@@ -2278,13 +2675,17 @@ def select_rectangle(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"select_rectangle failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def select_ellipse(
     ctx: Context,
     x: int,
@@ -2322,13 +2723,17 @@ def select_ellipse(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"select_ellipse failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def select_by_color(
     ctx: Context,
     color: str,
@@ -2362,13 +2767,17 @@ def select_by_color(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"select_by_color failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def select_all(ctx: Context, image_index: int = 0) -> dict:
     """Select the entire image canvas.
 
@@ -2382,13 +2791,17 @@ def select_all(ctx: Context, image_index: int = 0) -> dict:
         result = conn.send_command("select_all", {"image_index": image_index})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"select_all failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def select_none(ctx: Context, image_index: int = 0) -> dict:
     """Remove / deselect all selections.
 
@@ -2402,13 +2815,17 @@ def select_none(ctx: Context, image_index: int = 0) -> dict:
         result = conn.send_command("select_none", {"image_index": image_index})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"select_none failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def invert_selection(ctx: Context, image_index: int = 0) -> dict:
     """Invert the current selection (select what is not selected).
 
@@ -2422,13 +2839,17 @@ def invert_selection(ctx: Context, image_index: int = 0) -> dict:
         result = conn.send_command("invert_selection", {"image_index": image_index})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"invert_selection failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def modify_selection(ctx: Context, operation: str, amount: float, image_index: int = 0) -> dict:
     """Grow, shrink, feather, border, or sharpen the current selection.
 
@@ -2451,10 +2872,13 @@ def modify_selection(ctx: Context, operation: str, amount: float, image_index: i
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"modify_selection failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2463,6 +2887,7 @@ def modify_selection(ctx: Context, operation: str, amount: float, image_index: i
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def create_layer(
     ctx: Context,
     name: str = "New Layer",
@@ -2504,13 +2929,17 @@ def create_layer(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"create_layer failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def duplicate_layer(ctx: Context, layer_name: str | None = None, image_index: int = 0) -> dict:
     """Duplicate a layer and insert the copy above it.
 
@@ -2531,13 +2960,17 @@ def duplicate_layer(ctx: Context, layer_name: str | None = None, image_index: in
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"duplicate_layer failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def delete_layer(
     ctx: Context,
     layer_name: str | None = None,
@@ -2567,13 +3000,17 @@ def delete_layer(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"delete_layer failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def rename_layer(
     ctx: Context,
     new_name: str,
@@ -2604,13 +3041,17 @@ def rename_layer(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"rename_layer failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def set_layer_properties(
     ctx: Context,
     layer_name: str | None = None,
@@ -2646,13 +3087,17 @@ def set_layer_properties(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"set_layer_properties failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def reorder_layer(
     ctx: Context,
     new_position: int,
@@ -2682,13 +3127,17 @@ def reorder_layer(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"reorder_layer failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def flatten_image(
     ctx: Context,
     image_index: int = 0,
@@ -2714,17 +3163,17 @@ def flatten_image(
         )
         if result["status"] == "success":
             return result["results"]
-        code = result.get("code")
-        err = result.get("error", "Unknown error")
-        if code:
-            raise Exception(f"{code}: {err}")
-        raise Exception(err)
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"flatten_image failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def merge_visible_layers(
     ctx: Context,
     image_index: int = 0,
@@ -2749,17 +3198,17 @@ def merge_visible_layers(
         )
         if result["status"] == "success":
             return result["results"]
-        code = result.get("code")
-        err = result.get("error", "Unknown error")
-        if code:
-            raise Exception(f"{code}: {err}")
-        raise Exception(err)
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"merge_visible_layers failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def list_layers(ctx: Context, image_index: int = 0) -> dict:
     """List layers in an image (flat root list — group children not expanded).
 
@@ -2776,13 +3225,17 @@ def list_layers(ctx: Context, image_index: int = 0) -> dict:
         result = conn.send_command("list_layers", {"image_index": image_index})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"list_layers failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
 def ensure_source_immutable(
     ctx: Context,
     handle: dict | None = None,
@@ -2826,17 +3279,17 @@ def ensure_source_immutable(
         result = conn.send_command("ensure_source_immutable", params)
         if result["status"] == "success":
             return result["results"]
-        code = result.get("code")
-        err = result.get("error", "Unknown error")
-        if code:
-            raise Exception(f"{code}: {err}")
-        raise Exception(err)
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"ensure_source_immutable failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
 def checkpoint_create(
     ctx: Context,
     label: str,
@@ -2881,17 +3334,17 @@ def checkpoint_create(
         result = conn.send_command("checkpoint_create", params)
         if result["status"] == "success":
             return result["results"]
-        code = result.get("code")
-        err = result.get("error", "Unknown error")
-        if code:
-            raise Exception(f"{code}: {err}")
-        raise Exception(err)
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"checkpoint_create failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
 def checkpoint_restore(
     ctx: Context,
     label: str,
@@ -2929,14 +3382,13 @@ def checkpoint_restore(
         result = conn.send_command("checkpoint_restore", params)
         if result["status"] == "success":
             return result["results"]
-        code = result.get("code")
-        err = result.get("error", "Unknown error")
-        if code:
-            raise Exception(f"{code}: {err}")
-        raise Exception(err)
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"checkpoint_restore failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2945,6 +3397,7 @@ def checkpoint_restore(
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def fill_layer(
     ctx: Context, color: str, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
@@ -2969,13 +3422,17 @@ def fill_layer(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"fill_layer failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def fill_selection(
     ctx: Context,
     color: str | None = None,
@@ -3006,13 +3463,17 @@ def fill_selection(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"fill_selection failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def set_colors(ctx: Context, foreground: str | None = None, background: str | None = None) -> dict:
     """Set the GIMP foreground and/or background color.
 
@@ -3033,13 +3494,17 @@ def set_colors(ctx: Context, foreground: str | None = None, background: str | No
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"set_colors failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def draw_line(
     ctx: Context,
     x1: float,
@@ -3083,13 +3548,17 @@ def draw_line(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"draw_line failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def draw_rectangle(
     ctx: Context,
     x: int,
@@ -3130,13 +3599,17 @@ def draw_rectangle(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"draw_rectangle failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def draw_ellipse(
     ctx: Context,
     x: int,
@@ -3177,13 +3650,17 @@ def draw_ellipse(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"draw_ellipse failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def fill_rectangle(
     ctx: Context,
     x: int,
@@ -3221,13 +3698,17 @@ def fill_rectangle(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"fill_rectangle failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def fill_ellipse(
     ctx: Context,
     x: int,
@@ -3265,13 +3746,17 @@ def fill_ellipse(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"fill_ellipse failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def gradient_fill(
     ctx: Context,
     color1: str = "black",
@@ -3315,10 +3800,13 @@ def gradient_fill(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"gradient_fill failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3327,6 +3815,7 @@ def gradient_fill(
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def add_text(
     ctx: Context,
     text: str,
@@ -3365,13 +3854,17 @@ def add_text(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"add_text failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def edit_text(
     ctx: Context,
     layer_name: str,
@@ -3408,13 +3901,17 @@ def edit_text(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"edit_text failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def list_fonts(ctx: Context, filter: str | None = None) -> dict:
     """List available fonts installed in GIMP.
 
@@ -3428,10 +3925,13 @@ def list_fonts(ctx: Context, filter: str | None = None) -> dict:
         result = conn.send_command("list_fonts", {"filter": filter})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"list_fonts failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3440,6 +3940,7 @@ def list_fonts(ctx: Context, filter: str | None = None) -> dict:
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def apply_drop_shadow(
     ctx: Context,
     offset_x: int = 5,
@@ -3478,13 +3979,17 @@ def apply_drop_shadow(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"apply_drop_shadow failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def apply_gaussian_blur(
     ctx: Context, radius: float = 5.0, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
@@ -3509,13 +4014,17 @@ def apply_gaussian_blur(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"apply_gaussian_blur failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def apply_pixelate(
     ctx: Context, block_size: int = 10, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
@@ -3540,13 +4049,17 @@ def apply_pixelate(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"apply_pixelate failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def apply_emboss(
     ctx: Context,
     azimuth: float = 315,
@@ -3580,13 +4093,17 @@ def apply_emboss(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"apply_emboss failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def apply_vignette(
     ctx: Context,
     softness: float = 3.0,
@@ -3617,13 +4134,17 @@ def apply_vignette(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"apply_vignette failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def apply_noise(
     ctx: Context, amount: float = 0.2, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
@@ -3648,10 +4169,13 @@ def apply_noise(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"apply_noise failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3660,6 +4184,7 @@ def apply_noise(
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def export_icon_sizes(
     ctx: Context,
     output_dir: str,
@@ -3695,13 +4220,17 @@ def export_icon_sizes(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"export_icon_sizes failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def export_web_optimized(
     ctx: Context,
     output_dir: str,
@@ -3738,13 +4267,17 @@ def export_web_optimized(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"export_web_optimized failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def warp_region(
     ctx: Context,
     vectors: list,
@@ -3787,13 +4320,17 @@ def warp_region(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"warp_region failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def batch_resize(
     ctx: Context,
     width: int | None = None,
@@ -3823,13 +4360,17 @@ def batch_resize(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"batch_resize failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def export_sprite_sheet(
     ctx: Context,
     output_path: str,
@@ -3864,13 +4405,17 @@ def export_sprite_sheet(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"export_sprite_sheet failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def export_social_media_kit(
     ctx: Context, output_dir: str, platforms: list | None = None, image_index: int = 0
 ) -> dict:
@@ -3903,10 +4448,13 @@ def export_social_media_kit(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"export_social_media_kit failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3915,6 +4463,7 @@ def export_social_media_kit(
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def list_images(ctx: Context) -> dict:
     """List all images currently open in GIMP.
 
@@ -3930,13 +4479,17 @@ def list_images(ctx: Context) -> dict:
         result = conn.send_command("list_images", {})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"list_images failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def set_active_image(ctx: Context, image_index: int) -> dict:
     """Raise a specific image to the front / make it active in GIMP.
 
@@ -3950,13 +4503,17 @@ def set_active_image(ctx: Context, image_index: int) -> dict:
         result = conn.send_command("set_active_image", {"image_index": image_index})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"set_active_image failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     """Undo one or more operations on an image.
 
@@ -3971,13 +4528,17 @@ def undo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         result = conn.send_command("undo", {"steps": steps, "image_index": image_index})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"undo failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
     """Redo one or more previously undone operations on an image.
 
@@ -3992,13 +4553,17 @@ def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         result = conn.send_command("redo", {"steps": steps, "image_index": image_index})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"redo failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def convert_color_mode(
     ctx: Context, mode: str, num_colors: int = 256, image_index: int = 0
 ) -> dict:
@@ -4023,13 +4588,17 @@ def convert_color_mode(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"convert_color_mode failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
 def close_image(
     ctx: Context,
     handle: dict | None = None,
@@ -4057,13 +4626,17 @@ def close_image(
         result = conn.send_command("close_image", params)
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"close_image failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
     """Get the bounding rectangle of the current selection.
 
@@ -4077,13 +4650,17 @@ def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
         result = conn.send_command("get_selection_bounds", {"image_index": image_index})
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"get_selection_bounds failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def get_pixel_color(
     ctx: Context, x: int, y: int, image_index: int = 0, layer_name: str | None = None
 ) -> dict:
@@ -4109,13 +4686,17 @@ def get_pixel_color(
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"get_pixel_color failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
 def get_histogram(ctx: Context, channel: str = "value", image_index: int = 0) -> dict:
     """Get histogram statistics for a channel of the active layer.
 
@@ -4136,10 +4717,13 @@ def get_histogram(ctx: Context, channel: str = "value", image_index: int = 0) ->
         )
         if result["status"] == "success":
             return result["results"]
-        raise Exception(result.get("error", "Unknown error"))
-    except Exception as e:
-        traceback.print_exc()
-        raise Exception(f"get_histogram failed: {e}")
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
 
 
 def main():

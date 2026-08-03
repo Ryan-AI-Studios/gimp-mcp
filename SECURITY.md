@@ -9,8 +9,8 @@ Hardening for the **GIMP plug-in TCP hop** (not MCP stdio itself). Defaults afte
 | Class A exec | Plugin `cmds` / `python-fu-eval` / `python-fu-exec` **off** |
 | Class B exec | MCP `call_api` **hard-fails** unless `GIMP_MCP_ALLOW_EXEC=1` |
 | Path jail | All param-driven open/save/export under `GIMP_WORKSPACE_ROOT` |
-| Errors | Structured `code`; no traceback unless `GIMP_MCP_DEBUG` |
-| Audit | JSONL diagnostics (not a secret, not tamper-evident) |
+| Errors | Structured envelope + `code`; ToolError single-line wire; no traceback unless `GIMP_MCP_DEBUG` |
+| Audit | Split JSONL: `audit-server.jsonl` + `audit-plugin.jsonl` (join by `request_id`; not a secret, not tamper-evident) |
 
 ## Threat model (local)
 
@@ -40,8 +40,8 @@ References:
 | `GIMP_WORKSPACE_ROOT` | Path jail root | **required** for file ops (fail-closed) |
 | `GIMP_MCP_ALLOW_EXEC` | Class A + Class B exec | **off** |
 | `GIMP_MCP_ALLOW_NON_LOOPBACK` | Non-loopback bind | **off** |
-| `GIMP_MCP_DEBUG` | Tracebacks + verbose diagnostics only | **off** |
-| `GIMP_MCP_AUDIT_LOG` | Audit JSONL path | platform default |
+| `GIMP_MCP_DEBUG` | Tracebacks + verbose diagnostics only (never a policy bypass) | **off** |
+| `GIMP_MCP_AUDIT_LOG` | Audit directory **or** `.jsonl` file path (sibling `audit-server` / `audit-plugin` names) | platform default dir |
 | `GIMP_MCP_ADVANCED_TOOLS` | Full ~90-tool MCP surface (`1`/`true`/`yes`/`on`) | **off** → ~18 high-level tools |
 
 Token file default:
@@ -49,10 +49,19 @@ Token file default:
 - Windows: `%LOCALAPPDATA%\gimp-mcp\session.token` (best-effort `icacls` user ACL)
 - POSIX: `~/.config/gimp-mcp/session.token` mode `0600`
 
-Audit default:
+Audit default (split files, track 0011 — avoids Windows sharing locks):
 
-- Windows: `%LOCALAPPDATA%\gimp-mcp\audit.jsonl`
-- POSIX: `~/.local/state/gimp-mcp/audit.jsonl` (or XDG)
+- Windows: `%LOCALAPPDATA%\gimp-mcp\audit-server.jsonl` + `audit-plugin.jsonl`
+- POSIX: `~/.local/state/gimp-mcp/audit-server.jsonl` + `audit-plugin.jsonl` (or XDG)
+
+`GIMP_MCP_AUDIT_LOG` rules:
+
+- If set to a path ending in `.jsonl`, use that path's **directory** and write the sibling filenames above.
+- If set to a directory, place `audit-server.jsonl` / `audit-plugin.jsonl` under it.
+- Host events: `mcp_tool_start` / `mcp_tool_end` (tool, request_id, success, code?).
+- Plugin events: existing command / auth / path / command_complete + `request_id`.
+- **Never** log tokens, auth secrets, or file bytes.
+- Host does **not** call `traceback.print_exc()` on expected tool failures unless `GIMP_MCP_DEBUG=1`.
 
 ## Start order
 
@@ -97,4 +106,11 @@ It does **not** disable GIMP’s built-in PDB procedures globally. Startup audit
 | `EXEC_DISABLED` | Class A or Class B exec without `ALLOW_EXEC` |
 | `PATH_DENIED` | Workspace unset or path escapes root |
 | `BIND_DENIED` | Non-loopback without `GIMP_MCP_ALLOW_NON_LOOPBACK=1`; bare `localhost` is **always** denied (use `127.0.0.1`) |
-| `INTERNAL_ERROR` | Unexpected failure (detail depends on DEBUG) |
+| `INTERNAL_ERROR` | Unexpected failure (detail depends on DEBUG); `state_may_have_changed: true` conservative |
+| `CONNECTION_FAILED` | Host↔plugin TCP/socket/timeout (`retryable: true`) |
+| `PARTIAL_MUTATION` | Incomplete mutation (`state_may_have_changed: true`) |
+| `ALPHA_LOST` | Export lost alpha; see envelope `details` |
+
+Product envelope (MCP `isError` text) is single-line `CODE: message (request_id=…) | {json}` —
+see `GIMP_MCP_PROTOCOL.md`. Do not rely on FastMCP `mask_error_details` alone (no code matrix /
+request_id control).
