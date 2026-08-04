@@ -301,7 +301,7 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~5b9d50a post-0018) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~bb8dc59 post-0019) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
 | Active focus | **0020-AgentSkillPackaging** (placeholder); prior **0019 Completed** constrained BatchProcedure |
 | Track count | 0001–0028 (see conductor.md) |
@@ -317,7 +317,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Cross-model:** Claude Sonnet 5/high **PASS WITH DEFERRED P3** (Codex rate-limited 2026-08-04).
 - **Residuals:** live Display.new under `-i`; Windows tree-kill; optional `--probe-batch` → deferred.md.
 - **Neighbor walls:** skills **0020**; GIMP CI **0022**.
-- **PR/SHA:** filled after squash-merge.
+- **PR/SHA:** PR #29 / main@bb8dc59
 
 ### 0018 Completed (PR #27 / main@5b9d50a)
 
