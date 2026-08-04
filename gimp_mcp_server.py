@@ -514,8 +514,10 @@ def raise_from_plugin_result(
 ) -> NoReturn:
     """Map plugin TCP error dict → ToolError with full envelope (incl. details).
 
-    When plugin omits rollback fields, host open-TX hint may fill via ``image_id``
-    (explicit or contextvar). Explicit plugin ``rollback_available`` is trusted.
+    Plugin is SoT for TCP errors: top-level ``rollback_available`` /
+    ``transaction_id`` are forwarded as tool_fail kwargs. When omitted, defaults
+    to ``rollback_available=False`` — host open-TX hint is **not** applied here
+    (hint is for pre-TCP host-side tool_fail only).
     """
     code = str(result.get("code") or sec.CODE_INTERNAL)
     raw_msg = result.get("error", "Unknown error")
@@ -5570,10 +5572,14 @@ def close_image(
             params["image_index"] = int(image_index)
         result = conn.send_command("close_image", params)
         if result["status"] == "success":
-            # Plugin force-ended any open agent TX before delete — clear host hint.
+            # Plugin force-ended open agent TXs before delete — clear host hint.
             iid = _image_id_from_handle(handle)
             if iid is not None:
                 _host_tx_hint_clear(iid)
+            else:
+                # Legacy image_index path: no image_id on host — drop all hints
+                # (single-client MCP; avoids stale pre-TCP rollback_available).
+                _HOST_OPEN_TX.clear()
             return result["results"]
         raise_from_plugin_result(result, "tool")
     except ToolError:
