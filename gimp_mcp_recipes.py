@@ -626,6 +626,16 @@ def run_exiftool_strip(path: str) -> dict[str, Any]:
             f"exiftool failed (exit {completed.returncode}): {err or 'no output'}",
             details={"path": jailed, "returncode": completed.returncode},
         )
+    # Best-effort audit (never log file contents); write_audit_event swallows OSError
+    sec.write_audit_event(
+        {
+            "event": "exiftool_strip",
+            "path": jailed,
+            "exe": exe,
+            "returncode": completed.returncode,
+        },
+        sec.audit_server_path(),
+    )
     return {
         "path": jailed,
         "stripped": True,
@@ -962,9 +972,21 @@ def run_recipe(
                     details={"op": op},
                 )
 
-            # created_paths: only files newly written this run (never pre-existing replace targets)
+            # created_paths: only files newly written this run (never pre-existing replace targets).
+            # Rebind $output_path when plugin returns a resolved path (collision=version → out-1.png).
             if op in ("export_image", "save_xcf") and isinstance(result, dict):
-                resolved = result.get("file_path") or step_params.get("file_path")
+                result_path = result.get("file_path")
+                if isinstance(result_path, str) and result_path:
+                    # Always rebind when plugin reports a concrete path so later
+                    # verify_artifact / steps see the file that was actually written.
+                    jailed_resolved = _jail_path(result_path, "output_path")
+                    assert jailed_resolved is not None
+                    context["output_path"] = jailed_resolved
+                    resolved = jailed_resolved
+                else:
+                    fallback = step_params.get("file_path")
+                    resolved = fallback if isinstance(fallback, str) and fallback else None
+
                 if isinstance(resolved, str) and resolved and Path(resolved).exists():
                     pre_existed = existed_before.get(resolved, False)
                     if not pre_existed and resolved not in created_paths:

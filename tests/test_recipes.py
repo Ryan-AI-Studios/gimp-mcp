@@ -85,6 +85,13 @@ def test_bad_op_json_fails_closed(tmp_path: Path) -> None:
     assert ei.value.code == sec.CODE_INTERNAL
 
 
+def test_corrupt_json_load_fails_closed(tmp_path: Path) -> None:
+    (tmp_path / "broken.json").write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(sec.GimpMcpError, match=r"fail-closed|load failed|JSON") as ei:
+        recipes.load_recipes_from_dir(tmp_path)
+    assert ei.value.code == sec.CODE_INTERNAL
+
+
 def test_duplicate_id_version_fails(tmp_path: Path) -> None:
     r = {
         "id": "dup",
@@ -333,6 +340,127 @@ def test_transparent_png_session_order(workspace: Path) -> None:
     assert out.exists()
 
 
+def test_exif_normalize_session_order(workspace: Path) -> None:
+    src = workspace / "in.jpg"
+    src.write_bytes(b"fake-jpeg")
+    out = workspace / "out.png"
+    calls: list[str] = []
+
+    def _send(cmd: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append(cmd)
+        if cmd == "open_image":
+            return {
+                "status": "success",
+                "results": {
+                    "handle": {"image_id": 1, "generation": 1, "session_epoch": 1},
+                },
+            }
+        if cmd == "normalize_image_orientation":
+            return {"status": "success", "results": {"mode": "assume_pixels_upright"}}
+        if cmd == "export_image":
+            Path(params["file_path"]).write_bytes(
+                build_minimal_png(width=1, height=1, color_type=2)
+            )
+            return {
+                "status": "success",
+                "results": {"file_path": params["file_path"], "format": "png"},
+            }
+        return {"status": "error", "error": cmd}
+
+    log = recipes.run_recipe(
+        "exif-normalize",
+        input_path=str(src),
+        output_path=str(out),
+        session_send=_send,
+    )
+    assert log["ok"] is True
+    assert calls == ["open_image", "normalize_image_orientation", "export_image"]
+    assert out.exists()
+
+
+def test_version_collision_rebinds_output_path_for_verify(workspace: Path) -> None:
+    """collision=version must rebind $output_path so verify sees the written file."""
+    requested = workspace / "out.png"
+    # Stale pre-existing file at the requested path (width=1); new export is width=2
+    requested.write_bytes(build_minimal_png(width=1, height=1, color_type=2))
+    resolved = workspace / "out-1.png"
+    verify_paths: list[str] = []
+
+    def _send(cmd: str, params: dict[str, Any]) -> dict[str, Any]:
+        if cmd == "export_image":
+            assert Path(params["file_path"]) == requested
+            resolved.write_bytes(build_minimal_png(width=2, height=2, color_type=2))
+            return {
+                "status": "success",
+                "results": {"file_path": str(resolved), "format": "png"},
+            }
+        return {"status": "error", "error": cmd}
+
+    real_verify = recipes._run_host_op
+
+    def _host_wrap(op: str, params: dict[str, Any]) -> dict[str, Any]:
+        if op == "verify_artifact":
+            verify_paths.append(str(params.get("path")))
+        return real_verify(op, params)
+
+    reg = recipes.RecipeRegistry()
+    reg.add(
+        {
+            "id": "export-then-verify",
+            "version": "1.0.0",
+            "title": "t",
+            "batch_safe": False,
+            "requires_open_session": True,
+            "requires_gimp": True,
+            "parameters": {
+                "output_path": {"type": "path", "required": True},
+                "collision": {
+                    "type": "string",
+                    "enum": ["fail", "version", "replace"],
+                    "default": "version",
+                },
+            },
+            "steps": [
+                {
+                    "op": "export_image",
+                    "with": {
+                        "file_path": "$output_path",
+                        "format": "png",
+                        "collision": "$collision",
+                    },
+                },
+                {
+                    "op": "verify_artifact",
+                    "with": {
+                        "path": "$output_path",
+                        "expected": {"format": "png", "width": 2},
+                    },
+                },
+            ],
+            "rollback": {"delete_outputs_on_fail": True},
+        }
+    )
+    with patch.object(recipes, "_run_host_op", side_effect=_host_wrap):
+        log = recipes.run_recipe(
+            "export-then-verify",
+            handle={"image_id": 1, "generation": 1, "session_epoch": 1},
+            output_path=str(requested),
+            params={"collision": "version"},
+            session_send=_send,
+            registry=reg,
+        )
+    assert log["ok"] is True
+    assert verify_paths, "verify_artifact must run"
+    assert Path(verify_paths[0]) == resolved
+    # Must not have verified the stale requested path
+    assert Path(verify_paths[0]) != requested
+    art_paths = [Path(a["path"]) for a in log["artifacts"] if a.get("role") == "output"]
+    assert resolved in art_paths
+    assert str(resolved) in log["created_paths"] or any(
+        Path(p) == resolved for p in log["created_paths"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Rollback: replace + fail keeps pre-existing
 # ---------------------------------------------------------------------------
@@ -514,10 +642,17 @@ def test_exiftool_shell_false(workspace: Path, monkeypatch: pytest.MonkeyPatch) 
         return m
 
     monkeypatch.setattr(recipes.subprocess, "run", _fake_run)
+    events: list[dict[str, Any]] = []
+
+    def _audit(event: dict[str, Any], _path: Any = None) -> None:
+        events.append(dict(event))
+
+    monkeypatch.setattr(sec, "write_audit_event", _audit)
     log = recipes.run_recipe("exif-strip", params={"path": str(p)})
     assert log["ok"] is True
     assert ran["kwargs"].get("shell") is False
     assert ran["cmd"][1:3] == ["-overwrite_original_in_place", "-all="]
+    assert any(e.get("event") == "exiftool_strip" for e in events)
 
 
 # ---------------------------------------------------------------------------
@@ -694,8 +829,12 @@ def test_cli_batch_continue_on_fail(workspace: Path, capsys: pytest.CaptureFixtu
                 "--json",
             ]
         )
-    assert code != ec.EXIT_SUCCESS
+    assert code == ec.EXIT_PARTIAL
+    assert code == 10
     env = json.loads(capsys.readouterr().out)
+    assert env["exit_code"] == 10
+    assert env["code"] == sec.CODE_PARTIAL_MUTATION
+    assert env["ok"] is False
     assert env["data"]["total"] == 2
     assert env["data"]["failed"] == 1
     assert env["data"]["results"][0]["ok"] is True

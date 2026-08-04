@@ -707,7 +707,7 @@ def _cmd_batch(args: argparse.Namespace) -> int:
             }
         results.append(entry)
 
-    exit_n = ec.EXIT_GENERIC if any_failed else ec.EXIT_SUCCESS
+    exit_n = ec.exit_code_for(sec.CODE_PARTIAL_MUTATION) if any_failed else ec.EXIT_SUCCESS
     data = {
         "recipe_id": recipe_id,
         "version": version,
