@@ -110,10 +110,12 @@ minting. Track IDs are creation order, not execution order.
   → 0018 install/doctor — Completed
   → 0019 batch procedures — Completed
   → 0020 Agent Skill Packaging — Completed
-  → 0021 … through 0028 Final product polish (v1)
+  → 0021 Codex/Grok adapters — Completed
+  → 0022 E2E/CI — Completed
+  → 0023 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0021 Completed.** Next: **0022** IntegrationE2EAndCi
+**28 tracks** (0001–0028). **0001–0022 Completed.** Next: **0023** PerformanceSnapshotBudget
 (placeholder — full plan pass first). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
@@ -121,7 +123,9 @@ Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** +
 Pixel verify **0014**. Recipes **0015**. NDE **0016**. Undo groups **0017**. Install SoT
 **`uv run gimp-agent install`** (**0018**, EXPECTED **10**). Headless batch **0019**
 (constrained BatchProcedure). Runtime Agent Skills package **`skills/`** (**0020**).
-Client adapters + dual image delivery **0021**. Authoritative table:
+Client adapters + dual image delivery **0021**. Fixture corpus + offline E2E + CI policy
+**0022** (`tests/fixtures/`, `docs/ci-and-testing.md`; headless GIMP on GA is
+**document-only**; self-hosted Windows residual). Authoritative table:
 `conductor/conductor.md`.
 
 ---
@@ -163,9 +167,14 @@ Pinned tools (as of 2026-08 bootstrap; re-check PyPI when bumping):
 | Python | ≥3.11 (CI: 3.13 via uv) |
 
 CI: **`.github/workflows/ci.yml` is the sole quality SoT** (`actions/checkout@v7`,
-`astral-sh/setup-uv@v9`, `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`). Legacy `lint.yml` was
-retired in 0002 (no branch protection required the Lint job name). Pre-commit uses
-`ruff-check` then `ruff-format` at rev `v0.16.1` (local may `--fix`; CI is check-only).
+`astral-sh/setup-uv@v9.0.0` full tag — setup-uv no longer publishes floating `@v9`,
+`FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`, quality job `timeout-minutes: 15`).
+Required check name (immutable): **Lint · Format · Types · Tests**. Offline pytest
+excludes `integration` and `slow`; **0022** fixture corpus + offline E2E run inside that
+job. **Headless GIMP on GA is document-only** (Noble apt GIMP is **2.10.x**,
+API-incompatible with GIMP **3.2** ship set). See `docs/ci-and-testing.md`. Legacy
+`lint.yml` retired in 0002. Pre-commit uses `ruff-check` then `ruff-format` at rev
+`v0.16.1` (local may `--fix`; CI is check-only).
 
 ### Quality surface policy (post-0002)
 
@@ -304,14 +313,25 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~3d9e5b4 post-0021) |
-| Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0022-IntegrationE2EAndCi** (placeholder — full plan pass first); prior **0021 Completed** adapters + dual delivery |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~e7f534f post-0022) |
+| Quality gates | full product ruff + format; basedpyright server+tests; offline pytest (fixtures + offline E2E); ledgerful verify |
+| Active focus | **0023-PerformanceSnapshotBudget** (placeholder — full plan pass first); prior **0022 Completed** fixtures + offline E2E + CI policy |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
 | Runtime skills | Committed repo `skills/` (router `gimp` + 5 focused); `uv run gimp-agent skills list\|validate\|install` |
 | Client adapters | Committed `adapters/` (Grok/Codex/Claude); `.mcp.json` server id **`gimp`**; dual snapshot delivery |
+
+### 0022 Completed — IntegrationE2EAndCi
+
+- **Shipped:** `tests/fixtures/` min PNG corpus + sha256 README + generator; `.gitattributes` binary; `tests/_png_builder.py` extract + rewire; `fixture_paths` / `conftest.tmp_workspace`; offline golden-path E2E (`test_offline_e2e.py`) with metric asserts + recipe ids `transparent-png` / `web-export`; **zero** `@integration` tests.
+- **CI:** quality job sole required gate; `timeout-minutes: 15`; immutable name comment for **Lint · Format · Types · Tests**; setup-uv `@v9.0.0` full tag held.
+- **Policy:** headless GIMP on GitHub-hosted runners is **document-only** (Noble apt GIMP **2.10.x** ≠ GIMP **3.2** product path); residual self-hosted Windows GIMP 3.2.4.
+- **Docs:** `docs/ci-and-testing.md` (markers, fixtures, branch-protection checklist text, operator live-matrix index, checkout@v7/`pull_request_target` note, CRLF SoT); README one-line pointer.
+- **Cross-model:** Claude Sonnet **PASS** final gate after P2 Linux path-traversal fix (Codex rate-limited 2026-08-04).
+- **Residuals:** branch-protection UI apply (ops); self-hosted Windows runner; Paeth shared predictor residual → deferred.md.
+- **Neighbor walls:** perf **0023** (placeholder); docs polish **0024**; eval corpus **0025**.
+- **PR/SHA:** PR #35 / main@e7f534f
 
 ### 0021 Completed — CodexGrokAdapters
 
@@ -321,7 +341,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Tests:** `tests/test_adapters.py` + dual-delivery snapshot coverage.
 - **Cross-model:** Claude Sonnet 5/high **PASS** final gate (Codex rate-limited 2026-08-04); internal + Claude P2/P3 fixed before final gate.
 - **Residuals:** prune CLI verb; marketplace plugin; age prune; WSL bridge; Grok hooks → deferred.md.
-- **Neighbor walls:** E2E/CI **0022** (placeholder); perf **0023**; docs polish **0024**.
+- **Neighbor walls:** E2E/CI **0022 Completed**; perf **0023**; docs polish **0024**.
 - **PR/SHA:** PR #33 / main@3d9e5b4
 
 ### 0020 Completed — AgentSkillPackaging
@@ -345,7 +365,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Security:** strip `ALLOW_EXEC`+token from child; recursive freeform-key reject; never product `python-fu-eval`.
 - **Cross-model:** Claude Sonnet 5/high **PASS WITH DEFERRED P3** (Codex rate-limited 2026-08-04).
 - **Residuals:** live Display.new under `-i`; Windows tree-kill; optional `--probe-batch` → deferred.md.
-- **Neighbor walls:** skills **0020 Completed**; GIMP CI **0022**.
+- **Neighbor walls:** skills **0020 Completed**; GIMP CI **0022 Completed**.
 - **PR/SHA:** PR #29 / main@bb8dc59
 
 ### 0018 Completed (PR #27 / main@5b9d50a)
