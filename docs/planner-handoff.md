@@ -112,13 +112,12 @@ minting. Track IDs are creation order, not execution order.
   → 0020 Agent Skill Packaging — Completed
   → 0021 Codex/Grok adapters — Completed
   → 0022 E2E/CI — Completed
-  → 0023 Performance snapshot budget — Implemented (product defaults landed)
+  → 0023 Performance snapshot budget — Completed
   → 0024 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0022 Completed.** **0023** product behavior
-landed on this branch (conductor registry Completed is orchestrator closeout).
-Next implement focus: **0024** DocumentationProductPolish. Orientation SoT is
+**28 tracks** (0001–0028). **0001–0023 Completed.** Next implement: **0024**
+DocumentationProductPolish (**placeholder — full plan pass first**). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
@@ -128,18 +127,12 @@ raise to design 250M). Recipes **0015**. NDE **0016**. Undo groups **0017**. Ins
 (constrained BatchProcedure). Runtime Agent Skills package **`skills/`** (**0020**).
 Client adapters + dual image delivery **0021**. Fixture corpus + offline E2E + CI policy
 **0022** (`tests/fixtures/`, `docs/ci-and-testing.md`; headless GIMP on GA is
-**document-only**; self-hosted Windows residual).
-
-**0023 product facts (landed; not plan-only):** Default max edge **1024** (HL
-`render_visible_composite` + advanced `get_image_bitmap` shared path;
-`get_state_snapshot` `max_size` default **1024**). Hard max **4096**, region source
-edge **8192** (crop cap; output still hard-capped), host TCP timeout **60s**
-(`GIMP_MCP_COMMAND_TIMEOUT_S`, clamp **5–600**). `TimeoutError` → `CODE_TIMEOUT`
-via **connect + recv** (reconnect-per-command re-enters `connect()` with fresh
-timeout). Soft encoded-byte ImageContent guard still **deferred**. Verify budgets
-stay **50M/25M**; mapping padding **0**. Residuals: H2 soft byte guard, live Windows
-bench numbers, plugin cooperative GEGL cancel. No mcp/fastmcp major bump.
-Authoritative table: `conductor/conductor.md`.
+**document-only**; self-hosted Windows residual). Snapshot budget **0023**: default max
+edge **1024** (HL + advanced aliases; `get_state_snapshot` `max_size` default 1024), hard
+**4096**, region source **8192**, host TCP **60s** / `GIMP_MCP_COMMAND_TIMEOUT_S` (max
+600) with `TimeoutError` → `CODE_TIMEOUT` (connect+recv); `session_probe.snapshot_budget`;
+`docs/performance.md`; H2 soft encoded-byte ImageContent guard deferred. Mapping padding
+**0**. No mcp/fastmcp major bump. Authoritative table: `conductor/conductor.md`.
 
 ---
 
