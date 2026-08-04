@@ -102,16 +102,16 @@ minting. Track IDs are creation order, not execution order.
   → 0010 HighLevelMcpSurface — Completed
   → 0011 StructuredErrorsAndAudit — Completed
   → 0012 DeterministicCliSidecar — Completed
-  → 0013 AtomicSaveExport … through 0028 Final product polish (v1)
+  → 0013 AtomicSaveExport — Completed
+  → 0014 PixelVerificationProtocol — Completed
+  → 0015 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028) cover bootstrap → stabilization → security/vision → agent surface → CLI →
-recipes → packaging → golden path → v1 polish. **0001–0012 Completed.** Orientation SoT is
-`orient_workspace` (state-manifest v1). Stable handles + STALE_HANDLE + `select_*` in **0007**.
-Issue 16 fixed in **0005**. Issue 17 fixed in **0004**. EXIF normalize + coordinate math in **0008**.
-Source_Immutable + checkpoints in **0009**. Default high-level MCP surface (~18 tools) in **0010**.
-Structured error envelope + request_id audit in **0011**. Agent CLI (`gimp-agent`) in **0012**.
-Authoritative table: `conductor/conductor.md`.
+**28 tracks** (0001–0028). **0001–0014 Completed.** Orientation SoT is `orient_workspace`. Handles
+**0007**. Alpha **0005**. Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010**
+→ **20** tools after **0014** (`compare_images` / `verify_artifact`). Errors **0011**. CLI **0012**.
+Atomic save/export **0013**. Pixel verification **0014**. Next product focus **0015** recipes
+(placeholder). Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -292,7 +292,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0014-PixelVerificationProtocol** — Proposed (needs full plan); prior **0013 Completed** PR #18 / main@5763a69 |
+| Active focus | **0015-RecipeLibrary** — Proposed (placeholder); prior **0014 Completed** PR #20 / main@00cc49a |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
@@ -408,8 +408,28 @@ If indexes are empty: `ledgerful index --incremental`.
 - **CLI:** `gimp-agent save-xcf` / `export` (session TCP; plugin down → exit 4).
 - **Flat manifests:** save + public export results (no nested `results.status`).
 - **Codex final:** **PASS WITH DEFERRED P3** (structure greps vs behavioral replace-spy residual).
-- **Residuals:** live GIMP matrix (ops); backup-after-failed-replace; spy tests; full pixel → **0014**; installer → **0018**.
-- **Next:** **0014** PixelVerificationProtocol (placeholder — needs full plan).
+- **Residuals:** live GIMP matrix (ops); backup-after-failed-replace; spy tests; full pixel → **0014 Completed**; installer → **0018**.
+- **Next:** was **0014** (now Completed).
+
+### 0014 completion notes (planners / implementers)
+
+- **Completed (PR #20 / main@00cc49a):** host-only **`gimp_mcp_verify.py`** (not EXPECTED ship file;
+  pyproject py-modules / isort / basedpyright).
+- **Decoder:** PNG 8-bit non-interlaced color types 0/2/4/6; **defilter 0–4 incl. Paeth**; reject
+  16-bit / palette / interlaced → `UNSUPPORTED` (12).
+- **Metrics:** MAE, max_ae, changed_pixels/fraction, alpha transparent counts, **global** luminance
+  SSIM (C1/C2; auto off when `w*h > 1e6`; honesty: ≠ ImageMagick windowed SSIM).
+- **Budgets:** trusted **50M** / untrusted **25M** pixels; file max **500 MiB**; exceed →
+  `POLICY_DENIED` (6). Env: `GIMP_MCP_MAX_DECODED_PIXELS`, `GIMP_MCP_UNTRUSTED_IMAGES`,
+  `GIMP_MCP_MAX_VERIFY_FILE_BYTES`.
+- **MCP HL catalog 20:** `compare_images` + `verify_artifact` (ok vs pass; path-jailed; both HL).
+- **CLI host-only:** `gimp-agent compare` / `verify` — **no** TCP/token/plugin; `--spec` **workspace-jailed**;
+  fail → exit **8** (`VERIFY_FAILED`).
+- **Caps:** `pixel_verification: true`; **`alpha_snapshot` stays false** (live renderer only).
+- **Doctor:** optional `magick` else `compare` info check.
+- **Codex final:** **PASS WITH DEFERRED P3** (hand-authored Paeth fixture residual; mitigated by corner tests).
+- **Residuals:** windowed SSIM; 16-bit/interlaced/palette; live `render_alpha`; recipes **0015**; skills **0020**.
+- **Next:** **0015-RecipeLibrary** (placeholder — needs full plan).
 
 ---
 
@@ -417,6 +437,9 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-03 | **0014 Completed:** pixel verify metrics, HL 20, host-only CLI compare/verify; PR #20 / main@00cc49a; Codex PASS WITH DEFERRED P3; next=0015 |
+| 2026-08-03 | Folded AI-review into **0014**: Paeth defilter; 50M budget; host-only CLI; global SSIM; alpha_snapshot false; magick exit 0\|1 |
+| 2026-08-03 | Full plan **0014** PixelVerificationProtocol: stdlib metrics, HL 20, CLI compare/verify, refine helper; Ready — not started |
 | 2026-08-03 | **0013 Completed:** atomic save/export, collision, CLI verbs, ship set 8; PR #18 / main@5763a69; Codex PASS WITH DEFERRED P3; next=0014 |
 | 2026-08-03 | **0012 Completed:** gimp-agent doctor/probe/exit map; PR #16 / main@691aaa9; Codex PASS; next=0013 |
 | 2026-08-03 | Full plan **0012** DeterministicCliSidecar: gimp-agent doctor/probe/exit map; Ready — not started |
