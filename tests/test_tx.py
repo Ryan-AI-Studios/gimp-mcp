@@ -333,3 +333,219 @@ def test_raise_from_plugin_result_forwards_rollback_fields() -> None:
     assert parsed["error"]["code"] == sec.CODE_POLICY_DENIED
     assert parsed["error"]["rollback_available"] is True
     assert parsed["error"]["transaction_id"] == "txn_deadbeef"
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers: image_id_from_params + enrich_error_with_open_tx (P1 / P2-1)
+# ---------------------------------------------------------------------------
+
+
+def test_image_id_from_params_handle_and_layer_handle() -> None:
+    assert tx.image_id_from_params(None) is None
+    assert tx.image_id_from_params({}) is None
+    assert tx.image_id_from_params({"handle": {"image_id": 7}}) == 7
+    # layer_handle (HL NDE) without handle
+    assert tx.image_id_from_params({"layer_handle": {"image_id": 42, "item_id": 9}}) == 42
+    # handle preferred when both present
+    assert (
+        tx.image_id_from_params(
+            {
+                "handle": {"image_id": 1},
+                "layer_handle": {"image_id": 2},
+            }
+        )
+        == 1
+    )
+    assert tx.image_id_from_params({"source_handle": {"image_id": 99}}) == 99
+    assert tx.image_id_from_params({"image_id": 3}) == 3
+    assert tx.image_id_from_params({"layer_handle": {"item_id": 1}}) is None
+    assert tx.image_id_from_params({"handle": "not-a-dict"}) is None
+
+
+def test_enrich_error_with_open_tx_stamps_when_absent() -> None:
+    err = {"status": "error", "code": "POLICY_DENIED", "error": "Source_Immutable"}
+    out = tx.enrich_error_with_open_tx(err, open_transaction_id="txn_abc123")
+    assert out["rollback_available"] is True
+    assert out["transaction_id"] == "txn_abc123"
+    # mutates in place for send-path efficiency
+    assert out is err
+
+
+def test_enrich_error_with_open_tx_no_open_or_success_or_explicit() -> None:
+    bare = {"status": "error", "error": "x"}
+    assert tx.enrich_error_with_open_tx(bare, open_transaction_id=None) is bare
+    assert "rollback_available" not in bare
+
+    ok = {"status": "success", "results": {}}
+    assert tx.enrich_error_with_open_tx(ok, open_transaction_id="txn_x") is ok
+    assert "rollback_available" not in ok
+
+    # Explicit False must not be overridden (trust producer)
+    explicit = {
+        "status": "error",
+        "error": "no tx",
+        "rollback_available": False,
+    }
+    out = tx.enrich_error_with_open_tx(explicit, open_transaction_id="txn_x")
+    assert out["rollback_available"] is False
+    assert "transaction_id" not in out or out.get("transaction_id") != "txn_x"
+
+
+def test_plugin_send_path_calls_enrich_error_with_tx() -> None:
+    """Structure: client send path stamps TX fields before json.dumps."""
+    body = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    assert "def _enrich_error_with_tx" in body
+    assert "self._enrich_error_with_tx(" in body
+    assert "strip_traceback_unless_debug" in body
+    # enrich sits near send serialization
+    idx_strip = body.find("strip_traceback_unless_debug")
+    idx_enrich = body.find("_enrich_error_with_tx", idx_strip)
+    idx_dumps = body.find("json.dumps(response)", idx_strip)
+    assert idx_strip > 0
+    assert idx_enrich > idx_strip
+    assert idx_dumps > idx_enrich
+
+
+def test_plugin_reap_uses_image_id_from_params() -> None:
+    """Structure: dispatch reap resolves layer_handle via pure helper."""
+    body = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    assert "def _maybe_reap_on_dispatch" in body
+    # Must use shared pure resolver (not handle-only)
+    reap_start = body.find("def _maybe_reap_on_dispatch")
+    reap_end = body.find("\n    def ", reap_start + 1)
+    reap_src = body[reap_start:reap_end]
+    assert "image_id_from_params" in reap_src
+    assert "layer_handle" in body  # documented / used in pure keys
+
+
+def test_partial_rollback_undo_fail_pops_stack() -> None:
+    """Structure: after undo_group_end ok + image.undo fail, stack is popped."""
+    body = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    rb_start = body.find("def _tx_rollback")
+    rb_end = body.find("\n    def _tx_status", rb_start)
+    assert rb_start > 0 and rb_end > rb_start
+    rb_src = body[rb_start:rb_end]
+    assert "image.undo()" in rb_src or "image.undo(" in rb_src
+    # On undo failure path: pop + force_closed + recent + state_may_have_changed
+    assert "force_closed" in rb_src
+    assert "stack.pop()" in rb_src
+    assert "state_may_have_changed=True" in rb_src
+    assert "group closed" in rb_src or "stack cleared" in rb_src
+
+
+def test_sync_image_generations_prunes_tx_stacks() -> None:
+    body = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    sync_start = body.find("def _sync_image_generations")
+    sync_end = body.find("\n    def _pixel_orientation_normalized", sync_start)
+    sync_src = body[sync_start:sync_end]
+    assert "_agent_tx_stack" in sync_src
+    assert "_agent_tx_recent" in sync_src
+
+
+def test_raise_from_plugin_result_host_hint_when_fields_absent() -> None:
+    """Host open-TX hint fills envelope when plugin omits rollback fields."""
+    from unittest.mock import patch
+
+    import pytest
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_security as sec
+    import gimp_mcp_server as srv
+
+    # Reset host hint cache for isolation
+    srv._HOST_OPEN_TX.clear()
+    srv._host_tx_hint_set(55, "txn_host_hint_55")
+
+    result = {
+        "status": "error",
+        "code": sec.CODE_POLICY_DENIED,
+        "error": "Source_Immutable protected",
+        # no rollback_available / transaction_id from plugin
+    }
+    try:
+        with patch.object(srv.sec, "write_audit_event"):
+            with pytest.raises(ToolError) as ei:
+                srv.raise_from_plugin_result(
+                    result,
+                    "apply_nde_filter",
+                    request_id="req_" + "f" * 32,
+                    image_id=55,
+                )
+        parsed = sec.parse_tool_error_text(str(ei.value))
+        assert parsed is not None
+        assert parsed["error"]["rollback_available"] is True
+        assert parsed["error"]["transaction_id"] == "txn_host_hint_55"
+    finally:
+        srv._HOST_OPEN_TX.clear()
+
+
+def test_raise_from_plugin_result_trusts_explicit_false() -> None:
+    """Plugin explicit rollback_available=False must not be overridden by host hint."""
+    from unittest.mock import patch
+
+    import pytest
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_security as sec
+    import gimp_mcp_server as srv
+
+    srv._HOST_OPEN_TX.clear()
+    srv._host_tx_hint_set(55, "txn_host_hint_55")
+    result = {
+        "status": "error",
+        "code": sec.CODE_INTERNAL,
+        "error": "plugin says no rollback",
+        "rollback_available": False,
+    }
+    try:
+        with patch.object(srv.sec, "write_audit_event"):
+            with pytest.raises(ToolError) as ei:
+                srv.raise_from_plugin_result(
+                    result,
+                    "tool",
+                    request_id="req_" + "a" * 32,
+                    image_id=55,
+                )
+        parsed = sec.parse_tool_error_text(str(ei.value))
+        assert parsed is not None
+        assert parsed["error"]["rollback_available"] is False
+    finally:
+        srv._HOST_OPEN_TX.clear()
+
+
+def test_tool_fail_reads_contextvar_image_id() -> None:
+    """with_structured_error contextvar enables host hint without explicit image_id."""
+    from unittest.mock import patch
+
+    import pytest
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_security as sec
+    import gimp_mcp_server as srv
+
+    srv._HOST_OPEN_TX.clear()
+    srv._host_tx_hint_set(77, "txn_ctx_77")
+    token = srv._current_tool_image_id.set(77)
+    try:
+        with patch.object(srv.sec, "write_audit_event"):
+            with pytest.raises(ToolError) as ei:
+                srv.tool_fail(
+                    sec.CODE_INTERNAL,
+                    "mid-tx mutator fail",
+                    request_id="req_" + "b" * 32,
+                )
+        parsed = sec.parse_tool_error_text(str(ei.value))
+        assert parsed is not None
+        assert parsed["error"]["rollback_available"] is True
+        assert parsed["error"]["transaction_id"] == "txn_ctx_77"
+    finally:
+        srv._current_tool_image_id.reset(token)
+        srv._HOST_OPEN_TX.clear()
+
+
+def test_image_id_from_tool_kwargs() -> None:
+    import gimp_mcp_server as srv
+
+    assert srv._image_id_from_tool_kwargs({}) is None
+    assert srv._image_id_from_tool_kwargs({"handle": {"image_id": 3}}) == 3
+    assert srv._image_id_from_tool_kwargs({"layer_handle": {"image_id": 9, "item_id": 1}}) == 9

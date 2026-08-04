@@ -244,3 +244,68 @@ def serialize_recent_record(rec: TxRecord) -> dict[str, Any]:
         "status": rec.status,
         "closed_at": rec.closed_at if rec.closed_at is not None else 0.0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Param / error helpers (pure; used by plugin dispatch + host harvest)
+# ---------------------------------------------------------------------------
+
+# Common tool/TCP param keys that carry a handle dict with image_id.
+HANDLE_PARAM_KEYS: tuple[str, ...] = (
+    "handle",
+    "layer_handle",
+    "image_handle",
+    "source_handle",
+    "destination_handle",
+    "item_handle",
+    "drawable_handle",
+    "mask_handle",
+)
+
+
+def image_id_from_params(params: Any) -> int | None:
+    """Best-effort image_id from handle-like params (handle, layer_handle, …).
+
+    Prefers first matching key in HANDLE_PARAM_KEYS order, then bare ``image_id``.
+    Returns None when no resolvable image_id is present.
+    """
+    if not isinstance(params, dict):
+        return None
+    for key in HANDLE_PARAM_KEYS:
+        val = params.get(key)
+        if isinstance(val, dict) and val.get("image_id") is not None:
+            try:
+                return int(val["image_id"])
+            except (TypeError, ValueError):
+                continue
+    if params.get("image_id") is not None:
+        try:
+            return int(params["image_id"])
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def enrich_error_with_open_tx(
+    response: Any,
+    *,
+    open_transaction_id: str | None,
+) -> Any:
+    """Stamp ``rollback_available`` + ``transaction_id`` on error dicts when open TX.
+
+    - Non-dict or non-error status → returned unchanged.
+    - No open_transaction_id → returned unchanged.
+    - If ``rollback_available`` key already present → trust existing value (no override).
+    - Otherwise set rollback_available=True and transaction_id=open_transaction_id.
+    """
+    if not isinstance(response, dict):
+        return response
+    if response.get("status") != "error":
+        return response
+    if open_transaction_id is None:
+        return response
+    if "rollback_available" in response:
+        return response
+    response["rollback_available"] = True
+    response["transaction_id"] = str(open_transaction_id)
+    return response

@@ -38,6 +38,12 @@ _current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar
     "gimp_mcp_request_id", default=None
 )
 
+# Per-tool-invocation image_id harvested from handle/layer_handle kwargs (0017 P2-2).
+# tool_fail / raise_from_plugin_result read this when image_id is not passed explicitly.
+_current_tool_image_id: contextvars.ContextVar[int | str | None] = contextvars.ContextVar(
+    "gimp_mcp_tool_image_id", default=None
+)
+
 # Host open-TX hint cache (0017 AI2 BS3): image_id str → top transaction_id.
 # Updated only from successful undo_group_begin/end/rollback tool results.
 # Plugin remains SoT for any error returned via TCP.
@@ -429,6 +435,29 @@ def _image_id_from_handle(handle: dict | None) -> int | str | None:
     return None
 
 
+def _image_id_from_tool_kwargs(kwargs: dict[str, Any]) -> int | str | None:
+    """Harvest image_id from common tool handle kwargs (handle / layer_handle / …)."""
+    for key in (
+        "handle",
+        "layer_handle",
+        "image_handle",
+        "source_handle",
+        "destination_handle",
+        "item_handle",
+        "drawable_handle",
+        "mask_handle",
+    ):
+        val = kwargs.get(key)
+        if isinstance(val, dict) and val.get("image_id") is not None:
+            return val["image_id"]
+    return None
+
+
+def get_current_tool_image_id() -> int | str | None:
+    """Return image_id harvested by ``with_structured_error`` for this tool call."""
+    return _current_tool_image_id.get()
+
+
 def tool_fail(
     code: str,
     message: str,
@@ -441,7 +470,10 @@ def tool_fail(
     **kw: Any,
 ) -> NoReturn:
     """Build envelope, raise single-line ToolError (MCP isError path)."""
-    # Host open-TX hint for pre-TCP errors when kwargs omit rollback fields.
+    # Host open-TX hint for pre-TCP / missing-plugin-field honesty (0017).
+    # Prefer explicit image_id; else contextvar from with_structured_error.
+    if image_id is None:
+        image_id = _current_tool_image_id.get()
     if "rollback_available" not in kw and image_id is not None:
         hint_tid = _host_tx_hint_get(image_id)
         if hint_tid:
@@ -478,8 +510,13 @@ def raise_from_plugin_result(
     *,
     request_id: str | None = None,
     affected_handles: list[Any] | None = None,
+    image_id: int | str | None = None,
 ) -> NoReturn:
-    """Map plugin TCP error dict → ToolError with full envelope (incl. details)."""
+    """Map plugin TCP error dict → ToolError with full envelope (incl. details).
+
+    When plugin omits rollback fields, host open-TX hint may fill via ``image_id``
+    (explicit or contextvar). Explicit plugin ``rollback_available`` is trusted.
+    """
     code = str(result.get("code") or sec.CODE_INTERNAL)
     raw_msg = result.get("error", "Unknown error")
     message = str(raw_msg) if raw_msg is not None else "Unknown error"
@@ -507,12 +544,20 @@ def raise_from_plugin_result(
     if "transaction_id" in result and result.get("transaction_id") is not None:
         extra["transaction_id"] = result.get("transaction_id")
 
+    # Prefer explicit image_id; else affected_handles; else contextvar (via tool_fail).
+    if image_id is None and handles:
+        for h in handles:
+            if isinstance(h, dict) and h.get("image_id") is not None:
+                image_id = h["image_id"]
+                break
+
     tool_fail(
         code,
         message,
         request_id=rid if isinstance(rid, str) else None,
         affected_handles=handles,
         details=details or None,
+        image_id=image_id,
         **extra,
     )
 
@@ -535,6 +580,8 @@ def raise_from_exception(
     ``image_id`` enables host open-TX hint merge for pre-TCP honesty (0017).
     """
     rid = request_id or get_current_request_id() or sec.new_request_id()
+    if image_id is None:
+        image_id = _current_tool_image_id.get()
 
     if isinstance(exc, ToolError):
         raise exc
@@ -610,6 +657,7 @@ def _harvest_affected_handles(kwargs: dict[str, Any]) -> list[Any] | None:
     """Collect known handle kwargs for INTERNAL_ERROR affected_handles (M5).
 
     - ``handle`` if present and dict-like → include once
+    - ``layer_handle`` if present and dict-like → include
     - ``handles`` if present and list → extend
     Returns None when nothing harvested (omit empty list on wire).
     """
@@ -617,6 +665,9 @@ def _harvest_affected_handles(kwargs: dict[str, Any]) -> list[Any] | None:
     handle = kwargs.get("handle")
     if isinstance(handle, dict):
         out.append(handle)
+    layer_handle = kwargs.get("layer_handle")
+    if isinstance(layer_handle, dict):
+        out.append(layer_handle)
     handles = kwargs.get("handles")
     if isinstance(handles, list):
         out.extend(item for item in handles if item is not None)
@@ -629,6 +680,8 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
     Success path does **not** inject request_id into return dicts (v1 M4).
     On non-ToolError exceptions, harvests ``handle`` / ``handles`` kwargs into
     affected_handles for INTERNAL_ERROR (and other mapped codes) when known.
+    Sets ``_current_tool_image_id`` from handle/layer_handle so tool_fail and
+    raise_from_plugin_result can apply host open-TX hint without per-tool wiring.
     """
 
     def decorator(fn: F) -> F:
@@ -638,6 +691,8 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             rid = sec.new_request_id()
             token = _current_request_id.set(rid)
+            iid = _image_id_from_tool_kwargs(kwargs)
+            iid_token = _current_tool_image_id.set(iid)
             _host_audit("mcp_tool_start", tool=name, request_id=rid)
             try:
                 out = fn(*args, **kwargs)
@@ -666,6 +721,7 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
                         request_id=rid,
                         tool_name=name,
                         affected_handles=handles,
+                        image_id=iid,
                     )
                 except ToolError as te:
                     parsed = sec.parse_tool_error_text(str(te))
@@ -681,6 +737,7 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
                     )
                     raise
             finally:
+                _current_tool_image_id.reset(iid_token)
                 _current_request_id.reset(token)
 
         return wrapper  # type: ignore[return-value]

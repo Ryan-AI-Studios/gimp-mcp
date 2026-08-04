@@ -436,6 +436,14 @@ class MCPPlugin(Gimp.PlugIn):
 
             if isinstance(response, dict):
                 response = _sec.strip_traceback_unless_debug(response)
+                # 0017 DoD-3: stamp rollback fields on mid-TX mutator errors (send path).
+                try:
+                    response = self._enrich_error_with_tx(
+                        response,
+                        params=getattr(self, "_last_cmd_params", None),
+                    )
+                except Exception:
+                    pass
                 # Completion audit for typed tools (auth/path/exec already audited).
                 # request_id still on thread-local until finally below.
                 try:
@@ -558,8 +566,10 @@ class MCPPlugin(Gimp.PlugIn):
             if isinstance(raw_params, dict):
                 rid = raw_params.pop("_request_id", None)
                 self._set_request_id(rid if rid else None)
+                self._last_cmd_params = raw_params
             else:
                 self._set_request_id(None)
+                self._last_cmd_params = None
 
             # 0017: wall-clock reap of expired agent TXs on mutating / TX entry
             # (healthy TX < timeout must not be closed; resolve image_id best-effort).
@@ -2716,6 +2726,23 @@ class MCPPlugin(Gimp.PlugIn):
                 continue
             if iid not in open_ids:
                 self._working_item_ids.pop(key, None)
+        # Drop agent TX stacks/recent for pruned / non-open ids (0017 P3).
+        for key in list(self._agent_tx_stack.keys()):
+            try:
+                iid = int(key)
+            except (TypeError, ValueError):
+                self._agent_tx_stack.pop(key, None)
+                continue
+            if iid not in open_ids:
+                self._agent_tx_stack.pop(key, None)
+        for key in list(self._agent_tx_recent.keys()):
+            try:
+                iid = int(key)
+            except (TypeError, ValueError):
+                self._agent_tx_recent.pop(key, None)
+                continue
+            if iid not in open_ids:
+                self._agent_tx_recent.pop(key, None)
         return dropped
 
     def _pixel_orientation_normalized(self, image_id, tag=None):
@@ -8880,6 +8907,45 @@ class MCPPlugin(Gimp.PlugIn):
                 kw.setdefault(k, v)
         return _sec.make_error(code, message, **kw)
 
+    def _resolve_image_id_for_tx(self, params=None, image_id=None):
+        """Resolve image_id for TX stamp/reap: explicit, params handles, or sole open stack."""
+        if image_id is not None:
+            try:
+                return int(image_id)
+            except (TypeError, ValueError):
+                pass
+        resolved = _tx.image_id_from_params(params)
+        if resolved is not None:
+            return resolved
+        # Ambiguous multi-image: only auto-pick when exactly one image has open TX.
+        open_iids = [
+            iid
+            for iid, stack in self._agent_tx_stack.items()
+            if stack is not None and stack.depth > 0
+        ]
+        if len(open_iids) == 1:
+            return int(open_iids[0])
+        return None
+
+    def _enrich_error_with_tx(self, response, params=None, image_id=None):
+        """Stamp rollback_available + transaction_id on error responses when open agent TX.
+
+        Central send-path helper (0017 DoD-3 / §2.13): covers make_error, as_error,
+        bare error dicts, and TX handlers without rewriting every mutator.
+        Does not override an explicit rollback_available key from the producer.
+        """
+        if not isinstance(response, dict) or response.get("status") != "error":
+            return response
+        if "rollback_available" in response:
+            return response
+        iid = self._resolve_image_id_for_tx(params=params, image_id=image_id)
+        open_tid = None
+        if iid is not None:
+            top = self._tx_open_top(iid)
+            if top is not None:
+                open_tid = top.transaction_id
+        return _tx.enrich_error_with_open_tx(response, open_transaction_id=open_tid)
+
     def _tx_push_recent(self, image_id, record, *, closed_at=None):
         if closed_at is None:
             closed_at = time.time()
@@ -8887,16 +8953,14 @@ class MCPPlugin(Gimp.PlugIn):
         self._tx_recent_for(image_id).push(record)
 
     def _maybe_reap_on_dispatch(self, cmd_type, params):
-        """Best-effort wall-clock reap when image_id is resolvable from params."""
+        """Best-effort wall-clock reap when image_id is resolvable from params.
+
+        Resolves handle, layer_handle, and other handle-like keys (HL NDE uses
+        layer_handle only). TX command types may re-reap after full image resolve.
+        """
         if not cmd_type or cmd_type in self._TX_REAP_SKIP_TYPES:
             return
-        image_id = None
-        handle = params.get("handle") if isinstance(params, dict) else None
-        if isinstance(handle, dict) and handle.get("image_id") is not None:
-            try:
-                image_id = int(handle["image_id"])
-            except (TypeError, ValueError):
-                image_id = None
+        image_id = _tx.image_id_from_params(params)
         if image_id is None and cmd_type in self._TX_COMMAND_TYPES:
             # TX handlers re-reap after full image resolve
             return
@@ -9108,9 +9172,17 @@ class MCPPlugin(Gimp.PlugIn):
             try:
                 image.undo()
             except Exception as undo_exc:
+                # Group already closed in GIMP — must not leave a phantom open TxRecord
+                # (subsequent end/rollback would unbalance nesting). Pop + recent.
+                rec = stack.pop()
+                rec.status = "force_closed"
+                self._tx_push_recent(iid, rec)
+                if stack.depth == 0:
+                    self._agent_tx_stack.pop(iid, None)
                 return self._tx_make_error(
                     _sec.CODE_INTERNAL,
-                    f"undo_group_rollback: undo_group_end ok but image.undo failed: {undo_exc}",
+                    "undo_group_rollback: undo_group_end ok but image.undo failed "
+                    f"(group closed; stack cleared): {undo_exc}",
                     image_id=iid,
                     state_may_have_changed=True,
                 )
