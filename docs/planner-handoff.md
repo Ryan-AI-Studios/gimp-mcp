@@ -109,17 +109,19 @@ minting. Track IDs are creation order, not execution order.
   → 0017 undo groups — Completed
   → 0018 install/doctor — Completed
   → 0019 batch procedures — Completed
-  → 0020 … through 0028 Final product polish (v1)
+  → 0020 Agent Skill Packaging — Completed
+  → 0021 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0019 Completed.** Next: **0020** AgentSkillPackaging
+**28 tracks** (0001–0028). **0001–0020 Completed.** Next: **0021** CodexGrokAdapters
 (placeholder). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
 Pixel verify **0014**. Recipes **0015**. NDE **0016**. Undo groups **0017**. Install SoT
 **`uv run gimp-agent install`** (**0018**, EXPECTED **10**). Headless batch **0019**
-(constrained BatchProcedure). Authoritative table: `conductor/conductor.md`.
+(constrained BatchProcedure). Runtime Agent Skills package **`skills/`** (**0020**).
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -301,12 +303,26 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~bb8dc59 post-0019) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~f201113 post-0020) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0020-AgentSkillPackaging** (placeholder); prior **0019 Completed** constrained BatchProcedure |
+| Active focus | **0021-CodexGrokAdapters** (placeholder); prior **0020 Completed** Agent Skills package |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
+| Runtime skills | Committed repo `skills/` (router `gimp` + 5 focused); `uv run gimp-agent skills list\|validate\|install` |
+
+### 0020 Completed — AgentSkillPackaging
+
+- **Shipped:** committed `skills/` package (Agent Skills format): router **`gimp`** + `gimp-orient` / `gimp-edit` / `gimp-batch` / `gimp-verify` / `gimp-install`; shared `references/`; `MANIFEST.json` v1.0; `AGENTS.gimp.md`; package README with Grok/Codex/Claude install matrix + trust caveat.
+- **Host module:** `gimp_agent/skills_pack.py` — source-tree discovery (`GIMP_MCP_SKILLS_ROOT` → cwd walk → module fallback); stdlib frontmatter state machine; validate/list/install (always copies `references/`); secret scan preflight on install.
+- **CLI:** `gimp-agent skills list|validate|install --target … [--dry-run]`; JSON envelopes.
+- **Tests:** `tests/test_skills_pack.py` + CLI dispatch tests in `test_gimp_agent_cli.py`.
+- **Docs:** product README § Agent skills; protocol + best_practices one-liners.
+- **Absorbed:** coordinate declaration skill protocol (not server hard-gate); ensure/checkpoint agent duty; gimp-batch skill content + backend tri-state.
+- **Cross-model:** Claude Sonnet 5/high **PASS WITH DEFERRED P3** final gate (Codex rate-limited 2026-08-04); easy P3s fixed (MANIFEST version pin, references scan, install secret refuse, CLI tests).
+- **Residuals:** setuptools package-data for skills/ (declined v1); server declaration hard-gate; adapters → **0021**.
+- **Neighbor walls:** adapters **0021**; docs polish **0024**; golden path **0027**.
+- **PR/SHA:** PR #31 / main@f201113
 
 ### 0019 Completed — BatchProcedureRecipes
 
@@ -316,7 +332,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Security:** strip `ALLOW_EXEC`+token from child; recursive freeform-key reject; never product `python-fu-eval`.
 - **Cross-model:** Claude Sonnet 5/high **PASS WITH DEFERRED P3** (Codex rate-limited 2026-08-04).
 - **Residuals:** live Display.new under `-i`; Windows tree-kill; optional `--probe-batch` → deferred.md.
-- **Neighbor walls:** skills **0020**; GIMP CI **0022**.
+- **Neighbor walls:** skills **0020 Completed**; GIMP CI **0022**.
 - **PR/SHA:** PR #29 / main@bb8dc59
 
 ### 0018 Completed (PR #27 / main@5b9d50a)
