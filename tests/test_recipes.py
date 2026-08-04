@@ -13,7 +13,7 @@ import gimp_mcp_recipes as recipes
 import gimp_mcp_security as sec
 from gimp_agent import exit_codes as ec
 from gimp_agent.cli import main
-from tests.test_export_alpha import build_minimal_png
+from tests._png_builder import build_minimal_png
 
 
 @pytest.fixture(autouse=True)

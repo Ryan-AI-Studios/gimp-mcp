@@ -739,7 +739,7 @@ uv sync
 uv run pre-commit install
 ```
 
-After this, `ruff` checks staged files on each `git commit` (with `--fix` applied automatically). The same check runs in CI, so the hook is just a fast local safety net.
+After this, `ruff` checks staged files on each `git commit` (with `--fix` applied automatically). The same check runs in CI, so the hook is just a fast local safety net. Offline CI, markers, fixtures, and branch-protection policy: [docs/ci-and-testing.md](docs/ci-and-testing.md).
 
 To bump the pinned hook versions later:
 

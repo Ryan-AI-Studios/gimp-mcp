@@ -12,7 +12,7 @@ import gimp_mcp_security as sec
 import gimp_mcp_snapshot as snap
 import gimp_mcp_verify as verify
 from gimp_agent import exit_codes as ec
-from tests.test_export_alpha import build_minimal_png
+from tests._png_builder import build_minimal_png
 
 
 def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:

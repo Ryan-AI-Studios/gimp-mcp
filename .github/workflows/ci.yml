@@ -21,8 +21,11 @@ env:
 
 jobs:
   quality:
+    # IMMUTABLE for branch protection — do not rename without updating
+    # GitHub branch protection required checks in the same change.
     name: Lint · Format · Types · Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
