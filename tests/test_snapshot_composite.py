@@ -235,7 +235,7 @@ def test_snapshot_tool_result_builds_mapping() -> None:
         "rendered_width": 256,
         "rendered_height": 192,
     }
-    tr = server._snapshot_tool_result(results, image_index=0)
+    tr = server._snapshot_tool_result(results, image_index=0, write_filesystem=False)
     assert isinstance(tr, server.ToolResult)
     mcp_result = tr.to_mcp_result()
     assert isinstance(mcp_result, tuple)
@@ -247,8 +247,10 @@ def test_snapshot_tool_result_builds_mapping() -> None:
     assert structured["scale_x"] == pytest.approx(256 / 1000)
     assert structured["composite_method"] == snap.COMPOSITE_METHOD_MERGE
     assert isinstance(content, list)
-    assert len(content) == 1
-    assert content[0].type == "image"
+    # Dual-delivery: TextContent (mapping) then ImageContent
+    assert len(content) == 2
+    assert content[0].type == "text"
+    assert content[1].type == "image"
 
 
 def test_snapshot_tool_result_region_relative_scales() -> None:
@@ -272,7 +274,7 @@ def test_snapshot_tool_result_region_relative_scales() -> None:
         "rendered_width": 100,
         "rendered_height": 50,
     }
-    tr = server._snapshot_tool_result(results, image_index=1)
+    tr = server._snapshot_tool_result(results, image_index=1, write_filesystem=False)
     mcp_result = tr.to_mcp_result()
     assert isinstance(mcp_result, tuple)
     _, structured = mcp_result
@@ -310,7 +312,7 @@ def test_tool_result_to_mcp_result_for_snapshot() -> None:
         "rendered_width": 64,
         "rendered_height": 48,
     }
-    tr = server._snapshot_tool_result(results, image_index=0)
+    tr = server._snapshot_tool_result(results, image_index=0, write_filesystem=False)
     assert isinstance(tr, server.ToolResult)
 
     # Real FastMCP (H1): no FuncMetadata monkeypatch — ToolResult is first-class.
@@ -319,8 +321,9 @@ def test_tool_result_to_mcp_result_for_snapshot() -> None:
     assert len(out) == 2
     content_list, structured_dict = out
     assert isinstance(content_list, list)
-    assert len(content_list) == 1
-    assert content_list[0].type == "image"
+    assert len(content_list) == 2
+    assert content_list[0].type == "text"
+    assert content_list[1].type == "image"
     assert isinstance(structured_dict, dict)
     assert structured_dict["mode"] == "visible_composite"
     assert structured_dict["source_width"] == 320
@@ -328,3 +331,164 @@ def test_tool_result_to_mcp_result_for_snapshot() -> None:
     assert structured_dict["composite_method"] == snap.COMPOSITE_METHOD_MERGE
     assert "scale_x" in structured_dict
     assert "image_index" in structured_dict
+
+
+# ---------------------------------------------------------------------------
+# Dual-delivery filesystem write (track 0021)
+# ---------------------------------------------------------------------------
+
+
+def _minimal_plugin_results(png: bytes = b"\x89PNG\r\n\x1a\ndual") -> dict:
+    return {
+        "image_data": base64.b64encode(png).decode("ascii"),
+        "format": "png",
+        "width": 32,
+        "height": 24,
+        "original_width": 32,
+        "original_height": 24,
+        "encoding": "base64",
+        "image_index": 0,
+        "mode": "visible_composite",
+        "scale_x": 1.0,
+        "scale_y": 1.0,
+        "region": None,
+        "composite_method": snap.COMPOSITE_METHOD_MERGE,
+        "source_width": 32,
+        "source_height": 24,
+        "rendered_width": 32,
+        "rendered_height": 24,
+    }
+
+
+def test_snapshot_write_default_on(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gimp_mcp_server as server
+
+    monkeypatch.setenv("GIMP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("GIMP_MCP_SNAPSHOT_WRITE", raising=False)
+    monkeypatch.delenv("GIMP_MCP_SNAPSHOT_DIR", raising=False)
+
+    tr = server._snapshot_tool_result(_minimal_plugin_results(), image_index=0)
+    content, structured = tr.to_mcp_result()
+    assert structured["filesystem_write"] is True
+    path = structured["filesystem_path"]
+    assert isinstance(path, str)
+    p = Path(path)
+    assert p.is_file()
+    assert snap.SNAPSHOT_WRITE_SUBDIR in p.parts
+    assert snap.SNAPSHOT_TMP_SUBDIR in p.parts
+    assert p.name.startswith("snap-") and p.suffix == ".png"
+    assert "filesystem_sha256" in structured
+    # TextContent JSON includes filesystem_path
+    assert content[0].type == "text"
+    assert "filesystem_path" in content[0].text
+    assert content[1].type == "image"
+
+
+def test_snapshot_textcontent_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    import gimp_mcp_server as server
+
+    monkeypatch.setenv("GIMP_WORKSPACE_ROOT", str(tmp_path))
+    tr = server._snapshot_tool_result(_minimal_plugin_results(), image_index=0)
+    content, structured = tr.to_mcp_result()
+    assert len(content) == 2
+    assert content[0].type == "text"
+    parsed = json.loads(content[0].text)
+    assert parsed["mode"] == "visible_composite"
+    assert parsed.get("filesystem_path") == structured.get("filesystem_path")
+    assert content[1].type == "image"
+
+
+def test_snapshot_write_off_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gimp_mcp_server as server
+
+    monkeypatch.setenv("GIMP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setenv("GIMP_MCP_SNAPSHOT_WRITE", "0")
+    tr = server._snapshot_tool_result(_minimal_plugin_results(), image_index=0)
+    content, structured = tr.to_mcp_result()
+    assert structured["filesystem_write"] is False
+    assert not structured.get("filesystem_path")
+    snaps = list(tmp_path.rglob("snap-*.png"))
+    assert snaps == []
+    assert len(content) == 2
+    assert content[1].type == "image"
+
+
+def test_snapshot_write_off_param(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gimp_mcp_server as server
+
+    monkeypatch.setenv("GIMP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.delenv("GIMP_MCP_SNAPSHOT_WRITE", raising=False)
+    tr = server._snapshot_tool_result(
+        _minimal_plugin_results(), image_index=0, write_filesystem=False
+    )
+    _, structured = tr.to_mcp_result()
+    assert structured["filesystem_write"] is False
+    assert list(tmp_path.rglob("snap-*.png")) == []
+
+
+def test_snapshot_write_failure_nonfatal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import gimp_mcp_server as server
+
+    monkeypatch.setenv("GIMP_WORKSPACE_ROOT", str(tmp_path))
+
+    def _boom(*_a: object, **_k: object) -> dict:
+        return {
+            "ok": False,
+            "filesystem_write": False,
+            "filesystem_path": None,
+            "filesystem_error": "PermissionError: mocked",
+        }
+
+    monkeypatch.setattr(snap, "write_snapshot_png", _boom)
+    tr = server._snapshot_tool_result(
+        _minimal_plugin_results(), image_index=0, write_filesystem=True
+    )
+    content, structured = tr.to_mcp_result()
+    assert structured["filesystem_write"] is False
+    assert structured.get("filesystem_error")
+    assert len(content) == 2
+    assert content[1].type == "image"
+
+
+def test_prune_snapshot_write_dir(tmp_path: Path) -> None:
+    d = tmp_path / "snapshots"
+    d.mkdir()
+    paths = []
+    for i in range(5):
+        p = d / f"snap-20200101T00000{i}-1-{i}.png"
+        p.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([i]))
+        paths.append(p)
+    # Non-matching name must be left alone
+    other = d / "keep-me.png"
+    other.write_bytes(b"x")
+    deleted = snap.prune_snapshot_write_dir(d, max_files=2)
+    assert deleted == 3
+    remaining = sorted(p.name for p in d.glob("snap-*.png"))
+    assert len(remaining) == 2
+    assert other.is_file()
+
+
+def test_snapshot_write_dir_jail_rejects_outside(tmp_path: Path) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(ValueError, match=r"escapes|requires"):
+        snap.resolve_snapshot_write_dir(
+            {
+                "GIMP_WORKSPACE_ROOT": str(root),
+                "GIMP_MCP_SNAPSHOT_DIR": str(outside / "snaps"),
+            }
+        )
+
+
+def test_snapshot_write_enabled_param_and_env() -> None:
+    assert snap.snapshot_write_enabled(param=True) is True
+    assert snap.snapshot_write_enabled(param=False) is False
+    assert snap.snapshot_write_enabled(environ={}, param=None) is True
+    assert snap.snapshot_write_enabled(environ={"GIMP_MCP_SNAPSHOT_WRITE": "0"}) is False
+    assert snap.snapshot_write_enabled(environ={"GIMP_MCP_SNAPSHOT_WRITE": "false"}) is False
+    assert snap.snapshot_write_enabled(environ={"GIMP_MCP_SNAPSHOT_WRITE": "1"}) is True
+    assert snap.snapshot_write_enabled(environ={"GIMP_MCP_SNAPSHOT_WRITE": "yes"}) is True

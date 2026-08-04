@@ -303,6 +303,48 @@ def test_session_probe_disconnected_shape() -> None:
         assert "host" in out and "port" in out
 
 
+def test_image_delivery_five_keys() -> None:
+    """session_probe always reports honest 5-key image_delivery (0021)."""
+    import gimp_mcp_server as srv
+
+    fields = srv._surface_probe_fields()
+    assert "image_delivery" in fields
+    idel = fields["image_delivery"]
+    required = {
+        "emits_mcp_image_content",
+        "filesystem_snapshot_write",
+        "client_model_visibility",
+        "fallback",
+        "snapshot_write_env",
+    }
+    assert set(idel.keys()) == required
+    assert idel["emits_mcp_image_content"] is True
+    assert idel["filesystem_snapshot_write"] is True
+    assert idel["client_model_visibility"] == "unknown"
+    assert "filesystem_path" in idel["fallback"]
+    assert idel["snapshot_write_env"] == "GIMP_MCP_SNAPSHOT_WRITE"
+
+    class _Ctx:
+        pass
+
+    out = _tool_fn(srv.session_probe)(_Ctx())  # type: ignore[arg-type]
+    assert out["image_delivery"]["client_model_visibility"] == "unknown"
+
+
+def test_instructions_prefix_self_contained() -> None:
+    """First 512 chars of FastMCP instructions stand alone (0021 H3)."""
+    import gimp_mcp_server as srv
+
+    m = srv.create_mcp_server(advanced_mode=False)
+    instr = m.instructions or ""
+    prefix = instr[:512]
+    assert "Start MCP Server" in prefix
+    assert "filesystem_path" in prefix or "unknown" in prefix or "client_model_visibility" in prefix
+    assert "GIMP_WORKSPACE_ROOT" in prefix or "jail" in prefix.lower()
+    assert "28" in prefix
+    assert "Class-A" in prefix or "Class A" in prefix or "no Class" in prefix
+
+
 def test_create_selection_validation_before_tcp(monkeypatch: pytest.MonkeyPatch) -> None:
     import gimp_mcp_server as srv
 

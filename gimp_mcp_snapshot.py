@@ -11,9 +11,12 @@ Used by:
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Mapping, MutableMapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +29,14 @@ COMPOSITE_METHOD_FLATTEN = "flatten"
 MODE_VISIBLE_COMPOSITE = "visible_composite"
 
 ENV_WORKSPACE = "GIMP_WORKSPACE_ROOT"
+ENV_SNAPSHOT_WRITE = "GIMP_MCP_SNAPSHOT_WRITE"
+ENV_SNAPSHOT_DIR = "GIMP_MCP_SNAPSHOT_DIR"
 SNAPSHOT_TMP_SUBDIR = ".gimp-mcp-tmp"
+SNAPSHOT_WRITE_SUBDIR = "snapshots"
+
+# Truthy / falsey sets aligned with product env conventions (+ explicit off for default-on).
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +244,295 @@ def snapshot_temp_path(prefix: str = "snapshot-", suffix: str = ".png") -> Path:
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=str(d))
     os.close(fd)
     return Path(path)
+
+
+# ---------------------------------------------------------------------------
+# Filesystem dual-delivery write path (track 0021)
+# ---------------------------------------------------------------------------
+
+
+def snapshot_write_enabled(
+    environ: Mapping[str, str] | None = None,
+    param: bool | None = None,
+) -> bool:
+    """Return whether jailed snapshot PNG write is enabled.
+
+    ``param`` True/False wins when not None. When ``param`` is None, env
+    ``GIMP_MCP_SNAPSHOT_WRITE`` is consulted: default **on** when unset/empty;
+    ``0``/``false``/``no``/``off`` turn it off; ``1``/``true``/``yes``/``on`` on.
+    """
+    if param is not None:
+        return bool(param)
+    env = environ if environ is not None else os.environ
+    raw = env.get(ENV_SNAPSHOT_WRITE)
+    if raw is None or str(raw).strip() == "":
+        return True
+    val = str(raw).strip().lower()
+    if val in _FALSY:
+        return False
+    if val in _TRUTHY:
+        return True
+    # Unknown non-empty value: keep default-on posture.
+    return True
+
+
+def _normalize_resolved(path: Path) -> Path:
+    """Resolve and normalize Windows drive-letter casing for comparisons."""
+    resolved = path.resolve()
+    s = str(resolved)
+    if len(s) >= 2 and s[1] == ":":
+        s = s[0].upper() + s[1:]
+        return Path(s)
+    return resolved
+
+
+def _path_under_root(candidate: Path, root: Path) -> bool:
+    """Return True if *candidate* is under *root* (both resolved)."""
+    try:
+        target = _normalize_resolved(candidate)
+        root_resolved = _normalize_resolved(root)
+    except (OSError, RuntimeError):
+        return False
+    try:
+        if hasattr(target, "is_relative_to"):
+            return target.is_relative_to(root_resolved)
+        common = os.path.commonpath([str(root_resolved), str(target)])
+        return _normalize_resolved(Path(common)) == root_resolved
+    except ValueError:
+        return False
+
+
+def resolve_snapshot_write_dir(
+    environ: Mapping[str, str] | None = None,
+    *,
+    create: bool = True,
+) -> Path:
+    """Resolve the directory for dual-delivery snapshot PNG writes.
+
+    Default: ``{ensure_snapshot_temp_dir()}/snapshots/``.
+    If ``GIMP_MCP_SNAPSHOT_DIR`` is set, resolve it under the workspace jail
+    (``GIMP_WORKSPACE_ROOT``); paths outside the jail raise ``ValueError``.
+    Creates the directory with mode ``0o700`` best-effort when *create* is True.
+
+    When *environ* is provided, ``GIMP_WORKSPACE_ROOT`` / ``GIMP_MCP_SNAPSHOT_DIR``
+    are read from that mapping (tests may pass a dict without mutating
+    ``os.environ`` for the override path). The default base still uses
+    :func:`ensure_snapshot_temp_dir` (``os.environ``) unless workspace root
+    is present in *environ*.
+    """
+    env = environ if environ is not None else os.environ
+    override = env.get(ENV_SNAPSHOT_DIR)
+    if override is not None and str(override).strip() != "":
+        root_raw = env.get(ENV_WORKSPACE)
+        if root_raw is None or str(root_raw).strip() == "":
+            raise ValueError(f"{ENV_SNAPSHOT_DIR} requires {ENV_WORKSPACE} (workspace jail)")
+        root = Path(str(root_raw).strip())
+        candidate = Path(str(override).strip())
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        if not _path_under_root(candidate, root):
+            raise ValueError(f"{ENV_SNAPSHOT_DIR} escapes workspace root: {candidate}")
+        d = _normalize_resolved(candidate)
+    else:
+        root_raw = env.get(ENV_WORKSPACE) if environ is not None else None
+        if root_raw is not None and str(root_raw).strip() != "":
+            base = Path(str(root_raw).strip()) / SNAPSHOT_TMP_SUBDIR
+            if create:
+                base.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.chmod(base, 0o700)
+                except OSError:
+                    pass
+        else:
+            base = ensure_snapshot_temp_dir()
+        d = base / SNAPSHOT_WRITE_SUBDIR
+
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            pass
+    return d
+
+
+def _unique_snap_name(directory: Path, *, pid: int | None = None) -> str:
+    """Allocate a unique ``snap-{utc}-{pid}-{n}.png`` filename under *directory*."""
+    pid_i = int(pid if pid is not None else os.getpid())
+    utc = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    for n in range(0, 10_000):
+        name = f"snap-{utc}-{pid_i}-{n}.png"
+        if not (directory / name).exists():
+            return name
+    return f"snap-{utc}-{pid_i}-{time.time_ns()}.png"
+
+
+def write_snapshot_png(
+    data: bytes,
+    *,
+    environ: Mapping[str, str] | None = None,
+    write_dir: Path | str | None = None,
+    param: bool | None = None,
+) -> dict[str, Any]:
+    """Write PNG *data* under the jailed snapshot write directory.
+
+    Returns a dict with keys:
+    - ``ok`` (bool)
+    - ``filesystem_path`` (abs str) when written
+    - ``filesystem_write`` (bool)
+    - optional ``filesystem_sha256`` (hex)
+    - optional ``filesystem_error`` (non-secret message)
+
+    Never raises for ordinary I/O failure — callers treat write as non-fatal.
+    """
+    if not snapshot_write_enabled(environ=environ, param=param):
+        return {
+            "ok": False,
+            "filesystem_write": False,
+            "filesystem_path": None,
+        }
+
+    try:
+        if write_dir is not None:
+            d = Path(write_dir)
+            d.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(d, 0o700)
+            except OSError:
+                pass
+        else:
+            d = resolve_snapshot_write_dir(environ=environ, create=True)
+
+        path: Path | None = None
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        last_err: Exception | None = None
+        for _ in range(8):
+            name = _unique_snap_name(d)
+            candidate = d / name
+            try:
+                fd = os.open(str(candidate), flags, 0o600)
+            except OSError as e:
+                last_err = e
+                continue
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+            except Exception:
+                try:
+                    if candidate.exists():
+                        candidate.unlink()
+                except OSError:
+                    pass
+                raise
+            path = candidate
+            break
+        if path is None:
+            raise OSError(f"Could not create unique snapshot file: {last_err}")
+
+        digest = hashlib.sha256(data).hexdigest()
+        abs_path = str(_normalize_resolved(path))
+        try:
+            prune_snapshot_write_dir(d, max_files=50)
+        except Exception:
+            pass  # prune is best-effort; never fail the write result
+        return {
+            "ok": True,
+            "filesystem_write": True,
+            "filesystem_path": abs_path,
+            "filesystem_sha256": digest,
+        }
+    except Exception as e:
+        # Non-secret, short error string only.
+        msg = f"{type(e).__name__}: {e}"
+        if len(msg) > 200:
+            msg = msg[:200]
+        return {
+            "ok": False,
+            "filesystem_write": False,
+            "filesystem_path": None,
+            "filesystem_error": msg,
+        }
+
+
+def prune_snapshot_write_dir(
+    directory: Path | str,
+    *,
+    max_files: int = 50,
+) -> int:
+    """Best-effort: delete oldest excess ``snap-*.png`` files only.
+
+    Returns the number of files deleted. Ignores ``OSError``. Does not delete
+    non-matching names.
+    """
+    d = Path(directory)
+    if max_files < 0:
+        max_files = 0
+    try:
+        if not d.is_dir():
+            return 0
+        files = [
+            p
+            for p in d.iterdir()
+            if p.is_file() and p.name.startswith("snap-") and p.suffix.lower() == ".png"
+        ]
+    except OSError:
+        return 0
+
+    if len(files) <= max_files:
+        return 0
+
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    files.sort(key=_mtime)
+    excess = len(files) - max_files
+    deleted = 0
+    for p in files[:excess]:
+        try:
+            p.unlink()
+            deleted += 1
+        except OSError:
+            pass
+    return deleted
+
+
+def merge_filesystem_fields(
+    mapping: MutableMapping[str, Any],
+    write_result: Mapping[str, Any],
+) -> MutableMapping[str, Any]:
+    """Merge dual-delivery filesystem_* fields from *write_result* into *mapping*.
+
+    Mutates and returns *mapping*. Always sets ``filesystem_write``; sets path /
+    sha256 / error only when present and meaningful.
+    """
+    wrote = bool(write_result.get("filesystem_write")) or bool(write_result.get("ok"))
+    # Prefer explicit filesystem_write key when present.
+    if "filesystem_write" in write_result:
+        wrote = bool(write_result["filesystem_write"])
+    mapping["filesystem_write"] = wrote
+
+    path = write_result.get("filesystem_path")
+    if wrote and path:
+        mapping["filesystem_path"] = str(path)
+    elif "filesystem_path" in mapping and not wrote:
+        # Do not leave a stale path when write failed/disabled.
+        mapping.pop("filesystem_path", None)
+
+    if wrote and write_result.get("filesystem_sha256"):
+        mapping["filesystem_sha256"] = str(write_result["filesystem_sha256"])
+    else:
+        mapping.pop("filesystem_sha256", None)
+
+    err = write_result.get("filesystem_error")
+    if err and not wrote:
+        mapping["filesystem_error"] = str(err)
+    else:
+        mapping.pop("filesystem_error", None)
+
+    return mapping
 
 
 # ---------------------------------------------------------------------------

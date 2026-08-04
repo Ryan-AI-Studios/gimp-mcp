@@ -327,7 +327,7 @@ def test_server_pass_through_copies_coordinate_space() -> None:
     # Import after env is fine — server module is pure enough for unit
     from gimp_mcp_server import _snapshot_tool_result
 
-    tr = _snapshot_tool_result(plugin_results, image_index=0)
+    tr = _snapshot_tool_result(plugin_results, image_index=0, write_filesystem=False)
     # ToolResult may expose structured_content or structuredContent
     sc = getattr(tr, "structured_content", None) or getattr(tr, "structuredContent", None)
     assert sc is not None
@@ -363,7 +363,7 @@ def test_server_pass_through_defaults_missing_additive_keys() -> None:
     }
     from gimp_mcp_server import _snapshot_tool_result
 
-    tr = _snapshot_tool_result(plugin_results, image_index=0)
+    tr = _snapshot_tool_result(plugin_results, image_index=0, write_filesystem=False)
     sc = getattr(tr, "structured_content", None) or getattr(tr, "structuredContent", None)
     assert sc is not None
     assert sc["coordinate_space"] == "image-pixels"

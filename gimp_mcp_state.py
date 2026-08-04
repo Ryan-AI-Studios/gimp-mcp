@@ -199,9 +199,10 @@ def default_capabilities() -> dict[str, bool]:
         "alpha_snapshot": False,
         "atomic_xcf_save": True,  # 0013
         "atomic_export": True,  # 0013
-        # Extensions
-        "mcp_image_visible_to_model": True,
-        "filesystem_image_attachment": True,
+        # Extensions — honesty (0021): flags mean server emits / implements,
+        # NOT proof that the client model rendered the image.
+        "mcp_image_visible_to_model": True,  # server emits MCP ImageContent
+        "filesystem_image_attachment": True,  # jailed snapshot write + path on structuredContent
         "batch_interpreter": True,  # 0019 constrained BatchProcedure
         "alpha_preserving_export": True,  # 0005
         "state_manifest_orientation": True,  # 0006
