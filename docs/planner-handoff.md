@@ -108,18 +108,18 @@ minting. Track IDs are creation order, not execution order.
   → 0016 NDE — Completed
   → 0017 undo groups — Completed
   → 0018 install/doctor — Completed
-  → 0019 batch procedures — implementing (feature branch)
+  → 0019 batch procedures — Completed
   → 0020 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0018 Completed.** Active: **0019** BatchProcedureRecipes
-(implementation on `feature/0019-batch-procedure-recipes`). Orientation SoT is
+**28 tracks** (0001–0028). **0001–0019 Completed.** Next: **0020** AgentSkillPackaging
+(placeholder). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
 Pixel verify **0014**. Recipes **0015**. NDE **0016**. Undo groups **0017**. Install SoT
 **`uv run gimp-agent install`** (**0018**, EXPECTED **10**). Headless batch **0019**
-(in progress). Authoritative table: `conductor/conductor.md`.
+(constrained BatchProcedure). Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -303,18 +303,21 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~5b9d50a post-0018) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0019-BatchProcedureRecipes** (implementing on feature branch); prior **0018 Completed** PR #27 / main@5b9d50a |
+| Active focus | **0020-AgentSkillPackaging** (placeholder); prior **0019 Completed** constrained BatchProcedure |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
-| Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade |
+| Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
 
-### 0019 Implementing — BatchProcedureRecipes
+### 0019 Completed — BatchProcedureRecipes
 
-- **Branch:** `feature/0019-batch-procedure-recipes`. Ledger TX pending (orchestrator finalizes).
-- **Shipped in tree:** `gimp_agent/batch.py` (host, not EXPECTED); plugin `BatchProcedure.new` for `plug-in-gimp-mcp-batch` / label `gimp-mcp-recipe`; batch-mode init (`GIMP_MCP_BATCH_MODE=1` → no token rotate / no TCP); `run_recipe(..., backend=)`; CLI `--backend`; capability/doctor `batch_interpreter: true`; tests `tests/test_batch.py`.
+- **Shipped:** `gimp_agent/batch.py` (host, not EXPECTED); plugin `BatchProcedure.new` for `plug-in-gimp-mcp-batch` / label `gimp-mcp-recipe`; batch-mode init (`GIMP_MCP_BATCH_MODE=1` → no token rotate / no TCP); `run_recipe(..., backend=auto|session|headless)`; CLI `--backend`; capability/doctor `batch_interpreter: true`; `tests/test_batch.py` + recipe/CLI coverage.
 - **AI-review locks:** **B1** interpreter = procedure name only; **H1** batch mode no token rotate; **H2** result-file SoT; **H3** contiguous GIMP then HOST; **H4** `BatchProcedure.new`.
 - **Architecture:** job JSON v1; list argv `shell=False`; `--quit` + 120s → `CODE_TIMEOUT`; HOST_OPS on host after; EXPECTED stays **10**.
-- **OOS / residual:** live install + ping checklist; Windows process-tree kill escalation; `doctor --probe-batch`; python-fu-eval never product; GIMP CI → **0022**; skills → **0020**.
+- **Security:** strip `ALLOW_EXEC`+token from child; recursive freeform-key reject; never product `python-fu-eval`.
+- **Cross-model:** Claude Sonnet 5/high **PASS WITH DEFERRED P3** (Codex rate-limited 2026-08-04).
+- **Residuals:** live Display.new under `-i`; Windows tree-kill; optional `--probe-batch` → deferred.md.
+- **Neighbor walls:** skills **0020**; GIMP CI **0022**.
+- **PR/SHA:** filled after squash-merge.
 
 ### 0018 Completed (PR #27 / main@5b9d50a)
 
@@ -323,7 +326,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Semantics:** backup `.bak.YYYYMMDD-HHMMSS` default; dry-run; per-file OSError → `failed[]` continue; mkdir OSError → exit 3; uninstall requires `--yes`; POSIX chmod 0o755 entrypoint; never host-only modules.
 - **Docs:** README primary install + bak note; CLAUDE H1 (no four-file rot) + real dev commands; protocol one-liner; doc guard test.
 - **Live:** install 10/10 + `doctor --strict` ok (restart GIMP for plugin load).
-- **Neighbor walls:** next **0019** BatchProcedure; ops live matrices after GIMP restart; `--prune-backups` residual; MS Store OOS.
+- **Neighbor walls:** **0019 Completed**; ops live matrices after GIMP restart; `--prune-backups` residual; MS Store OOS.
 - **Pins:** hold mcp/fastmcp majors.
 - **Codex final:** PASS WITH DEFERRED P3 (R1 FAIL mkdir envelope → fix → R2 PASS).
 
