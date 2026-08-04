@@ -541,8 +541,12 @@ def validate_package(
     else:
         if manifest.get("package") != PACKAGE_NAME:
             errors.append(f"MANIFEST package {manifest.get('package')!r} != {PACKAGE_NAME!r}")
-        if not isinstance(manifest.get("version"), str) or not manifest.get("version"):
+        ver = manifest.get("version")
+        if not isinstance(ver, str) or not ver:
             errors.append("MANIFEST version must be a non-empty string")
+        elif ver != PACKAGE_VERSION:
+            # Ship version is locked in PACKAGE_VERSION; bump both when content changes.
+            errors.append(f"MANIFEST version {ver!r} != PACKAGE_VERSION {PACKAGE_VERSION!r}")
         skills_raw = manifest.get("skills")
         if not isinstance(skills_raw, list) or not all(isinstance(s, str) for s in skills_raw):
             errors.append("MANIFEST skills must be an array of strings")
@@ -579,6 +583,29 @@ def validate_package(
         errors.append("missing references/ directory")
 
     hl = frozenset(hl_names) if hl_names is not None else _hl_tool_names()
+
+    # Scan shared references for tool-like backtick identifiers (CLI validate parity
+    # with tests that rglob all package *.md files).
+    if refs.is_dir():
+        for ref_path in sorted(refs.rglob("*.md")):
+            try:
+                ref_text = ref_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                errors.append(f"references/{ref_path.name}: unreadable: {exc}")
+                continue
+            for hit in secret_scan(ref_text):
+                errors.append(f"references/{ref_path.name}: {hit}")
+            for ident in extract_backtick_identifiers(ref_text):
+                token = ident.split()[0] if " " in ident else ident
+                token = token.rstrip(".,;:)")
+                if not token:
+                    continue
+                if "/" in token or "\\" in token or token.startswith("."):
+                    continue
+                if not is_allowed_identifier(token, hl):
+                    rel = ref_path.relative_to(package_root).as_posix()
+                    errors.append(f"{rel}: unknown tool-like identifier `{token}`")
+
     for name in SKILL_NAMES:
         skill_dir = package_root / name
         if not skill_dir.is_dir():
