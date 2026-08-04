@@ -113,15 +113,16 @@ minting. Track IDs are creation order, not execution order.
   → 0021 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0020 Completed.** Next: **0021** CodexGrokAdapters
-(placeholder). Orientation SoT is
+**28 tracks** (0001–0028). **0001–0021 Completed.** Next: **0022** IntegrationE2EAndCi
+(placeholder — full plan pass first). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
 Pixel verify **0014**. Recipes **0015**. NDE **0016**. Undo groups **0017**. Install SoT
 **`uv run gimp-agent install`** (**0018**, EXPECTED **10**). Headless batch **0019**
 (constrained BatchProcedure). Runtime Agent Skills package **`skills/`** (**0020**).
-Authoritative table: `conductor/conductor.md`.
+Client adapters + dual image delivery **0021**. Authoritative table:
+`conductor/conductor.md`.
 
 ---
 
@@ -303,13 +304,25 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~f201113 post-0020) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~3d9e5b4 post-0021) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0021-CodexGrokAdapters** (placeholder); prior **0020 Completed** Agent Skills package |
+| Active focus | **0022-IntegrationE2EAndCi** (placeholder — full plan pass first); prior **0021 Completed** adapters + dual delivery |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
 | Runtime skills | Committed repo `skills/` (router `gimp` + 5 focused); `uv run gimp-agent skills list\|validate\|install` |
+| Client adapters | Committed `adapters/` (Grok/Codex/Claude); `.mcp.json` server id **`gimp`**; dual snapshot delivery |
+
+### 0021 Completed — CodexGrokAdapters
+
+- **Shipped:** committed `adapters/{grok,codex,claude}/` examples (no secrets); server id **`gimp`**; Codex timeouts **60/300**; forward-slash path placeholders; `.mcp.json` key rename `gimp-mcp` → **`gimp`**.
+- **Dual delivery:** `render_visible_composite` / `get_image_bitmap` / `get_state_snapshot` → TextContent JSON mapping + ImageContent + optional jailed write under `.gimp-mcp-tmp/snapshots/`; `write_filesystem` / `GIMP_MCP_SNAPSHOT_WRITE` (default on); non-fatal write fail; best-effort prune max 50; stdlib helpers in `gimp_mcp_snapshot.py`.
+- **Honesty:** five-key `session_probe.image_delivery` (`client_model_visibility=unknown`); expanded FastMCP instructions (first 512 self-contained); capability flag comments = emit/implement (not model proof); skills/docs prefer `filesystem_path`.
+- **Tests:** `tests/test_adapters.py` + dual-delivery snapshot coverage.
+- **Cross-model:** Claude Sonnet 5/high **PASS** final gate (Codex rate-limited 2026-08-04); internal + Claude P2/P3 fixed before final gate.
+- **Residuals:** prune CLI verb; marketplace plugin; age prune; WSL bridge; Grok hooks → deferred.md.
+- **Neighbor walls:** E2E/CI **0022** (placeholder); perf **0023**; docs polish **0024**.
+- **PR/SHA:** PR #33 / main@3d9e5b4
 
 ### 0020 Completed — AgentSkillPackaging
 
@@ -320,8 +333,8 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Docs:** product README § Agent skills; protocol + best_practices one-liners.
 - **Absorbed:** coordinate declaration skill protocol (not server hard-gate); ensure/checkpoint agent duty; gimp-batch skill content + backend tri-state.
 - **Cross-model:** Claude Sonnet 5/high **PASS WITH DEFERRED P3** final gate (Codex rate-limited 2026-08-04); easy P3s fixed (MANIFEST version pin, references scan, install secret refuse, CLI tests).
-- **Residuals:** setuptools package-data for skills/ (declined v1); server declaration hard-gate; adapters → **0021**.
-- **Neighbor walls:** adapters **0021**; docs polish **0024**; golden path **0027**.
+- **Residuals:** setuptools package-data for skills/ (declined v1); server declaration hard-gate.
+- **Neighbor walls:** adapters **0021 Completed**; docs polish **0024**; golden path **0027**.
 - **PR/SHA:** PR #31 / main@f201113
 
 ### 0019 Completed — BatchProcedureRecipes
