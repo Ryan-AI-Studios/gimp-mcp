@@ -1531,8 +1531,15 @@ class MCPPlugin(Gimp.PlugIn):
             print(f"[MCP] orient EXIF orientation failed: {e}")
             return None
 
-    def _orient_layer_node(self, layer, parent_handle, image_id, depth, visited):
-        """Recursive layer tree via _layer_children only (not flat iterator)."""
+    def _orient_layer_node(
+        self, layer, parent_handle, image_id, depth, visited, summary_only=False
+    ):
+        """Recursive layer tree via _layer_children only (not flat iterator).
+
+        *summary_only*: when True, filter summaries omit config
+        (``include_config=not summary_only``). Today the full tree is only built
+        when summary_only is False; still wire correctly for future partial trees.
+        """
         try:
             lid = int(layer.get_id())
         except Exception:
@@ -1632,7 +1639,9 @@ class MCPPlugin(Gimp.PlugIn):
 
         children = []
         for child in self._layer_children(layer):
-            node = self._orient_layer_node(child, handle, image_id, depth + 1, visited)
+            node = self._orient_layer_node(
+                child, handle, image_id, depth + 1, visited, summary_only=summary_only
+            )
             if node is not None:
                 children.append(node)
 
@@ -1648,7 +1657,7 @@ class MCPPlugin(Gimp.PlugIn):
             "size": {"width": lw, "height": lh},
             "has_alpha": has_alpha,
             "mask": mask_info,
-            "filters": self._emit_filter_summaries(layer, include_config=True),
+            "filters": self._emit_filter_summaries(layer, include_config=not summary_only),
             "children": children,
             "protected": bool(protected_flag),
         }
@@ -1775,7 +1784,9 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception:
             roots = []
         for root in roots:
-            node = self._orient_layer_node(root, None, image_id, 0, visited)
+            node = self._orient_layer_node(
+                root, None, image_id, 0, visited, summary_only=summary_only
+            )
             if node is not None:
                 entry["layers"].append(node)
 
@@ -7370,35 +7381,21 @@ class MCPPlugin(Gimp.PlugIn):
         """Set config properties with pspec coerce; never silent-pass.
 
         Returns ``(applied_props, ignored_props)`` where ignored entries are
-        ``{"key": str, "error": str}``.
+        ``{"key": str, "error": str}``. Delegates to pure ``set_config_props``.
         """
-        applied = []
-        ignored = []
-        if not config:
-            return applied, ignored
-        if not isinstance(config, dict):
-            ignored.append({"key": "*", "error": "config must be an object"})
-            return applied, ignored
-        for key, raw_val in config.items():
-            k = str(key)
-            try:
-                pspec = None
-                try:
-                    if hasattr(cfg, "find_property"):
-                        pspec = cfg.find_property(k)
-                except Exception:
-                    pspec = None
-                type_name = self._pspec_type_name(pspec)
-                try:
-                    coerced = _filters.coerce_config_value(raw_val, type_name)
-                except (TypeError, ValueError) as ce:
-                    ignored.append({"key": k, "error": f"coerce failed: {ce}"})
-                    continue
-                cfg.set_property(k, coerced)
-                applied.append(k)
-            except Exception as e:
-                ignored.append({"key": k, "error": str(e)})
-        return applied, ignored
+        find_property = None
+        if cfg is not None and hasattr(cfg, "find_property"):
+            find_property = cfg.find_property
+
+        def _set_property(key, value):
+            cfg.set_property(key, value)
+
+        return _filters.set_config_props(
+            config,
+            set_property=_set_property,
+            find_property=find_property,
+            pspec_type_name=self._pspec_type_name,
+        )
 
     def _filter_config_dict(self, filtr):
         """Best-effort readable config dump (skip huge/binary blobs)."""
@@ -7573,7 +7570,18 @@ class MCPPlugin(Gimp.PlugIn):
         return image, drawable, self._emit_item_handle(drawable, image_id)
 
     def _operation_available_runtime(self, op_name):
-        """Probe live GIMP for op availability (gimp:* path). None if API missing."""
+        """Probe live GIMP for op availability (gimp:* path).
+
+        Returns True/False when the API lists ops; None if API missing/failed.
+        Prefer ``_operation_get_available_names`` + pure ``check_runtime_probe``.
+        """
+        names = self._operation_get_available_names()
+        if names is None:
+            return None
+        return str(op_name) in names
+
+    def _operation_get_available_names(self):
+        """Return live op name list from GIMP, or None if API missing/failed."""
         try:
             if hasattr(Gimp, "DrawableFilter") and hasattr(
                 Gimp.DrawableFilter, "operation_get_available"
@@ -7581,9 +7589,7 @@ class MCPPlugin(Gimp.PlugIn):
                 available = Gimp.DrawableFilter.operation_get_available()
                 if available is None:
                     return None
-                # May be list/tuple of strings
-                names = {str(x) for x in list(available)}
-                return op_name in names
+                return [str(x) for x in list(available)]
         except Exception as ex:
             print(f"[MCP] operation_get_available probe failed: {ex}")
             return None
@@ -7609,14 +7615,19 @@ class MCPPlugin(Gimp.PlugIn):
 
             # Runtime probe for gimp:* (host cannot introspect live GIMP)
             if _filters.requires_runtime_probe(operation):
-                avail = self._operation_available_runtime(operation)
-                if avail is False:
+                available = self._operation_get_available_names()
+                decision = _filters.check_runtime_probe(operation, available)
+                if not decision.get("ok"):
                     return _sec.make_error(
                         _sec.CODE_UNSUPPORTED,
-                        f"operation {operation!r} is not available in this GIMP build",
-                        details={"operation": operation, "reason": "operation_get_available"},
+                        decision.get(
+                            "message",
+                            f"operation {operation!r} is not available in this GIMP build",
+                        ),
+                        details=decision.get("details")
+                        or {"operation": operation, "reason": "operation_get_available"},
                     )
-                # avail is None → API missing; still try new() and surface failure
+                # available is None → API missing; still try new() and surface failure
 
             name = params.get("name")
             if not isinstance(name, str) or not name.strip():
@@ -7713,16 +7724,22 @@ class MCPPlugin(Gimp.PlugIn):
             }
 
     def _edit_filter_config(self, params):
-        """Edit config/opacity/blend/visible on an existing NDE filter; always sync."""
+        """Edit config/opacity/blend/visible on an existing NDE filter; always sync.
+
+        Order: resolve layer+filter → validate all params → undo_group → mutate → sync.
+        Never mutates before full validation (invalid blend must not leave partial stack).
+        """
         try:
             params = params or {}
             if "filter_id" not in params or params.get("filter_id") is None:
                 return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, "filter_id is required")
             filter_id = params.get("filter_id")
 
+            # 1) Resolve layer + filter membership (no mutation)
             image, drawable, layer_handle = self._resolve_mutable_layer_for_nde(params)
             filtr = self._resolve_filter_on_layer(drawable, filter_id)
 
+            # 2) Validate all params before any property mutation / undo group body
             config = params.get("config")
             if config is not None and not isinstance(config, dict):
                 return _sec.make_error(
@@ -7730,36 +7747,55 @@ class MCPPlugin(Gimp.PlugIn):
                     "config must be an object when provided",
                 )
 
+            blend_mode_norm = None
+            if "blend_mode" in params and params.get("blend_mode") is not None:
+                bv = _filters.validate_blend_mode(params.get("blend_mode"))
+                if not bv.get("ok"):
+                    return _sec.make_error(
+                        _sec.CODE_UNSUPPORTED, bv.get("message", "bad blend_mode")
+                    )
+                blend_mode_norm = bv["blend_mode"]
+
+            opacity_norm = None
+            if "opacity" in params and params.get("opacity") is not None:
+                try:
+                    opacity_norm = float(params.get("opacity"))
+                except (TypeError, ValueError) as e:
+                    return _sec.make_error(
+                        _sec.CODE_UNSUPPORTED,
+                        f"opacity must be a number (got {params.get('opacity')!r}): {e}",
+                    )
+                if opacity_norm < 0.0:
+                    opacity_norm = 0.0
+                elif opacity_norm > 1.0:
+                    opacity_norm = 1.0
+
+            visible_norm = None
+            if "visible" in params and params.get("visible") is not None:
+                vis = params.get("visible")
+                if isinstance(vis, str):
+                    visible_norm = vis.strip().lower() in ("1", "true", "yes", "on")
+                else:
+                    visible_norm = bool(vis)
+
+            # 3) Mutate inside undo group only after validation succeeded
             need_sync = False  # True when blend/opacity/config changed
             applied_props, ignored_props = [], []
 
             image.undo_group_start()
             try:
                 # visible is independent of update() API (AI2 M6)
-                if "visible" in params and params.get("visible") is not None:
-                    vis = params.get("visible")
-                    if isinstance(vis, str):
-                        vis = vis.strip().lower() in ("1", "true", "yes", "on")
+                if visible_norm is not None:
                     if hasattr(filtr, "set_visible"):
-                        filtr.set_visible(bool(vis))
+                        filtr.set_visible(bool(visible_norm))
                     Gimp.displays_flush()
 
-                if "blend_mode" in params and params.get("blend_mode") is not None:
-                    bv = _filters.validate_blend_mode(params.get("blend_mode"))
-                    if not bv.get("ok"):
-                        return _sec.make_error(
-                            _sec.CODE_UNSUPPORTED, bv.get("message", "bad blend_mode")
-                        )
-                    filtr.set_blend_mode(self._blend_mode_from_string(bv["blend_mode"]))
+                if blend_mode_norm is not None:
+                    filtr.set_blend_mode(self._blend_mode_from_string(blend_mode_norm))
                     need_sync = True
 
-                if "opacity" in params and params.get("opacity") is not None:
-                    opacity = float(params.get("opacity"))
-                    if opacity < 0.0:
-                        opacity = 0.0
-                    elif opacity > 1.0:
-                        opacity = 1.0
-                    filtr.set_opacity(opacity)
+                if opacity_norm is not None:
+                    filtr.set_opacity(opacity_norm)
                     need_sync = True
 
                 if config:

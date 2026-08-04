@@ -4245,13 +4245,24 @@ def apply_nde_filter(
     try:
         op_v = filters.validate_operation(operation)
         if not op_v.get("ok"):
-            raise Exception(op_v.get("message", "unsupported operation"))
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                str(op_v.get("message", "unsupported operation")),
+                details=op_v.get("details") if isinstance(op_v.get("details"), dict) else None,
+            )
         bm_v = filters.validate_blend_mode(blend_mode)
         if not bm_v.get("ok"):
-            raise Exception(bm_v.get("message", "unsupported blend_mode"))
-        # Soft config: never reject; optional host hints only
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                str(bm_v.get("message", "unsupported blend_mode")),
+                details=bm_v.get("details") if isinstance(bm_v.get("details"), dict) else None,
+            )
+        # Soft config: never reject unknown keys; type must be object when provided
         if config is not None and not isinstance(config, dict):
-            raise Exception("config must be an object when provided")
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                "config must be an object when provided",
+            )
 
         params: dict[str, Any] = {
             "operation": op_v["operation"],
@@ -4279,12 +4290,12 @@ def apply_nde_filter(
         if result["status"] == "success":
             return result["results"]
         raise_from_plugin_result(result, "tool")
-    except ToolError:
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
         raise
-    except Exception:
+    except Exception as exc:
         if sec.debug_enabled():
             traceback.print_exc()
-        raise
+        raise_from_exception(exc, tool_name="apply_nde_filter")
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
@@ -4323,10 +4334,17 @@ def edit_filter_config(
         if blend_mode is not None:
             bm_v = filters.validate_blend_mode(blend_mode)
             if not bm_v.get("ok"):
-                raise Exception(bm_v.get("message", "unsupported blend_mode"))
+                raise sec.GimpMcpError(
+                    sec.CODE_UNSUPPORTED,
+                    str(bm_v.get("message", "unsupported blend_mode")),
+                    details=bm_v.get("details") if isinstance(bm_v.get("details"), dict) else None,
+                )
             blend_mode = bm_v["blend_mode"]
         if config is not None and not isinstance(config, dict):
-            raise Exception("config must be an object when provided")
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                "config must be an object when provided",
+            )
 
         params: dict[str, Any] = {"filter_id": int(filter_id)}
         if config is not None:
@@ -4353,12 +4371,12 @@ def edit_filter_config(
         if result["status"] == "success":
             return result["results"]
         raise_from_plugin_result(result, "tool")
-    except ToolError:
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
         raise
-    except Exception:
+    except Exception as exc:
         if sec.debug_enabled():
             traceback.print_exc()
-        raise
+        raise_from_exception(exc, tool_name="edit_filter_config")
 
 
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))

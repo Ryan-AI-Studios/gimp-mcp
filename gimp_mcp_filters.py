@@ -15,6 +15,7 @@ Provides:
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import Any
 
 # Product codes as strings so this module stays free of security import.
@@ -176,6 +177,48 @@ def requires_runtime_probe(operation: str) -> bool:
     if meta is None:
         return False
     return bool(meta.get("requires_runtime_probe", False))
+
+
+def check_runtime_probe(
+    operation: str,
+    available: Sequence[str] | None,
+) -> dict[str, Any]:
+    """Decide whether a runtime-probed op may proceed (pure; no GIMP).
+
+    Used by the plugin when ``requires_runtime_probe`` is true (gimp:* ops).
+
+    *available*:
+      - ``None``: probe API missing / failed → allow try (``ok`` True, ``probed`` False)
+      - sequence of op name strings: *operation* must be present or UNSUPPORTED
+
+    Ops that do not require a runtime probe always return ``ok`` True.
+    """
+    if not isinstance(operation, str) or not operation.strip():
+        return {
+            "ok": False,
+            "code": CODE_UNSUPPORTED,
+            "message": "operation must be a non-empty string",
+            "details": {"reason": "operation_get_available"},
+        }
+    op = operation.strip()
+    if not requires_runtime_probe(op):
+        return {"ok": True, "probed": False, "operation": op}
+    if available is None:
+        return {
+            "ok": True,
+            "probed": False,
+            "operation": op,
+            "reason": "probe_api_unavailable",
+        }
+    names = {str(x) for x in available}
+    if op not in names:
+        return {
+            "ok": False,
+            "code": CODE_UNSUPPORTED,
+            "message": f"operation {op!r} is not available in this GIMP build",
+            "details": {"operation": op, "reason": "operation_get_available"},
+        }
+    return {"ok": True, "probed": True, "operation": op}
 
 
 def is_expand_class_op(operation: str) -> bool:
@@ -343,6 +386,54 @@ def coerce_config_value(value: Any, type_name: str | None) -> Any:
         return str(value)
     # else: pass through (enums, objects, arrays — plugin handles)
     return value
+
+
+def set_config_props(
+    config: dict[str, Any] | None,
+    *,
+    set_property: Callable[[str, Any], None],
+    find_property: Callable[[str], Any] | None = None,
+    pspec_type_name: Callable[[Any], str | None] | None = None,
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Apply config keys via callbacks; never silent-pass.
+
+    Pure helper used by the plugin (and offline tests with FakeCfg).
+
+    Returns ``(applied_props, ignored_props)`` where ignored entries are
+    ``{"key": str, "error": str}``.
+    """
+    applied: list[str] = []
+    ignored: list[dict[str, str]] = []
+    if not config:
+        return applied, ignored
+    if not isinstance(config, dict):
+        ignored.append({"key": "*", "error": "config must be an object"})
+        return applied, ignored
+    for key, raw_val in config.items():
+        k = str(key)
+        try:
+            pspec = None
+            if find_property is not None:
+                try:
+                    pspec = find_property(k)
+                except Exception:
+                    pspec = None
+            type_name: str | None = None
+            if pspec_type_name is not None and pspec is not None:
+                try:
+                    type_name = pspec_type_name(pspec)
+                except Exception:
+                    type_name = None
+            try:
+                coerced = coerce_config_value(raw_val, type_name)
+            except (TypeError, ValueError) as ce:
+                ignored.append({"key": k, "error": f"coerce failed: {ce}"})
+                continue
+            set_property(k, coerced)
+            applied.append(k)
+        except Exception as e:
+            ignored.append({"key": k, "error": str(e)})
+    return applied, ignored
 
 
 # ---------------------------------------------------------------------------

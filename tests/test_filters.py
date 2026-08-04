@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import gimp_mcp_filters as filters
+import gimp_mcp_security as sec
 from gimp_agent import paths as pathmod
 from gimp_mcp_surface import HL_TOOL_NAMES, get_hl_catalog_names, is_hl_tool
 
@@ -90,6 +93,37 @@ def test_requires_runtime_probe_gimp_ops() -> None:
     assert filters.requires_runtime_probe("gegl:not-real") is False
 
 
+def test_check_runtime_probe_unavailable_unsupported() -> None:
+    """DoD-5: gimp:* with available list missing op → UNSUPPORTED (pure)."""
+    decision = filters.check_runtime_probe("gimp:levels", ["gegl:gaussian-blur", "gimp:other"])
+    assert decision["ok"] is False
+    assert decision["code"] == filters.CODE_UNSUPPORTED
+    assert decision["details"]["reason"] == "operation_get_available"
+    assert decision["details"]["operation"] == "gimp:levels"
+    assert "not available" in decision["message"].lower()
+
+
+def test_check_runtime_probe_available_ok() -> None:
+    decision = filters.check_runtime_probe("gimp:curves", ["gimp:levels", "gimp:curves"])
+    assert decision["ok"] is True
+    assert decision["probed"] is True
+    assert decision["operation"] == "gimp:curves"
+
+
+def test_check_runtime_probe_api_missing_allows_try() -> None:
+    """None available list → probe API missing; allow try new() (ok True)."""
+    decision = filters.check_runtime_probe("gimp:levels", None)
+    assert decision["ok"] is True
+    assert decision["probed"] is False
+
+
+def test_check_runtime_probe_non_probe_ops_skip() -> None:
+    # Non-probe ops always ok even with empty available list
+    decision = filters.check_runtime_probe("gegl:gaussian-blur", [])
+    assert decision["ok"] is True
+    assert decision["probed"] is False
+
+
 def test_is_expand_class_op() -> None:
     assert filters.is_expand_class_op("gegl:vignette") is True
     assert filters.is_expand_class_op("gegl:gaussian-blur") is False
@@ -164,6 +198,116 @@ def test_coerce_config_value_types() -> None:
     assert filters.coerce_config_value(9, "TYPE_DOUBLE") == 9.0
     assert filters.coerce_config_value("keep", None) == "keep"
     assert filters.coerce_config_value([1, 2], "UNKNOWN_OBJ") == [1, 2]
+
+
+def test_set_config_props_applied_and_ignored() -> None:
+    """Honesty contract: successful keys in applied_props; failures in ignored_props."""
+
+    class _Pspec:
+        def __init__(self, type_name: str) -> None:
+            self.type_name = type_name
+
+    class FakeCfg:
+        def __init__(self) -> None:
+            self.store: dict[str, object] = {}
+            self._types = {
+                "std-dev-x": _Pspec("DOUBLE"),
+                "std-dev-y": _Pspec("DOUBLE"),
+                # bad-key exists but set_property will raise
+                "bad-key": _Pspec("DOUBLE"),
+            }
+
+        def find_property(self, key: str):
+            return self._types.get(key)
+
+        def set_property(self, key: str, value: object) -> None:
+            if key == "bad-key":
+                raise RuntimeError("property write refused")
+            self.store[key] = value
+
+    cfg = FakeCfg()
+
+    def pspec_type_name(pspec: object) -> str | None:
+        return getattr(pspec, "type_name", None)
+
+    applied, ignored = filters.set_config_props(
+        {
+            "std-dev-x": 5,
+            "std-dev-y": 3.5,
+            "bad-key": 1.0,
+            "missing-prop": 9,
+        },
+        set_property=cfg.set_property,
+        find_property=cfg.find_property,
+        pspec_type_name=pspec_type_name,
+    )
+    assert "std-dev-x" in applied
+    assert "std-dev-y" in applied
+    assert cfg.store["std-dev-x"] == 5.0
+    assert cfg.store["std-dev-y"] == 3.5
+    ignored_keys = {e["key"] for e in ignored}
+    assert "bad-key" in ignored_keys
+    # missing-prop: no pspec → type_name None → pass-through set succeeds
+    # (plugin may still set unknown keys if GI accepts them)
+    bad_entry = next(e for e in ignored if e["key"] == "bad-key")
+    assert "refused" in bad_entry["error"].lower() or "error" in bad_entry
+
+
+def test_set_config_props_non_object_config() -> None:
+    # Non-empty non-dict (empty string is falsy and treated as no config)
+    applied, ignored = filters.set_config_props(
+        ["not", "a", "dict"],  # type: ignore[arg-type]
+        set_property=lambda _k, _v: None,
+    )
+    assert applied == []
+    assert ignored == [{"key": "*", "error": "config must be an object"}]
+
+
+# ---------------------------------------------------------------------------
+# Host pre-validate → UNSUPPORTED (R1-F1)
+# ---------------------------------------------------------------------------
+
+
+def _host_raise_unsupported(result: dict) -> None:
+    """Mirror host apply_nde_filter / edit_filter_config validation raise path."""
+    if not result.get("ok"):
+        raise sec.GimpMcpError(
+            sec.CODE_UNSUPPORTED,
+            str(result.get("message", "unsupported")),
+            details=result.get("details") if isinstance(result.get("details"), dict) else None,
+        )
+
+
+def test_host_prevalidate_unknown_op_raises_unsupported() -> None:
+    op_v = filters.validate_operation("gegl:dropshadow")
+    assert op_v["ok"] is False
+    with pytest.raises(sec.GimpMcpError) as ei:
+        _host_raise_unsupported(op_v)
+    assert ei.value.code == sec.CODE_UNSUPPORTED
+    assert ei.value.code != sec.CODE_INTERNAL
+
+
+def test_host_prevalidate_bad_blend_raises_unsupported() -> None:
+    bm_v = filters.validate_blend_mode("NOT_A_MODE")
+    assert bm_v["ok"] is False
+    with pytest.raises(sec.GimpMcpError) as ei:
+        _host_raise_unsupported(bm_v)
+    assert ei.value.code == sec.CODE_UNSUPPORTED
+
+
+def test_server_nde_tools_use_gimp_mcp_error_unsupported() -> None:
+    """Structure: host NDE tools raise GimpMcpError(CODE_UNSUPPORTED), not bare Exception."""
+    text = Path("gimp_mcp_server.py").read_text(encoding="utf-8")
+    for name in ("def apply_nde_filter", "def edit_filter_config"):
+        start = text.find(name)
+        assert start != -1, name
+        next_def = text.find("\n@mcp.tool", start + 10)
+        body = text[start : next_def if next_def != -1 else start + 5000]
+        assert "GimpMcpError" in body, f"{name} must raise GimpMcpError"
+        assert "CODE_UNSUPPORTED" in body, f"{name} must use CODE_UNSUPPORTED"
+        assert "raise Exception(" not in body, f"{name} must not raise bare Exception"
+        assert "sec.GimpMcpError" in body or "GimpMcpError" in body
+        assert "(ToolError, sec.SecurityError, sec.GimpMcpError)" in body
 
 
 # ---------------------------------------------------------------------------
@@ -300,13 +444,32 @@ def test_plugin_merge_result_keys_documented() -> None:
 
 
 def test_plugin_gimp_probe_unsupported_path() -> None:
-    """Structure: gimp:* ops probe operation_get_available before new."""
+    """Structure: gimp:* ops probe via pure check_runtime_probe before new."""
     text = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
     start = text.find("def _apply_nde_filter")
     next_def = text.find("\n    def _", start + 10)
     body = text[start:next_def]
-    assert "operation_get_available" in body
-    assert "requires_runtime_probe" in body or "CODE_UNSUPPORTED" in body
+    assert "operation_get_available" in body or "check_runtime_probe" in body
+    assert "requires_runtime_probe" in body
+    assert "check_runtime_probe" in body
+    assert "CODE_UNSUPPORTED" in body
+
+
+def test_plugin_edit_validates_before_mutate() -> None:
+    """R1-F2: blend/opacity/config validation precedes set_visible / undo mutations."""
+    text = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    start = text.find("def _edit_filter_config")
+    assert start != -1
+    next_def = text.find("\n    def _", start + 10)
+    body = text[start : next_def if next_def != -1 else start + 8000]
+    validate_blend_pos = body.find("validate_blend_mode")
+    undo_pos = body.find("undo_group_start")
+    set_visible_pos = body.find("set_visible")
+    assert validate_blend_pos != -1
+    assert undo_pos != -1
+    assert validate_blend_pos < undo_pos, "blend validate must precede undo_group_start"
+    if set_visible_pos != -1:
+        assert validate_blend_pos < set_visible_pos, "blend validate must precede set_visible"
 
 
 def test_orient_uses_emit_filter_summaries() -> None:
@@ -320,6 +483,9 @@ def test_orient_uses_emit_filter_summaries() -> None:
     assert "_emit_filter_summaries" in body
     # empty stub should be gone as sole assignment
     assert '"filters": []' not in body or "_emit_filter_summaries" in body
+    # R1-F5: include_config=not summary_only
+    assert "include_config=not summary_only" in body
+    assert "summary_only" in body
 
 
 def test_surface_and_state_wiring() -> None:

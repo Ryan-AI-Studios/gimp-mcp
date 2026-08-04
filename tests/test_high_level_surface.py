@@ -214,6 +214,9 @@ def test_advanced_list_tools_includes_legacy() -> None:
         assert "blur" in names
         assert "session_probe" in names
         assert "create_selection" in names
+        # Advanced NDE inventory / merge (not HL)
+        assert "list_drawable_filters" in names
+        assert "merge_nde_filters" in names
     finally:
         srv.mcp.include_tags = prev
 
