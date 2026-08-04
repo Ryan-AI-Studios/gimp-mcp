@@ -8,6 +8,7 @@ import math
 import sys
 from collections.abc import Sequence
 from importlib import metadata
+from pathlib import Path
 from typing import Any
 
 import gimp_mcp_security as sec
@@ -467,6 +468,274 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return ec.EXIT_SUCCESS
 
 
+def _cmd_recipes(args: argparse.Namespace) -> int:
+    """List shipped recipes (host-only, no TCP)."""
+    import gimp_mcp_recipes as recipes
+
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
+    try:
+        items = recipes.list_recipes()
+    except sec.GimpMcpError as exc:
+        return _emit_host_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=as_json,
+            data=exc.details or {},
+        )
+    data = {"recipes": items}
+    envelope = jsonio.make_envelope(
+        ok=True,
+        exit_code=ec.EXIT_SUCCESS,
+        code=None,
+        message=f"{len(items)} recipes",
+        data=data,
+    )
+    human = [f"{r['id']}@{r['version']}  {r['title']}" for r in items]
+    jsonio.emit(envelope, as_json=as_json, human_lines=human or ["(no recipes)"])
+    return ec.EXIT_SUCCESS
+
+
+def _build_recipe_params(args: argparse.Namespace) -> dict[str, Any]:
+    import gimp_mcp_recipes as recipes
+
+    try:
+        return recipes.parse_cli_param_pairs(getattr(args, "param", None))
+    except sec.GimpMcpError:
+        raise
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """Run one recipe (host-only or session TCP depending on recipe flags)."""
+    import gimp_mcp_recipes as recipes
+
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
+    recipe_id = str(args.recipe_id)
+    version = getattr(args, "version", None)
+    output_path = getattr(args, "output", None)
+    input_path = getattr(args, "input", None)
+    handle = getattr(args, "handle", None)
+
+    try:
+        param_pairs = _build_recipe_params(args)
+    except sec.GimpMcpError as exc:
+        return _emit_host_error(
+            code=ec.CLI_USAGE,
+            message=exc.message,
+            as_json=as_json,
+            data=exc.details or {},
+        )
+
+    # Merge --collision into params when provided
+    collision = getattr(args, "collision", None)
+    if collision is not None:
+        param_pairs = dict(param_pairs)
+        param_pairs["collision"] = str(collision)
+
+    def _session_send(command_type: str, params: dict[str, Any]) -> dict[str, Any]:
+        timeout = float(getattr(args, "timeout", 30.0))
+        return probe_mod.send_authenticated_command(command_type, params, timeout=timeout)
+
+    try:
+        # Resolve recipe first for better unknown-id vs usage errors
+        try:
+            recipes.get_recipe(recipe_id, version)
+        except sec.GimpMcpError as exc:
+            if exc.code == sec.CODE_UNSUPPORTED:
+                return _emit_host_error(
+                    code=sec.CODE_UNSUPPORTED,
+                    message=exc.message,
+                    as_json=as_json,
+                    data=exc.details or {},
+                )
+            raise
+
+        log = recipes.run_recipe(
+            recipe_id,
+            version=version,
+            params=param_pairs,
+            input_path=str(input_path) if input_path else None,
+            output_path=str(output_path) if output_path else None,
+            handle=handle,
+            session_send=_session_send,
+        )
+    except sec.GimpMcpError as exc:
+        # Bad params / policy → exit 2 for CLI usage-ish policy on missing params
+        code = exc.code
+        if code == sec.CODE_POLICY_DENIED:
+            code = ec.CLI_USAGE
+        data = dict(exc.details or {})
+        mutation = data.pop("mutation_log", None)
+        if mutation is not None:
+            data["mutation_log"] = mutation
+        return _emit_host_error(code=code, message=exc.message, as_json=as_json, data=data)
+    except sec.SecurityError as exc:
+        return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
+    except (OSError, TimeoutError, ConnectionError, RuntimeError) as exc:
+        return _emit_host_error(
+            code=sec.CODE_CONNECTION_FAILED,
+            message=str(exc),
+            as_json=as_json,
+        )
+
+    envelope = jsonio.make_envelope(
+        ok=True,
+        exit_code=ec.EXIT_SUCCESS,
+        code=None,
+        message=f"recipe {recipe_id} ok",
+        data=log,
+    )
+    human = [f"recipe {log.get('recipe_id')}@{log.get('version')} backend={log.get('backend')} ok"]
+    jsonio.emit(envelope, as_json=as_json, human_lines=human)
+    return ec.EXIT_SUCCESS
+
+
+def _cmd_batch(args: argparse.Namespace) -> int:
+    """Multi-file recipe loop (continue-on-fail); not BatchProcedure (0019)."""
+    import gimp_mcp_recipes as recipes
+
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
+    recipe_id = str(args.recipe_id)
+    version = getattr(args, "version", None)
+    output_dir = getattr(args, "output_dir", None)
+    if not output_dir:
+        return _emit_host_error(
+            code=ec.CLI_USAGE,
+            message="--output-dir is required",
+            as_json=as_json,
+        )
+
+    try:
+        out_root = _jail_cli_path(str(output_dir), "output_dir")
+    except sec.SecurityError as exc:
+        return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
+
+    # Collect inputs: --inputs append and/or --input-glob
+    inputs: list[str] = []
+    for p in getattr(args, "inputs", None) or []:
+        inputs.append(str(p))
+    glob_pat = getattr(args, "input_glob", None)
+    if glob_pat:
+        # Normalize backslashes → forward slashes on Windows before pathlib glob
+        pat = str(glob_pat).replace("\\", "/")
+        ws = sec.workspace_root()
+        base = Path(ws) if ws else Path.cwd()
+        # If pattern is absolute under workspace, glob from root; else relative to workspace
+        matched = sorted(base.glob(pat))
+        inputs.extend(str(m) for m in matched if m.is_file())
+
+    if not inputs:
+        return _emit_host_error(
+            code=ec.CLI_USAGE,
+            message="batch requires --inputs and/or --input-glob matching at least one file",
+            as_json=as_json,
+        )
+
+    try:
+        param_pairs = _build_recipe_params(args)
+    except sec.GimpMcpError as exc:
+        return _emit_host_error(
+            code=ec.CLI_USAGE,
+            message=exc.message,
+            as_json=as_json,
+            data=exc.details or {},
+        )
+
+    collision = getattr(args, "collision", None) or "version"
+    param_pairs = dict(param_pairs)
+    param_pairs["collision"] = str(collision)
+
+    try:
+        recipes.get_recipe(recipe_id, version)
+    except sec.GimpMcpError as exc:
+        if exc.code == sec.CODE_UNSUPPORTED:
+            return _emit_host_error(
+                code=sec.CODE_UNSUPPORTED,
+                message=exc.message,
+                as_json=as_json,
+                data=exc.details or {},
+            )
+        return _emit_host_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=as_json,
+            data=exc.details or {},
+        )
+
+    def _session_send(command_type: str, params: dict[str, Any]) -> dict[str, Any]:
+        timeout = float(getattr(args, "timeout", 30.0))
+        return probe_mod.send_authenticated_command(command_type, params, timeout=timeout)
+
+    Path(out_root).mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+    any_failed = False
+
+    for src in inputs:
+        src_path = Path(src)
+        out_path = str(Path(out_root) / src_path.name)
+        entry: dict[str, Any] = {"input": str(src), "output": out_path}
+        try:
+            log = recipes.run_recipe(
+                recipe_id,
+                version=version,
+                params=param_pairs,
+                input_path=str(src),
+                output_path=out_path,
+                session_send=_session_send,
+            )
+            entry["ok"] = True
+            entry["log"] = log
+        except sec.GimpMcpError as exc:
+            any_failed = True
+            entry["ok"] = False
+            entry["error"] = {
+                "code": exc.code,
+                "message": exc.message,
+                "details": exc.details,
+            }
+            if exc.details and "mutation_log" in exc.details:
+                entry["log"] = exc.details["mutation_log"]
+        except sec.SecurityError as exc:
+            any_failed = True
+            entry["ok"] = False
+            entry["error"] = {"code": exc.code, "message": exc.message}
+        except (OSError, TimeoutError, ConnectionError, RuntimeError) as exc:
+            any_failed = True
+            entry["ok"] = False
+            entry["error"] = {
+                "code": sec.CODE_CONNECTION_FAILED,
+                "message": str(exc),
+            }
+        results.append(entry)
+
+    exit_n = ec.EXIT_GENERIC if any_failed else ec.EXIT_SUCCESS
+    data = {
+        "recipe_id": recipe_id,
+        "version": version,
+        "results": results,
+        "total": len(results),
+        "failed": sum(1 for r in results if not r.get("ok")),
+    }
+    envelope = jsonio.make_envelope(
+        ok=not any_failed,
+        exit_code=exit_n,
+        code=None if not any_failed else sec.CODE_PARTIAL_MUTATION,
+        message=(
+            f"batch complete: {data['total'] - data['failed']}/{data['total']} ok"
+            if any_failed
+            else f"batch ok: {data['total']} files"
+        ),
+        data=data,
+    )
+    human = [
+        f"batch {recipe_id}: {data['total'] - data['failed']}/{data['total']} ok",
+    ]
+    for r in results:
+        status = "ok" if r.get("ok") else "FAIL"
+        human.append(f"  [{status}] {r.get('input')} -> {r.get('output')}")
+    jsonio.emit(envelope, as_json=as_json, human_lines=human)
+    return exit_n
+
+
 def _add_image_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--index",
@@ -497,7 +766,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="gimp-agent",
         description=(
             "Deterministic CLI sidecar for GIMP MCP "
-            "(doctor, probe, save-xcf, export, compare, verify, exit codes)."
+            "(doctor, probe, save-xcf, export, compare, verify, recipes, run, batch)."
         ),
     )
     # Separate dest from subcommand --json so parent True is not overwritten by
@@ -705,6 +974,107 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_arg(p_verify)
     p_verify.set_defaults(func=_cmd_verify)
+
+    p_recipes = sub.add_parser(
+        "recipes",
+        help="List shipped versioned recipes (host-only; no plugin/TCP)",
+    )
+    _add_json_arg(p_recipes)
+    p_recipes.set_defaults(func=_cmd_recipes)
+
+    p_run = sub.add_parser(
+        "run",
+        help="Run one recipe by id (host-only or live plugin depending on recipe)",
+    )
+    p_run.add_argument("recipe_id", help="Recipe id (e.g. compare-artifacts, web-export)")
+    p_run.add_argument(
+        "--version",
+        default=None,
+        help="Recipe semver (default: latest)",
+    )
+    p_run.add_argument(
+        "--output",
+        default=None,
+        help="Workspace-jailed output path ($output_path)",
+    )
+    p_run.add_argument(
+        "--input",
+        default=None,
+        help="Workspace-jailed input path ($input_path); mutually exclusive with --handle",
+    )
+    p_run.add_argument(
+        "--handle",
+        type=_parse_handle_arg,
+        default=None,
+        help="Image handle JSON for requires_open_session recipes",
+    )
+    p_run.add_argument(
+        "--param",
+        action="append",
+        default=None,
+        help="Recipe parameter KEY=VALUE (repeatable)",
+    )
+    p_run.add_argument(
+        "--collision",
+        choices=("fail", "version", "replace"),
+        default=None,
+        help="Output collision policy (when recipe supports collision)",
+    )
+    p_run.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Plugin TCP timeout seconds for GIMP recipes (default 30)",
+    )
+    _add_json_arg(p_run)
+    p_run.set_defaults(func=_cmd_run)
+
+    p_batch = sub.add_parser(
+        "batch",
+        help="Run a recipe over multiple inputs (continue-on-fail; not BatchProcedure)",
+    )
+    p_batch.add_argument("recipe_id", help="Recipe id")
+    p_batch.add_argument(
+        "--version",
+        default=None,
+        help="Recipe semver (default: latest)",
+    )
+    p_batch.add_argument(
+        "--output-dir",
+        required=True,
+        help="Workspace-jailed directory for per-input outputs",
+    )
+    p_batch.add_argument(
+        "--inputs",
+        action="append",
+        default=None,
+        help="Input path (repeatable)",
+    )
+    p_batch.add_argument(
+        "--input-glob",
+        default=None,
+        help="pathlib glob under workspace (use / separators; \\ normalized on Windows)",
+    )
+    p_batch.add_argument(
+        "--param",
+        action="append",
+        default=None,
+        help="Recipe parameter KEY=VALUE (repeatable)",
+    )
+    p_batch.add_argument(
+        "--collision",
+        choices=("fail", "version", "replace"),
+        default="version",
+        help="Output collision policy (default: version)",
+    )
+    p_batch.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Plugin TCP timeout seconds for GIMP recipes (default 30)",
+    )
+    _add_json_arg(p_batch)
+    p_batch.set_defaults(func=_cmd_batch)
 
     return parser
 
