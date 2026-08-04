@@ -1,0 +1,44 @@
+{
+  "id": "exif-normalize",
+  "version": "1.0.0",
+  "title": "EXIF orientation normalize and export",
+  "description": "Open an image, normalize orientation tags to upright, export to output_path.",
+  "batch_safe": true,
+  "requires_open_session": false,
+  "requires_gimp": true,
+  "parameters": {
+    "input_path": { "type": "path", "required": true },
+    "output_path": { "type": "path", "required": true },
+    "format": {
+      "type": "string",
+      "enum": ["png", "jpeg", "webp", "tiff"],
+      "default": "png"
+    },
+    "collision": {
+      "type": "string",
+      "enum": ["fail", "version", "replace"],
+      "default": "fail"
+    }
+  },
+  "steps": [
+    {
+      "op": "open_image",
+      "with": { "file_path": "$input_path" }
+    },
+    {
+      "op": "normalize_image_orientation",
+      "with": { "mode": "assume_pixels_upright" }
+    },
+    {
+      "op": "export_image",
+      "with": {
+        "file_path": "$output_path",
+        "format": "$format",
+        "preserve_alpha": true,
+        "verify": true,
+        "collision": "$collision"
+      }
+    }
+  ],
+  "rollback": { "delete_outputs_on_fail": true }
+}

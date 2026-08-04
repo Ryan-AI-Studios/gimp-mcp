@@ -32,8 +32,12 @@ py-modules = [
     "gimp_mcp_atomic",
     "gimp_mcp_surface",
     "gimp_mcp_verify",
+    "gimp_mcp_recipes",
 ]
 packages = ["gimp_agent"]
+
+[tool.setuptools.package-data]
+gimp_agent = ["recipes/*.json"]
 
 [dependency-groups]
 dev = [
@@ -93,6 +97,7 @@ known-first-party = [
     "gimp_mcp_atomic",
     "gimp_mcp_surface",
     "gimp_mcp_verify",
+    "gimp_mcp_recipes",
     "gimp_agent",
 ]
 
@@ -128,6 +133,7 @@ include = [
     "gimp_mcp_atomic.py",
     "gimp_mcp_surface.py",
     "gimp_mcp_verify.py",
+    "gimp_mcp_recipes.py",
     "gimp_agent",
     "tests",
 ]

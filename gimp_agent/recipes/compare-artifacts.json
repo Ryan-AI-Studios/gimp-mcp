@@ -1,0 +1,33 @@
+{
+  "id": "compare-artifacts",
+  "version": "1.0.0",
+  "title": "Compare two PNG artifacts",
+  "description": "Host-only pixel compare of two workspace-jailed PNG paths.",
+  "batch_safe": true,
+  "requires_open_session": false,
+  "requires_gimp": false,
+  "parameters": {
+    "path_a": { "type": "path", "required": true },
+    "path_b": { "type": "path", "required": true },
+    "max_mae": { "type": "float", "required": false },
+    "min_ssim": { "type": "float", "required": false },
+    "diff_out": { "type": "path", "required": false },
+    "require_mutation": { "type": "bool", "required": false, "default": false }
+  },
+  "steps": [
+    {
+      "op": "compare_images",
+      "with": {
+        "path_a": "$path_a",
+        "path_b": "$path_b",
+        "write_diff_path": "$diff_out",
+        "thresholds": {
+          "max_mae": "$max_mae",
+          "min_ssim": "$min_ssim",
+          "require_mutation": "$require_mutation"
+        }
+      }
+    }
+  ],
+  "rollback": { "delete_outputs_on_fail": false }
+}

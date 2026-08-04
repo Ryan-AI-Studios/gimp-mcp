@@ -1,0 +1,37 @@
+{
+  "id": "transparent-png",
+  "version": "1.0.0",
+  "title": "Transparent PNG export",
+  "description": "Export the open image as PNG with alpha preserved, then verify require_alpha.",
+  "batch_safe": false,
+  "requires_open_session": true,
+  "requires_gimp": true,
+  "parameters": {
+    "output_path": { "type": "path", "required": true },
+    "collision": {
+      "type": "string",
+      "enum": ["fail", "version", "replace"],
+      "default": "fail"
+    }
+  },
+  "steps": [
+    {
+      "op": "export_image",
+      "with": {
+        "format": "png",
+        "preserve_alpha": true,
+        "verify": true,
+        "collision": "$collision",
+        "file_path": "$output_path"
+      }
+    },
+    {
+      "op": "verify_artifact",
+      "with": {
+        "path": "$output_path",
+        "expected": { "format": "png", "require_alpha": true }
+      }
+    }
+  ],
+  "rollback": { "delete_outputs_on_fail": true }
+}

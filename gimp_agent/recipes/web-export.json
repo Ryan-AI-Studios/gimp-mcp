@@ -1,0 +1,52 @@
+{
+  "id": "web-export",
+  "version": "1.0.0",
+  "title": "Web PNG export",
+  "description": "Open, optional scale_image (when width+height set), export PNG, verify artifact.",
+  "batch_safe": true,
+  "requires_open_session": false,
+  "requires_gimp": true,
+  "parameters": {
+    "input_path": { "type": "path", "required": true },
+    "output_path": { "type": "path", "required": true },
+    "width": { "type": "int", "required": false },
+    "height": { "type": "int", "required": false },
+    "collision": {
+      "type": "string",
+      "enum": ["fail", "version", "replace"],
+      "default": "fail"
+    }
+  },
+  "steps": [
+    {
+      "op": "open_image",
+      "with": { "file_path": "$input_path" }
+    },
+    {
+      "op": "scale_image",
+      "with": {
+        "width": "$width",
+        "height": "$height",
+        "interpolation": "cubic"
+      }
+    },
+    {
+      "op": "export_image",
+      "with": {
+        "file_path": "$output_path",
+        "format": "png",
+        "preserve_alpha": true,
+        "verify": true,
+        "collision": "$collision"
+      }
+    },
+    {
+      "op": "verify_artifact",
+      "with": {
+        "path": "$output_path",
+        "expected": { "format": "png" }
+      }
+    }
+  ],
+  "rollback": { "delete_outputs_on_fail": true }
+}
