@@ -24,6 +24,7 @@ from fastmcp.utilities.types import Image
 from mcp.types import Annotations, ToolAnnotations
 
 import gimp_mcp_coords as coords
+import gimp_mcp_filters as filters
 import gimp_mcp_security as sec
 import gimp_mcp_snapshot as snap
 import gimp_mcp_surface as surface
@@ -629,7 +630,7 @@ def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
     return FastMCP(
         "GimpMCP",
         instructions=(
-            "GIMP MCP — default 22 high-level tools "
+            "GIMP MCP — default 25 high-level tools "
             "(set GIMP_MCP_ADVANCED_TOOLS=1 for full ~90-tool advanced surface)"
         ),
         include_tags=surface.include_tags_for_mode(mode),
@@ -4198,6 +4199,318 @@ def list_fonts(ctx: Context, filter: str | None = None) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _require_hl_layer_handle(layer_handle: Any) -> dict[str, Any]:
+    """HL NDE mutators require a real item handle (no name/active-layer fallback)."""
+    if not isinstance(layer_handle, dict):
+        raise sec.GimpMcpError(
+            sec.CODE_INVALID_HANDLE,
+            "layer_handle is required for this high-level tool "
+            "(pass an item handle from orient_workspace; layer_name/layer_id/"
+            "image_index alone are not accepted on HL NDE tools)",
+        )
+    return layer_handle
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
+@with_structured_error()
+def apply_nde_filter(
+    ctx: Context,
+    operation: str,
+    layer_handle: dict,
+    name: str | None = None,
+    config: dict | None = None,
+    opacity: float = 1.0,
+    blend_mode: str = "REPLACE",
+    visible: bool = True,
+) -> dict:
+    """Append an allowlisted GEGL/GIMP op as a **non-destructive** DrawableFilter.
+
+    Prefer this over advanced merge-bake filters (``apply_gaussian_blur``, etc.).
+    Config is synced via ``DrawableFilter.update()`` **before** ``append_filter``;
+    tools always flush displays before return so composite/snapshots see the stack.
+
+    **v1 allowlist (13):** ``gegl:gaussian-blur``, ``unsharp-mask``, ``noise-reduction``,
+    ``pixelize``, ``emboss``, ``vignette``, ``brightness-contrast``, ``hue-chroma``,
+    ``color-balance``, ``exposure``, ``shadows-highlights``; ``gimp:levels`` /
+    ``gimp:curves`` (runtime-probed). **Not** drop-shadow (use advanced manual tool).
+
+    Soft config: unknown keys are ignored (reported in ``ignored_props``), not rejected.
+
+    Parameters:
+    - operation: allowlisted op name (required)
+    - layer_handle: **required** item handle from orient_workspace (HL handle-first)
+    - name: display name (default = operation string)
+    - config: prop → value object (soft; e.g. ``{"std-dev-x": 5.0, "std-dev-y": 5.0}``)
+    - opacity: filter opacity 0.0-1.0 (default 1.0)
+    - blend_mode: default **REPLACE** (tutorial convention)
+    - visible: default true
+
+    Returns: filter summary, layer_handle, updated, applied_props, ignored_props, optional notes.
+    No generation bump (re-orient to refresh filters[]). Verify with render_visible_composite
+    + compare_images after edits.
+    """
+    try:
+        lh = _require_hl_layer_handle(layer_handle)
+        op_v = filters.validate_operation(operation)
+        if not op_v.get("ok"):
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                str(op_v.get("message", "unsupported operation")),
+                details=op_v.get("details") if isinstance(op_v.get("details"), dict) else None,
+            )
+        bm_v = filters.validate_blend_mode(blend_mode)
+        if not bm_v.get("ok"):
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                str(bm_v.get("message", "unsupported blend_mode")),
+                details=bm_v.get("details") if isinstance(bm_v.get("details"), dict) else None,
+            )
+        # Soft config: never reject unknown keys; type must be object when provided
+        if config is not None and not isinstance(config, dict):
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                "config must be an object when provided",
+            )
+
+        params: dict[str, Any] = {
+            "operation": op_v["operation"],
+            "opacity": float(opacity),
+            "blend_mode": bm_v["blend_mode"],
+            "visible": bool(visible),
+            "layer_handle": lh,
+        }
+        if name is not None:
+            params["name"] = name
+        if config is not None:
+            params["config"] = config
+
+        conn = get_gimp_connection()
+        result = conn.send_command("apply_nde_filter", params)
+        if result["status"] == "success":
+            return result["results"]
+        raise_from_plugin_result(result, "tool")
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(exc, tool_name="apply_nde_filter")
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
+@with_structured_error()
+def edit_filter_config(
+    ctx: Context,
+    filter_id: int,
+    layer_handle: dict,
+    config: dict | None = None,
+    opacity: float | None = None,
+    blend_mode: str | None = None,
+    visible: bool | None = None,
+) -> dict:
+    """Edit config / opacity / blend / visibility of an existing NDE filter.
+
+    Always calls ``DrawableFilter.update()`` + flush after config/blend/opacity
+    changes so the next composite/snapshot is live. Visibility uses ``set_visible``
+    + flush (not covered by update API alone).
+
+    Target by ``filter_id`` (from orient/list) **and** layer membership.
+    After delete/merge/undo/XCF reopen, filter ids are invalid → ``HANDLE_NOT_FOUND``.
+
+    Parameters:
+    - filter_id: session filter id from orient ``filters[]`` or list_drawable_filters
+    - layer_handle: **required** item handle (HL handle-first)
+    - config / opacity / blend_mode / visible: partial updates (omit to leave unchanged)
+
+    Returns: filter summary, applied_props, ignored_props, updated=true.
+    """
+    try:
+        lh = _require_hl_layer_handle(layer_handle)
+        if blend_mode is not None:
+            bm_v = filters.validate_blend_mode(blend_mode)
+            if not bm_v.get("ok"):
+                raise sec.GimpMcpError(
+                    sec.CODE_UNSUPPORTED,
+                    str(bm_v.get("message", "unsupported blend_mode")),
+                    details=bm_v.get("details") if isinstance(bm_v.get("details"), dict) else None,
+                )
+            blend_mode = bm_v["blend_mode"]
+        if config is not None and not isinstance(config, dict):
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                "config must be an object when provided",
+            )
+
+        params: dict[str, Any] = {
+            "filter_id": int(filter_id),
+            "layer_handle": lh,
+        }
+        if config is not None:
+            params["config"] = config
+        if opacity is not None:
+            params["opacity"] = float(opacity)
+        if blend_mode is not None:
+            params["blend_mode"] = blend_mode
+        if visible is not None:
+            params["visible"] = bool(visible)
+
+        conn = get_gimp_connection()
+        result = conn.send_command("edit_filter_config", params)
+        if result["status"] == "success":
+            return result["results"]
+        raise_from_plugin_result(result, "tool")
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(exc, tool_name="edit_filter_config")
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
+def remove_nde_filter(
+    ctx: Context,
+    filter_id: int,
+    layer_handle: dict,
+) -> dict:
+    """Delete an NDE DrawableFilter node by filter_id (non-destructive stack edit).
+
+    Source_Immutable protected layers → ``POLICY_DENIED``.
+    Unknown / wrong-layer filter_id → ``HANDLE_NOT_FOUND``.
+    No generation bump; re-orient to refresh filters[].
+
+    Parameters:
+    - filter_id: session filter id
+    - layer_handle: **required** item handle (HL handle-first)
+
+    Returns: removed_filter_id, layer_handle, updated=true.
+    """
+    try:
+        lh = _require_hl_layer_handle(layer_handle)
+        params: dict[str, Any] = {
+            "filter_id": int(filter_id),
+            "layer_handle": lh,
+        }
+
+        conn = get_gimp_connection()
+        result = conn.send_command("remove_nde_filter", params)
+        if result["status"] == "success":
+            return result["results"]
+        raise_from_plugin_result(result, "tool")
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(exc, tool_name="remove_nde_filter")
+
+
+@mcp.tool(tags={surface.ADVANCED_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
+def list_drawable_filters(
+    ctx: Context,
+    layer_handle: dict | None = None,
+    include_config: bool = True,
+    layer_id: int | None = None,
+    layer_name: str | None = None,
+    handle: dict | None = None,
+    image_index: int | None = None,
+) -> dict:
+    """List NDE filters on a drawable (topmost → bottommost). Advanced, not HL.
+
+    Prefer ``orient_workspace`` for full tree inventory; this tool is a cheaper
+    single-layer probe. Filter ids are session-live until delete/merge/undo/reopen.
+
+    Parameters:
+    - layer_handle: preferred item handle
+    - include_config: include best-effort prop dump (default true)
+    - layer_id / layer_name / handle / image_index: legacy targeting
+
+    Returns: filters[], count, layer_handle.
+    """
+    try:
+        params: dict[str, Any] = {"include_config": bool(include_config)}
+        if layer_handle is not None:
+            params["layer_handle"] = layer_handle
+        if layer_id is not None:
+            params["layer_id"] = int(layer_id)
+        if layer_name is not None:
+            params["layer_name"] = layer_name
+        if handle is not None:
+            params["handle"] = handle
+        if image_index is not None:
+            params["image_index"] = int(image_index)
+
+        conn = get_gimp_connection()
+        result = conn.send_command("list_drawable_filters", params)
+        if result["status"] == "success":
+            return result["results"]
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
+
+
+@mcp.tool(tags={surface.ADVANCED_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
+def merge_nde_filters(
+    ctx: Context,
+    confirm_destructive: bool = False,
+    layer_handle: dict | None = None,
+    filter_id: int | None = None,
+    layer_id: int | None = None,
+    layer_name: str | None = None,
+    handle: dict | None = None,
+    image_index: int | None = None,
+) -> dict:
+    """Destructively bake one or all NDE filters into layer pixels (advanced).
+
+    Requires ``confirm_destructive=true``. When ``filter_id`` is omitted, merges
+    **all** filters on the layer. Merged filter ids become invalid — re-orient
+    before further filter edits.
+
+    Prefer keeping filters non-destructive via apply/edit/remove unless bake is required.
+
+    Parameters:
+    - confirm_destructive: must be true
+    - layer_handle: preferred item handle
+    - filter_id: optional; omit to merge all
+    - layer_id / layer_name / handle / image_index: legacy targeting
+
+    Returns: merged_count, merged_filter_ids, note about invalidation.
+    """
+    try:
+        params: dict[str, Any] = {"confirm_destructive": bool(confirm_destructive)}
+        if layer_handle is not None:
+            params["layer_handle"] = layer_handle
+        if filter_id is not None:
+            params["filter_id"] = int(filter_id)
+        if layer_id is not None:
+            params["layer_id"] = int(layer_id)
+        if layer_name is not None:
+            params["layer_name"] = layer_name
+        if handle is not None:
+            params["handle"] = handle
+        if image_index is not None:
+            params["image_index"] = int(image_index)
+
+        conn = get_gimp_connection()
+        result = conn.send_command("merge_nde_filters", params)
+        if result["status"] == "success":
+            return result["results"]
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
+
+
 @mcp.tool(tags={surface.ADVANCED_TAG})
 @with_structured_error()
 def apply_drop_shadow(
@@ -4252,7 +4565,10 @@ def apply_drop_shadow(
 def apply_gaussian_blur(
     ctx: Context, radius: float = 5.0, layer_name: str | None = None, image_index: int = 0
 ) -> dict:
-    """Apply Gaussian blur as a destructive filter operation.
+    """Apply Gaussian blur as a destructive merge-bake filter operation.
+
+    Prefer HL ``apply_nde_filter`` with ``operation="gegl:gaussian-blur"`` for a
+    re-editable non-destructive stack.
 
     Parameters:
     - radius: Blur radius in pixels (default 5.0)
