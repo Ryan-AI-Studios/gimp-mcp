@@ -48,6 +48,10 @@ _CODE_TO_EXIT: dict[str, int] = {
     sec.CODE_CHECKPOINT_EXISTS: EXIT_POLICY,
     sec.CODE_CHECKPOINT_NOT_FOUND: EXIT_POLICY,
     sec.CODE_CHECKPOINT_CORRUPTED: EXIT_POLICY,
+    # Undo group transactions (0017) — policy-ish stack ownership
+    sec.CODE_TX_MISMATCH: EXIT_POLICY,
+    sec.CODE_TX_NOT_FOUND: EXIT_POLICY,
+    sec.CODE_TX_DEPTH: EXIT_POLICY,
     # Internal / metadata
     sec.CODE_INTERNAL: EXIT_INTERNAL,
     sec.CODE_METADATA_WRITE_FAILED: EXIT_INTERNAL,

@@ -441,7 +441,7 @@ def test_make_error_state_may_have_changed_after_mutation() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_filters_in_expected_plugin_files_len_9() -> None:
+def test_filters_in_expected_plugin_files_len_10() -> None:
     expected = {
         "gimp-mcp-plugin.py",
         "gimp_mcp_security.py",
@@ -452,10 +452,12 @@ def test_filters_in_expected_plugin_files_len_9() -> None:
         "gimp_mcp_policy.py",
         "gimp_mcp_atomic.py",
         "gimp_mcp_filters.py",
+        "gimp_mcp_tx.py",
     }
     assert set(pathmod.EXPECTED_PLUGIN_FILES) == expected
-    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 9
+    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 10
     assert "gimp_mcp_filters.py" in pathmod.EXPECTED_PLUGIN_FILES
+    assert "gimp_mcp_tx.py" in pathmod.EXPECTED_PLUGIN_FILES
     # Host-only modules stay out of ship set
     assert "gimp_mcp_state.py" not in pathmod.EXPECTED_PLUGIN_FILES
     assert "gimp_mcp_surface.py" not in pathmod.EXPECTED_PLUGIN_FILES
@@ -480,13 +482,13 @@ def test_pyproject_registers_filters() -> None:
 
 
 # ---------------------------------------------------------------------------
-# HL catalog 25 + advanced not HL
+# HL catalog 28 + advanced not HL (NDE tools remain HL)
 # ---------------------------------------------------------------------------
 
 
-def test_hl_catalog_exact_25_includes_nde() -> None:
+def test_hl_catalog_exact_28_includes_nde() -> None:
     names = get_hl_catalog_names()
-    assert len(names) == 25
+    assert len(names) == 28
     assert set(names) == HL_TOOL_NAMES
     assert "apply_nde_filter" in HL_TOOL_NAMES
     assert "edit_filter_config" in HL_TOOL_NAMES
@@ -619,8 +621,8 @@ def test_surface_and_state_wiring() -> None:
     assert "apply_nde_filter" in surface_text
     assert "edit_filter_config" in surface_text
     assert "remove_nde_filter" in surface_text
-    # comments say 25
-    assert "25" in surface_text
+    # comments say 28 (post-0017)
+    assert "28" in surface_text
 
     state_text = Path("gimp_mcp_state.py").read_text(encoding="utf-8")
     assert "nde_filters" in state_text

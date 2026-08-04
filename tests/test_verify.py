@@ -483,8 +483,9 @@ def test_not_in_expected_plugin_files() -> None:
     from gimp_agent import paths as pathmod
 
     assert "gimp_mcp_verify.py" not in pathmod.EXPECTED_PLUGIN_FILES
-    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 9
+    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 10
     assert "gimp_mcp_filters.py" in pathmod.EXPECTED_PLUGIN_FILES
+    assert "gimp_mcp_tx.py" in pathmod.EXPECTED_PLUGIN_FILES
 
 
 def test_capability_flags() -> None:

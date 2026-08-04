@@ -214,6 +214,7 @@ def default_capabilities() -> dict[str, bool]:
         "pixel_verification": True,  # 0014 host PNG compare/verify (not _CAPABILITY_REQUIRED)
         "recipe_library": True,  # 0015 allowlisted recipes (not _CAPABILITY_REQUIRED)
         "nde_filters": True,  # 0016 DrawableFilter NDE apply/edit/remove (not _CAPABILITY_REQUIRED)
+        "undo_group_transactions": True,  # 0017 agent undo groups begin/end/rollback
     }
 
 

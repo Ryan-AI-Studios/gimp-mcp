@@ -72,6 +72,10 @@ CODE_UNSUPPORTED = "UNSUPPORTED"  # reserved
 # Atomic save/export (track 0013)
 CODE_OUTPUT_COLLISION = "OUTPUT_COLLISION"
 CODE_VERIFY_FAILED = "VERIFY_FAILED"
+# Undo group transactions (track 0017)
+CODE_TX_MISMATCH = "TX_MISMATCH"
+CODE_TX_NOT_FOUND = "TX_NOT_FOUND"
+CODE_TX_DEPTH = "TX_DEPTH"
 
 
 class SecurityError(Exception):
@@ -133,6 +137,10 @@ CODE_DEFAULTS: dict[str, ErrorSpec] = {
     # 0013: static CODE_DEFAULTS — both non-retryable; verify-on-temp leaves final intact
     CODE_OUTPUT_COLLISION: _spec(retryable=False),
     CODE_VERIFY_FAILED: _spec(retryable=False, state_may_have_changed=False),
+    # 0017: agent undo TX stack errors — non-retryable; partial rollback overrides via kwargs
+    CODE_TX_MISMATCH: _spec(retryable=False, state_may_have_changed=False),
+    CODE_TX_NOT_FOUND: _spec(retryable=False, state_may_have_changed=False),
+    CODE_TX_DEPTH: _spec(retryable=False, state_may_have_changed=False),
 }
 
 
@@ -212,7 +220,9 @@ def build_error_envelope(
 ) -> dict[str, Any]:
     """Full product envelope: ``{ok: false, error: {...}}`` (v1).
 
-    ``rollback_available`` is always false until track 0017 (undo groups).
+    ``rollback_available`` is honest post-0017: true when an open agent undo TX
+    exists for the affected image (plugin SoT; host open-TX hint for pre-TCP).
+    Default remains false when not set.
     """
     defaults = _defaults_for(code)
     err: dict[str, Any] = {
@@ -229,13 +239,10 @@ def build_error_envelope(
             if state_may_have_changed is None
             else bool(state_may_have_changed)
         ),
-        # v1: honest false until 0017
         "rollback_available": False if rollback_available is False else bool(rollback_available),
         "affected_handles": list(affected_handles) if affected_handles else [],
         "details": details,
     }
-    # Force v1 policy: never claim rollback without 0017
-    err["rollback_available"] = False
     return {"ok": False, "error": err}
 
 

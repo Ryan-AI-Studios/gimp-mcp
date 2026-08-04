@@ -52,7 +52,7 @@ Objective before/after and artifact checks so silent no-ops fail closed.
 
 | Surface | Tools / verbs |
 |---|---|
-| MCP HL (catalog **25**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe`, NDE filter tools |
+| MCP HL (catalog **28**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe`, NDE filter tools, undo_group_* |
 | CLI (host-only) | `gimp-agent compare`, `gimp-agent verify` |
 | Capability | `pixel_verification: true` (extension; not `_CAPABILITY_REQUIRED`) |
 | **Not** flipped | `alpha_snapshot` stays **false** (live GIMP `render_alpha` unfinished) |
@@ -92,7 +92,7 @@ PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `f
 
 ## Available MCP Tools
 
-> **Default surface (0010 + 0014 + 0015 + 0016):** hosts list **25** high-level tools unless
+> **Default surface (0010 + 0014 + 0015 + 0016 + 0017):** hosts list **28** high-level tools unless
 > `GIMP_MCP_ADVANCED_TOOLS=1`. Prefer design names: `session_probe`,
 > `render_visible_composite` (alias of the composite path below), `create_selection`,
 > `orient_workspace`, `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter`.
@@ -196,7 +196,10 @@ MCP tool failures raise FastMCP `ToolError` → client `isError: true` with **si
 - Exactly one line (newlines in message sanitized to spaces).
 - JSON uses compact separators `(",", ":")`.
 - Envelope fields: `code`, `message`, `retryable`, `approval_required`, `request_id`,
-  `transaction_id`, `state_may_have_changed`, `rollback_available` (always `false` until 0017),
+  `transaction_id`, `state_may_have_changed`,
+  `rollback_available` (**true** when an open agent undo TX exists for the image;
+  plugin SoT via top-level TCP fields; host open-TX hint for pre-TCP errors; default
+  **false** when no open agent TX),
   `affected_handles`, `details`.
 - Pure helper: `parse_tool_error_text(text) -> dict | None` in `gimp_mcp_security`.
 - **Never** return plugin error dicts as successful tool results (`export_image` ALPHA_LOST included).
@@ -217,7 +220,7 @@ table with `uv run gimp-agent codes --json`.
 | 3 | GIMP or plug-in unavailable | `GIMP_NOT_FOUND`, `PLUGIN_NOT_FOUND` |
 | 4 | Transport / auth | `CONNECTION_FAILED`, `AUTH_FAILED`, `BIND_DENIED` |
 | 5 | Stale / foreign / invalid handle | `STALE_HANDLE`, `FOREIGN_SESSION`, `INVALID_HANDLE`, `HANDLE_NOT_FOUND`, `SELECTION_CONFLICT` |
-| 6 | Policy / path / approval / checkpoint | `POLICY_DENIED`, `CONFIRM_REQUIRED`, `PATH_DENIED`, `EXEC_DISABLED`, `CHECKPOINT_EXISTS`, `CHECKPOINT_NOT_FOUND`, `CHECKPOINT_CORRUPTED` |
+| 6 | Policy / path / approval / checkpoint / TX | `POLICY_DENIED`, `CONFIRM_REQUIRED`, `PATH_DENIED`, `EXEC_DISABLED`, `CHECKPOINT_EXISTS`, `CHECKPOINT_NOT_FOUND`, `CHECKPOINT_CORRUPTED`, `TX_MISMATCH`, `TX_NOT_FOUND`, `TX_DEPTH` |
 | 7 | Internal / unmapped | `INTERNAL_ERROR`, `METADATA_WRITE_FAILED`, unknown `CODE_*` |
 | 8 | Verification failed | `ALPHA_LOST`, `VERIFY_FAILED` |
 | 9 | Timeout | `TIMEOUT` |
@@ -251,7 +254,7 @@ Versioned allowlisted multi-step pipelines so agents run few-decision workflows.
 
 | Surface | API |
 |---|---|
-| MCP HL (catalog **25**) | `list_recipes`, `apply_recipe` (+ NDE filter tools) |
+| MCP HL (catalog **28**) | `list_recipes`, `apply_recipe` (+ NDE + undo_group tools) |
 | CLI | `gimp-agent recipes` / `run` / `batch` |
 | Module | `gimp_mcp_recipes.py` (host pure; not EXPECTED plug-in ship) |
 | Package data | `gimp_agent/recipes/*.json` via `importlib.resources` |
@@ -265,7 +268,7 @@ tools always call `update()` + `displays_flush()` before return.
 
 | Surface | API |
 |---|---|
-| MCP HL (catalog **25**) | `apply_nde_filter`, `edit_filter_config`, `remove_nde_filter` |
+| MCP HL (catalog **28**) | `apply_nde_filter`, `edit_filter_config`, `remove_nde_filter` (+ TX tools) |
 | MCP advanced | `list_drawable_filters` (read-only), `merge_nde_filters` (destructive bake) |
 | Module | `gimp_mcp_filters.py` (**9th** EXPECTED plug-in ship file + host py-module) |
 | Capability | `nde_filters: true` (extension; not `_CAPABILITY_REQUIRED`) |
@@ -355,7 +358,35 @@ Transport refuse / auth remain exit **4** (`CONNECTION_FAILED` / `AUTH_FAILED`).
 | `checkpoint_restore` | Opens XCF as **new** image (alongside). Prior handles invalid if closed. **Must re-orient.** No tattoo rebind. Optional `close_prior`. |
 
 **Capabilities:** `source_immutable_policy: true`, `checkpoints: true`,
-`atomic_xcf_save: true`, `atomic_export: true` (track 0013).
+`atomic_xcf_save: true`, `atomic_export: true` (track 0013),
+`undo_group_transactions: true` (track 0017).
+
+#### Agent undo-group transactions (track 0017)
+
+Atomic multi-step edit transactions via GIMP `image.undo_group_start/end`.
+
+| Surface | API |
+|---|---|
+| MCP HL (catalog **28**) | `undo_group_begin`, `undo_group_end`, `undo_group_rollback` |
+| MCP advanced | `undo_group_status`, `undo_group_force_close` (+ step `undo`/`redo`) |
+| Module | `gimp_mcp_tx.py` (**10th** EXPECTED plug-in ship file) |
+| Capability | `undo_group_transactions: true` |
+| CLI | **none** |
+
+**Protocol:**
+1. `undo_group_begin(handle, label="edit-pass")` → `{transaction_id, depth, timeout_s, …}`
+2. short multi-step mutators (≤ **300s wall-clock from begin**, not sliding)
+3a. success → `undo_group_end(handle)`
+3b. failure → `undo_group_rollback(handle)` then **MUST** `orient_workspace` (gen bump)
+4. long work → `checkpoint_create` or segment into multiple TXs
+
+**Timeout:** default 300s from `opened_mono`; env `GIMP_MCP_UNDO_TX_TIMEOUT_S` (clamp 5…3600).
+Expired TXs are force-closed deepest-first on begin/end/rollback/status/force_close/
+close_image/mutating dispatch (no auto-undo). Max agent nest depth **8** → `TX_DEPTH`.
+
+**Envelope:** `rollback_available: true` + `transaction_id` when an open agent TX exists
+for the image (plugin `make_error` kwargs; host `raise_from_plugin_result` forwards top-level
+fields as `tool_fail` kwargs; host open-TX hint for pre-TCP host errors).
 
 **Integrity hash:** `xcf_sha256` is integrity of **as-written** bytes — not XCF reproducibility.
 Soft compare on restore only. Public `save_xcf` optionally reopens the temp XCF for

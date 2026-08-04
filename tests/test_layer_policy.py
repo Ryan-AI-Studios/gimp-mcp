@@ -281,13 +281,14 @@ def test_wiring_pyproject_lists_policy() -> None:
     assert "gimp_mcp_policy" in text
 
 
-def test_wiring_readme_nine_install_files() -> None:
+def test_wiring_readme_install_files() -> None:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "gimp_mcp_policy.py" in text
     assert "gimp_mcp_atomic.py" in text
     assert "gimp_mcp_filters.py" in text
-    # EXPECTED_PLUGIN_FILES = plugin + 8 shared modules (9 total)
-    assert "9 files" in text or "**9** files" in text
+    assert "gimp_mcp_tx.py" in text
+    # EXPECTED_PLUGIN_FILES = plugin + 9 shared modules (10 total after 0017)
+    assert "10 files" in text or "**10** files" in text
 
 
 def test_wiring_plugin_imports_policy() -> None:

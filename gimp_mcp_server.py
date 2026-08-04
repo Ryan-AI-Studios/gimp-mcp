@@ -38,6 +38,17 @@ _current_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar
     "gimp_mcp_request_id", default=None
 )
 
+# Per-tool-invocation image_id harvested from handle/layer_handle kwargs (0017 P2-2).
+# tool_fail / raise_from_plugin_result read this when image_id is not passed explicitly.
+_current_tool_image_id: contextvars.ContextVar[int | str | None] = contextvars.ContextVar(
+    "gimp_mcp_tool_image_id", default=None
+)
+
+# Host open-TX hint cache (0017 AI2 BS3): image_id str → top transaction_id.
+# Updated only from successful undo_group_begin/end/rollback tool results.
+# Plugin remains SoT for any error returned via TCP.
+_HOST_OPEN_TX: dict[str, str] = {}
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("GimpMCPServer")
 
@@ -370,6 +381,83 @@ def _host_audit(event: str, **fields: Any) -> None:
     sec.write_audit_event(payload, sec.audit_server_path())
 
 
+def _host_tx_hint_set(image_id: int | str, transaction_id: str) -> None:
+    """Record top open agent TX for image (best-effort host pre-TCP honesty)."""
+    _HOST_OPEN_TX[str(image_id)] = str(transaction_id)
+
+
+def _host_tx_hint_clear(image_id: int | str) -> None:
+    _HOST_OPEN_TX.pop(str(image_id), None)
+
+
+def _host_tx_hint_get(image_id: int | str) -> str | None:
+    return _HOST_OPEN_TX.get(str(image_id))
+
+
+def _host_tx_hint_update_from_results(
+    results: dict[str, Any],
+    *,
+    image_id: int | str | None = None,
+    op: str,
+) -> None:
+    """Update host open-TX hint from successful begin/end/rollback results."""
+    iid = image_id
+    if iid is None:
+        handle = results.get("image_handle") or results.get("handle")
+        if isinstance(handle, dict) and handle.get("image_id") is not None:
+            iid = handle["image_id"]
+    if iid is None:
+        return
+    if op == "begin":
+        tid = results.get("transaction_id")
+        if tid:
+            _host_tx_hint_set(iid, str(tid))
+        return
+    if op in ("end", "rollback"):
+        # After closing top, depth_remaining > 0 means a new top may exist —
+        # status would be needed; clear when depth_remaining is 0, else keep
+        # if results provide remaining top id, else clear (next begin resets).
+        depth_rem = results.get("depth_remaining")
+        if depth_rem is not None and int(depth_rem) <= 0:
+            _host_tx_hint_clear(iid)
+        elif op == "rollback" or results.get("status") in ("committed", "rolled_back"):
+            # Prefer explicit remaining top if provided; otherwise clear
+            remaining = results.get("top_transaction_id")
+            if remaining:
+                _host_tx_hint_set(iid, str(remaining))
+            else:
+                _host_tx_hint_clear(iid)
+
+
+def _image_id_from_handle(handle: dict | None) -> int | str | None:
+    if isinstance(handle, dict) and handle.get("image_id") is not None:
+        return handle["image_id"]
+    return None
+
+
+def _image_id_from_tool_kwargs(kwargs: dict[str, Any]) -> int | str | None:
+    """Harvest image_id from common tool handle kwargs (handle / layer_handle / …)."""
+    for key in (
+        "handle",
+        "layer_handle",
+        "image_handle",
+        "source_handle",
+        "destination_handle",
+        "item_handle",
+        "drawable_handle",
+        "mask_handle",
+    ):
+        val = kwargs.get(key)
+        if isinstance(val, dict) and val.get("image_id") is not None:
+            return val["image_id"]
+    return None
+
+
+def get_current_tool_image_id() -> int | str | None:
+    """Return image_id harvested by ``with_structured_error`` for this tool call."""
+    return _current_tool_image_id.get()
+
+
 def tool_fail(
     code: str,
     message: str,
@@ -378,9 +466,18 @@ def tool_fail(
     affected_handles: list[Any] | None = None,
     details: dict[str, Any] | None = None,
     cause: BaseException | None = None,
+    image_id: int | str | None = None,
     **kw: Any,
 ) -> NoReturn:
     """Build envelope, raise single-line ToolError (MCP isError path)."""
+    # Host open-TX hint for pre-TCP / missing-plugin-field honesty (0017).
+    # Prefer explicit image_id; else contextvar from with_structured_error.
+    if image_id is None:
+        image_id = _current_tool_image_id.get()
+    if "rollback_available" not in kw and image_id is not None:
+        hint_tid = _host_tx_hint_get(image_id)
+        if hint_tid:
+            kw = {**kw, "rollback_available": True, "transaction_id": hint_tid}
     rid = request_id or get_current_request_id() or sec.new_request_id()
     envelope = sec.build_error_envelope(
         code,
@@ -413,8 +510,15 @@ def raise_from_plugin_result(
     *,
     request_id: str | None = None,
     affected_handles: list[Any] | None = None,
+    image_id: int | str | None = None,
 ) -> NoReturn:
-    """Map plugin TCP error dict → ToolError with full envelope (incl. details)."""
+    """Map plugin TCP error dict → ToolError with full envelope (incl. details).
+
+    Plugin is SoT for TCP errors: top-level ``rollback_available`` /
+    ``transaction_id`` are forwarded as tool_fail kwargs. When omitted, defaults
+    to ``rollback_available=False`` — host open-TX hint is **not** applied here
+    (hint is for pre-TCP host-side tool_fail only).
+    """
     code = str(result.get("code") or sec.CODE_INTERNAL)
     raw_msg = result.get("error", "Unknown error")
     message = str(raw_msg) if raw_msg is not None else "Unknown error"
@@ -435,12 +539,26 @@ def raise_from_plugin_result(
         ah = result.get("affected_handles")
         handles = list(ah) if isinstance(ah, list) else None
 
+    # 0017 H1: top-level rollback fields → tool_fail kwargs (not details-only).
+    # Plugin is SoT for TCP errors: do NOT merge host open-TX hint here (stale
+    # after plugin-side reap/close). Host hint is for pre-TCP tool_fail only.
+    extra: dict[str, Any] = {}
+    if "rollback_available" in result:
+        extra["rollback_available"] = bool(result.get("rollback_available"))
+    else:
+        # Explicit false when plugin omitted fields → no open agent TX on SoT
+        extra["rollback_available"] = False
+    if "transaction_id" in result and result.get("transaction_id") is not None:
+        extra["transaction_id"] = result.get("transaction_id")
+
     tool_fail(
         code,
         message,
         request_id=rid if isinstance(rid, str) else None,
         affected_handles=handles,
         details=details or None,
+        # No image_id: prevents tool_fail host-hint fill on TCP path
+        **extra,
     )
 
 
@@ -450,6 +568,7 @@ def raise_from_exception(
     request_id: str | None = None,
     tool_name: str | None = None,
     affected_handles: list[Any] | None = None,
+    image_id: int | str | None = None,
 ) -> NoReturn:
     """Map host exceptions → structured ToolError.
 
@@ -457,13 +576,27 @@ def raise_from_exception(
     - SecurityError / GimpMcpError: use their code
     - ConnectionError / TimeoutError / OSError: CONNECTION_FAILED
     - else: INTERNAL_ERROR (pass affected_handles when known)
+
+    ``image_id`` enables host open-TX hint merge for pre-TCP honesty (0017).
     """
     rid = request_id or get_current_request_id() or sec.new_request_id()
+    if image_id is None:
+        image_id = _current_tool_image_id.get()
 
     if isinstance(exc, ToolError):
         raise exc
 
     if isinstance(exc, sec.GimpMcpError):
+        gimp_kw: dict[str, Any] = {
+            "retryable": exc.retryable,
+            "approval_required": exc.approval_required,
+            "state_may_have_changed": exc.state_may_have_changed,
+        }
+        # Only set rollback kwargs when true/non-null so host TX hint can still merge.
+        if exc.rollback_available:
+            gimp_kw["rollback_available"] = True
+        if exc.transaction_id is not None:
+            gimp_kw["transaction_id"] = exc.transaction_id
         tool_fail(
             exc.code,
             exc.message,
@@ -471,14 +604,18 @@ def raise_from_exception(
             affected_handles=affected_handles or exc.affected_handles or None,
             details=exc.details,
             cause=exc,
-            retryable=exc.retryable,
-            approval_required=exc.approval_required,
-            state_may_have_changed=exc.state_may_have_changed,
+            image_id=image_id,
+            **gimp_kw,
         )
 
     if isinstance(exc, sec.SecurityError):
         tool_fail(
-            exc.code, exc.message, request_id=rid, affected_handles=affected_handles, cause=exc
+            exc.code,
+            exc.message,
+            request_id=rid,
+            affected_handles=affected_handles,
+            cause=exc,
+            image_id=image_id,
         )
 
     if isinstance(exc, (ConnectionError, TimeoutError)):
@@ -488,6 +625,7 @@ def raise_from_exception(
             request_id=rid,
             affected_handles=affected_handles,
             cause=exc,
+            image_id=image_id,
         )
 
     if isinstance(exc, OSError):
@@ -498,6 +636,7 @@ def raise_from_exception(
             request_id=rid,
             affected_handles=affected_handles,
             cause=exc,
+            image_id=image_id,
         )
 
     prefix = f"{tool_name} failed: " if tool_name else ""
@@ -510,6 +649,7 @@ def raise_from_exception(
         request_id=rid,
         affected_handles=affected_handles,
         cause=exc,
+        image_id=image_id,
     )
 
 
@@ -517,6 +657,7 @@ def _harvest_affected_handles(kwargs: dict[str, Any]) -> list[Any] | None:
     """Collect known handle kwargs for INTERNAL_ERROR affected_handles (M5).
 
     - ``handle`` if present and dict-like → include once
+    - ``layer_handle`` if present and dict-like → include
     - ``handles`` if present and list → extend
     Returns None when nothing harvested (omit empty list on wire).
     """
@@ -524,6 +665,9 @@ def _harvest_affected_handles(kwargs: dict[str, Any]) -> list[Any] | None:
     handle = kwargs.get("handle")
     if isinstance(handle, dict):
         out.append(handle)
+    layer_handle = kwargs.get("layer_handle")
+    if isinstance(layer_handle, dict):
+        out.append(layer_handle)
     handles = kwargs.get("handles")
     if isinstance(handles, list):
         out.extend(item for item in handles if item is not None)
@@ -536,6 +680,8 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
     Success path does **not** inject request_id into return dicts (v1 M4).
     On non-ToolError exceptions, harvests ``handle`` / ``handles`` kwargs into
     affected_handles for INTERNAL_ERROR (and other mapped codes) when known.
+    Sets ``_current_tool_image_id`` from handle/layer_handle so tool_fail and
+    raise_from_plugin_result can apply host open-TX hint without per-tool wiring.
     """
 
     def decorator(fn: F) -> F:
@@ -545,6 +691,8 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             rid = sec.new_request_id()
             token = _current_request_id.set(rid)
+            iid = _image_id_from_tool_kwargs(kwargs)
+            iid_token = _current_tool_image_id.set(iid)
             _host_audit("mcp_tool_start", tool=name, request_id=rid)
             try:
                 out = fn(*args, **kwargs)
@@ -573,6 +721,7 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
                         request_id=rid,
                         tool_name=name,
                         affected_handles=handles,
+                        image_id=iid,
                     )
                 except ToolError as te:
                     parsed = sec.parse_tool_error_text(str(te))
@@ -588,6 +737,7 @@ def with_structured_error(tool_name: str | None = None) -> Callable[[F], F]:
                     )
                     raise
             finally:
+                _current_tool_image_id.reset(iid_token)
                 _current_request_id.reset(token)
 
         return wrapper  # type: ignore[return-value]
@@ -630,7 +780,7 @@ def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
     return FastMCP(
         "GimpMCP",
         instructions=(
-            "GIMP MCP — default 25 high-level tools "
+            "GIMP MCP — default 28 high-level tools "
             "(set GIMP_MCP_ADVANCED_TOOLS=1 for full ~90-tool advanced surface)"
         ),
         include_tags=surface.include_tags_for_mode(mode),
@@ -5137,6 +5287,228 @@ def redo(ctx: Context, steps: int = 1, image_index: int = 0) -> dict:
         raise
 
 
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
+@with_structured_error()
+def undo_group_begin(
+    ctx: Context,
+    handle: dict,
+    label: str | None = None,
+) -> dict:
+    """Start an agent undo-group transaction on an open image.
+
+    Wall-clock timeout is **300s from begin** (not sliding / not last-activity);
+    override via env ``GIMP_MCP_UNDO_TX_TIMEOUT_S`` (clamped 5-3600). Use for
+    **short multi-step** edit sequences only. Long or risky work →
+    ``checkpoint_create`` (0009) or segment into multiple transactions.
+
+    Nested agent transactions are allowed up to depth 8. Local mutator undo
+    groups nest inside the agent TX and must stay balanced.
+
+    Parameters:
+    - handle: image handle from orient_workspace / mutators (required)
+    - label: optional label (default ``agent``; max 128 chars)
+
+    Returns: {transaction_id, label, image_handle, depth, timeout_s, opened_at}
+    """
+    try:
+        conn = get_gimp_connection()
+        params: dict[str, Any] = {"handle": handle}
+        if label is not None:
+            params["label"] = label
+        result = conn.send_command("undo_group_begin", params)
+        if result["status"] == "success":
+            out = result["results"]
+            _host_tx_hint_update_from_results(
+                out if isinstance(out, dict) else {},
+                image_id=_image_id_from_handle(handle),
+                op="begin",
+            )
+            return out
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(
+            exc,
+            tool_name="undo_group_begin",
+            image_id=_image_id_from_handle(handle),
+        )
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
+@with_structured_error()
+def undo_group_end(
+    ctx: Context,
+    handle: dict,
+    transaction_id: str | None = None,
+) -> dict:
+    """Commit/close the top open agent undo-group transaction.
+
+    Optional ``transaction_id`` must match the stack top (no out-of-order end).
+    Empty stack or id mismatch → ``TX_MISMATCH``.
+
+    Parameters:
+    - handle: image handle (required)
+    - transaction_id: optional; must be the top open TX if provided
+
+    Returns: {transaction_id, status: "committed", depth_remaining}
+    """
+    try:
+        conn = get_gimp_connection()
+        params: dict[str, Any] = {"handle": handle}
+        if transaction_id is not None:
+            params["transaction_id"] = transaction_id
+        result = conn.send_command("undo_group_end", params)
+        if result["status"] == "success":
+            out = result["results"]
+            _host_tx_hint_update_from_results(
+                out if isinstance(out, dict) else {},
+                image_id=_image_id_from_handle(handle),
+                op="end",
+            )
+            return out
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(
+            exc,
+            tool_name="undo_group_end",
+            image_id=_image_id_from_handle(handle),
+        )
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True, idempotent=False))
+@with_structured_error()
+def undo_group_rollback(
+    ctx: Context,
+    handle: dict,
+    transaction_id: str | None = None,
+) -> dict:
+    """Abort the top open agent undo-group transaction (end + one image.undo).
+
+    Closes the outer agent group then undoes that user-visible unit, restoring
+    pre-TX canvas state. Bumps image generation. Agents **MUST** call
+    ``orient_workspace`` after rollback — handles may be stale after structural undo.
+
+    Optional ``transaction_id`` must match the stack top. Nested agent TX: only
+    the top agent group is rolled back (outer agent TX stays open).
+
+    Parameters:
+    - handle: image handle (required)
+    - transaction_id: optional; must be the top open TX if provided
+
+    Returns: {transaction_id, status: "rolled_back", generation}
+    """
+    try:
+        conn = get_gimp_connection()
+        params: dict[str, Any] = {"handle": handle}
+        if transaction_id is not None:
+            params["transaction_id"] = transaction_id
+        result = conn.send_command("undo_group_rollback", params)
+        if result["status"] == "success":
+            out = result["results"]
+            _host_tx_hint_update_from_results(
+                out if isinstance(out, dict) else {},
+                image_id=_image_id_from_handle(handle),
+                op="rollback",
+            )
+            return out
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(
+            exc,
+            tool_name="undo_group_rollback",
+            image_id=_image_id_from_handle(handle),
+        )
+
+
+@mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
+def undo_group_status(
+    ctx: Context,
+    handle: dict,
+) -> dict:
+    """Report open agent undo TXs and recent closed summaries for an image.
+
+    Advanced tool (not HL). Open stack is deepest-last (index 0 = outermost).
+    Recent ring buffer cap is 10.
+
+    Parameters:
+    - handle: image handle (required)
+
+    Returns: {image_handle, open, recent, timeout_s}
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("undo_group_status", {"handle": handle})
+        if result["status"] == "success":
+            return result["results"]
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
+
+
+@mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
+def undo_group_force_close(
+    ctx: Context,
+    handle: dict,
+    transaction_id: str | None = None,
+) -> dict:
+    """Force-end open agent undo groups without undoing canvas changes.
+
+    No ``transaction_id`` → end **all** open agent TXs on the image.
+    Mid-stack id → force-close that TX **and all above it** (deepest-first);
+    lower stack entries remain open. Work may remain as undoable unit(s) —
+    use advanced ``undo`` or a checkpoint for recovery.
+
+    Parameters:
+    - handle: image handle (required)
+    - transaction_id: optional open TX id (or omit for all)
+
+    Returns: {force_closed_count, force_closed_ids, note}
+    """
+    try:
+        conn = get_gimp_connection()
+        params: dict[str, Any] = {"handle": handle}
+        if transaction_id is not None:
+            params["transaction_id"] = transaction_id
+        result = conn.send_command("undo_group_force_close", params)
+        if result["status"] == "success":
+            out = result["results"]
+            # Refresh host hint: clear if stack empty after force_close
+            iid = _image_id_from_handle(handle)
+            if iid is not None:
+                remaining_top = None
+                if isinstance(out, dict):
+                    remaining_top = out.get("top_transaction_id")
+                if remaining_top:
+                    _host_tx_hint_set(iid, str(remaining_top))
+                else:
+                    _host_tx_hint_clear(iid)
+            return out
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
+
+
 @mcp.tool(tags={surface.ADVANCED_TAG})
 @with_structured_error()
 def convert_color_mode(
@@ -5200,6 +5572,14 @@ def close_image(
             params["image_index"] = int(image_index)
         result = conn.send_command("close_image", params)
         if result["status"] == "success":
+            # Plugin force-ended open agent TXs before delete — clear host hint.
+            iid = _image_id_from_handle(handle)
+            if iid is not None:
+                _host_tx_hint_clear(iid)
+            else:
+                # Legacy image_index path: no image_id on host — drop all hints
+                # (single-client MCP; avoids stale pre-TCP rollback_available).
+                _HOST_OPEN_TX.clear()
             return result["results"]
         raise_from_plugin_result(result, "tool")
     except ToolError:

@@ -110,9 +110,10 @@ def test_expected_plugin_files_completeness() -> None:
         "gimp_mcp_policy.py",
         "gimp_mcp_atomic.py",
         "gimp_mcp_filters.py",
+        "gimp_mcp_tx.py",
     }
     assert set(pathmod.EXPECTED_PLUGIN_FILES) == expected
-    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 9
+    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 10
     assert "gimp_mcp_state.py" not in pathmod.EXPECTED_PLUGIN_FILES
     assert "gimp_mcp_surface.py" not in pathmod.EXPECTED_PLUGIN_FILES
     assert "gimp_mcp_verify.py" not in pathmod.EXPECTED_PLUGIN_FILES

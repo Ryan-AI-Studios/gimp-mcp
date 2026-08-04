@@ -18,7 +18,7 @@ HL_TAG = "hl"
 ADVANCED_TAG = "advanced"
 ENV_ADVANCED_TOOLS = "GIMP_MCP_ADVANCED_TOOLS"
 
-# Locked default catalog — exactly 25 names (0010 + 0014 + 0015 + 0016 NDE).
+# Locked default catalog — exactly 28 names (0010 + 0014 + 0015 + 0016 + 0017 TX).
 HL_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "session_probe",
@@ -46,6 +46,9 @@ HL_TOOL_NAMES: frozenset[str] = frozenset(
         "apply_nde_filter",
         "edit_filter_config",
         "remove_nde_filter",
+        "undo_group_begin",
+        "undo_group_end",
+        "undo_group_rollback",
     }
 )
 
@@ -87,7 +90,7 @@ def include_tags_for_mode(mode: str) -> set[str] | None:
 
 
 def get_hl_catalog_names() -> list[str]:
-    """Sorted list of the 25 high-level tool names."""
+    """Sorted list of the 28 high-level tool names."""
     return sorted(HL_TOOL_NAMES)
 
 
