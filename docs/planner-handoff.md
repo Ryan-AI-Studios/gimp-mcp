@@ -108,11 +108,7 @@ minting. Track IDs are creation order, not execution order.
   → 0016 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0015 Completed.** Next Ready: **0016** NdeFilterTools (full plan;
-not started). Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**. Composite
-**0004**. EXIF **0008**. Policy **0009**. HL surface **0010** → **22** with **0015** (→ **25** when
-**0016** lands). Errors **0011**. CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes
-**0015**. Authoritative table: `conductor/conductor.md`.
+**28 tracks** (0001–0028). **0001–0016 Completed.** Next: **0017** UndoGroupTransactions (placeholder). Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010** → **25** with **0016**. Errors **0011**. CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**. NDE **0016**. Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -296,11 +292,11 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~ca3953c post-0015) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0016-NdeFilterTools** — feature branch review fixes (not Completed); prior **0015 Completed** PR #22 / main@51adaeb |
+| Active focus | **0017-UndoGroupTransactions** (placeholder); prior **0016 Completed** (NDE filters, HL 25) |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
-### 0016 implementation notes (in progress — not Completed)
+### 0016 Completed (NDE Filter Tools)
 
 - **Shipped:** `gimp_mcp_filters.py` (9th EXPECTED; pure allowlist/soft validate/normalize/coerce + `classify_drawable_filter_new_failure`); packaging triad; `nde_filters: true`; HL **25** + advanced `list_drawable_filters` / `merge_nde_filters`.
 - **HL handle-first:** `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter` **require** `layer_handle` (no layer_name/layer_id/image_index fallback on HL). Advanced list/merge still allow legacy targeting.
@@ -310,7 +306,8 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Install note:** copy **9** plug-in files to APPDATA (full install automation stays **0018**).
 - **Neighbor walls:** undo tools **0017**; install **0018**; headless **0019**; NDE recipes later.
 - **Pins:** hold mcp/fastmcp majors (re-checked PyPI 2.0.0 / 3.4.5).
-- **Do not mark Completed** until Codex re-review PASS + full gate + ledger + operator matrix / waiver.
+- **Codex final:** PASS WITH DEFERRED P3 (live matrix + summary_only cheap path + optional _sync_filter reuse).
+- **Offline waiver:** live operator matrix deferred to ops after APPDATA 9-file install (**0018**).
 
 ### 0005 completion notes (planners)
 
