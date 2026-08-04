@@ -106,13 +106,17 @@ PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `f
 #### `render_visible_composite` / `get_image_bitmap(image_index=0, max_width=None, max_height=None, region=None)`
 **Default (HL):** `render_visible_composite`. **Advanced alias:** `get_image_bitmap`.
 Returns the **visible composite** of a specified open image as PNG (MCP ImageContent)
-plus mapping metadata in MCP **`structuredContent`**.
+plus mapping metadata in MCP **`structuredContent`**, with a TextContent JSON mirror
+and optional jailed filesystem write (`filesystem_path` under
+`.gimp-mcp-tmp/snapshots/`; env `GIMP_MCP_SNAPSHOT_WRITE`, default on). Content order:
+TextContent then ImageContent. `client_model_visibility` is always unknown — prefer
+`filesystem_path` when ImageContent is omitted/unrendered.
 
 - **Composite:** all visible layers / opacity / blend / masks as GIMP's canvas projection
   (not the top layer alone). Works on a temporary duplicate; never mutates the user's image.
 - **image_index:** which open document to capture (default `0`)
 - **Format:** PNG
-- **Returns:** ToolResult — vision ImageContent + structured mapping:
+- **Returns:** ToolResult — TextContent mapping + vision ImageContent + structured mapping:
   `mode`, `image_index`, `source_width`/`source_height`, `rendered_width`/`rendered_height`,
   `scale_x`/`scale_y` (region-relative when `region` is set), `region`, `composite_method`,
   plus coordinate declaration (0008): `coordinate_space="image-pixels"`, `origin="top-left"`,

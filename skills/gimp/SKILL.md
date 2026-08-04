@@ -6,7 +6,7 @@ description: >
   images in GIMP, hybrid MCP vs CLI, checkpoints, export, refine loops.
 license: MIT
 metadata:
-  version: "1.0"
+  version: "1.1"
   package: gimp-mcp-skills
 ---
 
@@ -39,6 +39,9 @@ tree). This package is for *running* image work.
 9. **Save then export** — `save_xcf` / CLI `save-xcf`, then `export_image` /
    CLI `export` separately; never sole-source overwrite.
 10. **Never trust** `status: success` alone — verify (see **gimp-verify**).
+11. **Never assume** MCP ImageContent reached the model
+    (`image_delivery.client_model_visibility=unknown`). If vision is missing,
+    open `filesystem_path` from structuredContent / TextContent via host tools.
 
 ## Hard safety
 

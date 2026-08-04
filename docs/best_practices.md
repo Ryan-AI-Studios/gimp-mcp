@@ -247,6 +247,7 @@ After drawing operations, capture a high-resolution region to verify output qual
 - Can use higher resolution for small regions
 - Example: After drawing a face, get just the face region at high quality
 - Catch issues early before continuing to next elements
+- If ImageContent is not model-visible, open `filesystem_path` from structuredContent / TextContent mapping (jailed under `.gimp-mcp-tmp/snapshots/`)
 
 ### Context State Awareness
 Check `get_context_state()` before operations that depend on settings:

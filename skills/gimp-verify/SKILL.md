@@ -6,13 +6,14 @@ description: >
   never trust status success alone.
 license: MIT
 metadata:
-  version: "1.0"
+  version: "1.1"
   package: gimp-mcp-skills
 ---
 
 # gimp-verify
 
 Evidence over envelopes. Never claim success from status alone.
+Never assume MCP ImageContent reached the model.
 
 ## Path map
 
@@ -23,10 +24,14 @@ Evidence over envelopes. Never claim success from status alone.
 
 ### Live session (MCP HL)
 
-- `render_visible_composite` — what the canvas looks like
+- `render_visible_composite` — what the canvas looks like (ImageContent + TextContent mapping)
 - `verify_alpha_channel` — alpha preflight
 - `compare_images` — before/after PNG metrics
 - `verify_artifact` — dims/format/alpha/sha256 on a path
+
+If ImageContent is omitted or unrendered, open **`filesystem_path`** from
+structuredContent / TextContent mapping via host tools (default under
+`.gimp-mcp-tmp/snapshots/`). `client_model_visibility` is always `unknown`.
 
 ### Host-only (no TCP)
 
@@ -37,7 +42,7 @@ Evidence over envelopes. Never claim success from status alone.
 
 1. Capture baseline (composite or export).
 2. Mutate (caller’s edit skill).
-3. Re-capture → metrics / visual check.
+3. Re-capture → metrics / visual check (or open `filesystem_path` if no vision).
 4. On deliverable: `verify_artifact` (+ alpha when transparent).
 5. Max **3** refine loops; escalate with metrics if stuck.
 
