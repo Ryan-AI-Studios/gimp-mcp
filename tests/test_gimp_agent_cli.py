@@ -832,3 +832,53 @@ def test_doctor_lists_imagemagick_check(
     names = [c.name for c in report.checks]
     assert "imagemagick" in names
     assert "exiftool" in names
+
+
+# ---------------------------------------------------------------------------
+# skills list / validate / install (track 0020)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_skills_list_json(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["skills", "list", "--json"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["exit_code"] == 0
+    names = {s["name"] for s in body["data"]["skills"]}
+    assert names == {
+        "gimp",
+        "gimp-orient",
+        "gimp-edit",
+        "gimp-batch",
+        "gimp-verify",
+        "gimp-install",
+    }
+
+
+def test_cli_skills_validate_json(capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["skills", "validate", "--json"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert "valid" in body["message"].lower()
+
+
+def test_cli_skills_install_requires_target() -> None:
+    # argparse missing required --target → usage exit 2
+    code = main(["skills", "install"])
+    assert code == 2
+
+
+def test_cli_skills_install_dry_run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = tmp_path / "skills-out"
+    code = main(["skills", "install", "--target", str(target), "--dry-run", "--json"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["data"]["dry_run"] is True
+    # dry-run must not create the tree
+    assert not target.exists() or not any(target.iterdir())

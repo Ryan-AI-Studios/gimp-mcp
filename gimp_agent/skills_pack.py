@@ -751,11 +751,20 @@ def install_skills(
     for meta in PACKAGE_META_FILES:
         if not (package_root / meta).is_file():
             errors.append(f"source missing: {meta}")
+    # Refuse to copy secrets (spec §2.10 — even if source was hand-modified)
+    secret_hits = secret_scan_tree(package_root)
+    if secret_hits:
+        errors.extend(secret_hits)
     if errors:
+        code = "VERIFY_FAILED" if secret_hits else "PLUGIN_NOT_FOUND"
         return InstallReport(
             ok=False,
-            code="PLUGIN_NOT_FOUND",
-            message="skills package incomplete; cannot install",
+            code=code,
+            message=(
+                "skills package contains forbidden secret patterns; refuse install"
+                if secret_hits
+                else "skills package incomplete; cannot install"
+            ),
             source_root=str(package_root),
             target=str(dest),
             dry_run=dry_run,

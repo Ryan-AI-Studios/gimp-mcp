@@ -360,6 +360,22 @@ def test_install_includes_references(tmp_path: Path) -> None:
     assert any((target / "references").iterdir())
 
 
+def test_install_refuses_secrets(tmp_path: Path) -> None:
+    """install_skills refuses to copy when source tree contains secret patterns."""
+    import shutil
+
+    src = tmp_path / "poisoned"
+    shutil.copytree(SKILLS_ROOT, src)
+    (src / "gimp" / "SKILL.md").write_text(
+        "---\nname: gimp\ndescription: >\n  x\n---\n\nGIMP_MCP_TOKEN=abc\n",
+        encoding="utf-8",
+    )
+    report = sp.install_skills(tmp_path / "out", dry_run=False, root=src)
+    assert report.ok is False
+    assert report.code == "VERIFY_FAILED"
+    assert not (tmp_path / "out" / "MANIFEST.json").exists()
+
+
 @requires_package
 def test_line_count_within_hard_max() -> None:
     for name in sp.SKILL_NAMES:
