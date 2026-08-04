@@ -129,8 +129,10 @@ TextContent then ImageContent. `client_model_visibility` is always unknown — p
 #### `get_state_snapshot(image_index=0, max_size=512, region=None, label="")`
 Agent-oriented live preview of the **visible composite** (same capture path as
 `get_image_bitmap`). Default max edge is **512**. Region may use `{x,y,width,height}`
-shorthand. Returns ToolResult with ImageContent + structuredContent mapping
-(same schema as `get_image_bitmap`).
+shorthand. Returns ToolResult with **TextContent** (JSON mapping mirror) +
+**ImageContent** + structuredContent (same dual-delivery schema as
+`render_visible_composite` / `get_image_bitmap`), including optional
+`filesystem_path` under `.gimp-mcp-tmp/snapshots/` when snapshot write is on.
 
 #### `orient_workspace(image_index=None, summary_only=False)` — **orientation SoT**
 Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_version`

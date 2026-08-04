@@ -111,6 +111,10 @@ uv run pytest tests/test_skills_pack.py -q
 
 ## Non-goals
 
-- Marketplace publish
-- Host MCP config / image-delivery probes (later adapter work)
+- Marketplace publish / Grok plugin marketplace packaging
+- Client hooks enforcing orient/verify lifecycle
 - Packaging maintainer governance skills as product defaults
+
+Client MCP wiring and dual image delivery (ImageContent + `filesystem_path`)
+are productized under repo-root `adapters/` and `session_probe.image_delivery`
+(track 0021) — not in this skills package.

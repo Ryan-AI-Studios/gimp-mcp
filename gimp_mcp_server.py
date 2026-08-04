@@ -1580,13 +1580,16 @@ def get_state_snapshot(
     region: dict | None = None,
     label: str = "",
 ) -> ToolResult:
-    """Return a live visual snapshot of the visible composite — no file save needed.
+    """Return a live visual snapshot of the visible composite (dual-delivery).
 
     Prefer ``orient_workspace`` for structural SoT and ``render_visible_composite``
     for full-fidelity composite + mapping on the default surface.
 
-    AI agents call this to get immediate visual feedback after any edit operation,
-    letting them verify results and decide next steps without saving to disk.
+    AI agents call this for visual feedback after edits. Dual-delivery matches
+    ``render_visible_composite``: TextContent JSON mapping + ImageContent PNG,
+    plus optional jailed filesystem write under ``.gimp-mcp-tmp/snapshots/``
+    (``GIMP_MCP_SNAPSHOT_WRITE``, default on). Client model vision is unknown —
+    prefer ``filesystem_path`` when ImageContent is omitted/unrendered.
 
     Captures the **visible composite** (all visible layers / opacity / blend), not a
     single layer. Never mutates the user's original image.
@@ -1600,9 +1603,9 @@ def get_state_snapshot(
     - label: Optional annotation label (logged but not drawn — for agent bookkeeping)
 
     Returns:
-    - ToolResult with PNG ImageContent of the GIMP canvas composite, plus
+    - ToolResult with TextContent (JSON mapping) + PNG ImageContent, plus
       structuredContent mapping (mode, image_index, source/rendered sizes,
-      scale_x/scale_y, region, composite_method) for coordinate recovery
+      scale_x/scale_y, region, composite_method, optional filesystem_path)
 
     Typical agent workflow:
         1. open_image / new_canvas
