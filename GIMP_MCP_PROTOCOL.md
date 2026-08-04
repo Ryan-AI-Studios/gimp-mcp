@@ -321,6 +321,12 @@ loops.
 | `batch_safe: true` + interleaved GIMP/HOST | **UNSUPPORTED** (12) for headless — use session |
 | not `batch_safe` + plugin down | **CONNECTION_FAILED** (4) — no silent headless |
 
+### Agent Skills package (track 0020)
+
+Portable runtime playbooks (router `gimp` + focused subskills) ship under repo
+`skills/` — see [`skills/README.md`](skills/README.md). CLI: `gimp-agent skills
+list|validate|install`. Source-tree discovery + optional `GIMP_MCP_SKILLS_ROOT`.
+
 ### Headless BatchProcedure (track 0019)
 
 | Item | Value |

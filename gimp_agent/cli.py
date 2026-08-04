@@ -19,6 +19,7 @@ from gimp_agent import install as install_mod
 from gimp_agent import jsonio
 from gimp_agent import paths as pathmod
 from gimp_agent import probe as probe_mod
+from gimp_agent import skills_pack as skills_pack_mod
 
 
 def _agent_version() -> str:
@@ -927,13 +928,118 @@ def _add_json_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _cmd_skills_list(args: argparse.Namespace) -> int:
+    root = skills_pack_mod.discover_package_root()
+    infos = skills_pack_mod.list_skills(root)
+    data = {
+        "root": str(root),
+        "skills": [
+            {
+                "name": i.name,
+                "path": i.path,
+                "description": i.description,
+                "version": i.version,
+                "line_count": i.line_count,
+            }
+            for i in infos
+        ],
+    }
+    envelope = jsonio.make_envelope(
+        ok=True,
+        exit_code=ec.EXIT_SUCCESS,
+        code=None,
+        message=f"{len(infos)} skills at {root}",
+        data=data,
+    )
+    human = [f"skills package: {root}", f"count: {len(infos)}"]
+    for i in infos:
+        desc = i.description.replace("\n", " ").strip()
+        if len(desc) > 80:
+            desc = desc[:77] + "..."
+        human.append(f"  - {i.name}: {desc}")
+    jsonio.emit(
+        envelope,
+        as_json=jsonio.json_mode_enabled(flag=_json_flag(args)),
+        human_lines=human,
+    )
+    return ec.EXIT_SUCCESS
+
+
+def _cmd_skills_validate(args: argparse.Namespace) -> int:
+    report = skills_pack_mod.validate_package()
+    exit_n = ec.EXIT_SUCCESS if report.ok else ec.EXIT_GENERIC
+    envelope = jsonio.make_envelope(
+        ok=report.ok,
+        exit_code=exit_n,
+        code=None if report.ok else "VERIFY_FAILED",
+        message=(
+            "skills package valid"
+            if report.ok
+            else f"skills package invalid ({len(report.errors)} error(s))"
+        ),
+        data=report.envelope_data(),
+    )
+    human = [envelope["message"], f"  root: {report.root}"]
+    if report.skills:
+        human.append(f"  skills: {', '.join(report.skills)}")
+    for err in report.errors:
+        human.append(f"  error: {err}")
+    for warn in report.warnings:
+        human.append(f"  warning: {warn}")
+    jsonio.emit(
+        envelope,
+        as_json=jsonio.json_mode_enabled(flag=_json_flag(args)),
+        human_lines=human,
+    )
+    return exit_n
+
+
+def _cmd_skills_install(args: argparse.Namespace) -> int:
+    target = Path(args.target)
+    report = skills_pack_mod.install_skills(target, dry_run=bool(args.dry_run))
+    if report.ok:
+        exit_n = ec.EXIT_SUCCESS
+    elif report.code == ec.CLI_USAGE:
+        exit_n = ec.EXIT_CLI_USAGE
+    elif report.code in (ec.PLUGIN_NOT_FOUND, ec.GIMP_NOT_FOUND):
+        exit_n = ec.exit_code_for(report.code or ec.PLUGIN_NOT_FOUND)
+    else:
+        exit_n = ec.exit_code_for(report.code) if report.code else ec.EXIT_GENERIC
+    envelope = jsonio.make_envelope(
+        ok=report.ok,
+        exit_code=exit_n,
+        code=report.code,
+        message=report.message,
+        data=report.envelope_data(),
+    )
+    human = [report.message]
+    if report.source_root:
+        human.append(f"  source: {report.source_root}")
+    if report.target:
+        human.append(f"  target: {report.target}")
+    if report.dry_run:
+        human.append(f"  planned: {len(report.planned)}")
+        for rel in report.planned:
+            human.append(f"    - {rel}")
+    else:
+        human.append(f"  copied: {len(report.copied)}")
+    for err in report.errors:
+        human.append(f"  error: {err}")
+    jsonio.emit(
+        envelope,
+        as_json=jsonio.json_mode_enabled(flag=_json_flag(args)),
+        human_lines=human,
+    )
+    return exit_n
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gimp-agent",
         description=(
             "Deterministic CLI sidecar for GIMP MCP "
             "(install, uninstall, doctor, probe, save-xcf, export, compare, verify, "
-            "recipes, run, batch)."
+            "recipes, run, batch, skills)."
         ),
     )
     # Separate dest from subcommand --json so parent True is not overwritten by
@@ -1323,6 +1429,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_arg(p_batch)
     p_batch.set_defaults(func=_cmd_batch)
+
+    p_skills = sub.add_parser(
+        "skills",
+        help="List, validate, or install the portable Agent Skills package",
+    )
+    skills_sub = p_skills.add_subparsers(dest="skills_command", required=True)
+
+    p_skills_list = skills_sub.add_parser(
+        "list",
+        help="List skills in the package (name + description summary)",
+    )
+    _add_json_arg(p_skills_list)
+    p_skills_list.set_defaults(func=_cmd_skills_list)
+
+    p_skills_validate = skills_sub.add_parser(
+        "validate",
+        help="Validate package structure, frontmatter, and identifier allowlist",
+    )
+    _add_json_arg(p_skills_validate)
+    p_skills_validate.set_defaults(func=_cmd_skills_validate)
+
+    p_skills_install = skills_sub.add_parser(
+        "install",
+        help="Copy full skills package (skills + references + MANIFEST) to --target",
+    )
+    p_skills_install.add_argument(
+        "--target",
+        required=True,
+        help="Destination directory for the full package layout (required)",
+    )
+    p_skills_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Plan only: zero filesystem writes",
+    )
+    _add_json_arg(p_skills_install)
+    p_skills_install.set_defaults(func=_cmd_skills_install)
 
     return parser
 

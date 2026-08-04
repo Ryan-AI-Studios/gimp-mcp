@@ -1,5 +1,9 @@
 # GIMP MCP Best Practices & Recipes
 
+**Agent skills:** portable runtime playbooks live in [`skills/`](../skills/README.md)
+(router `gimp` + orient/edit/batch/verify/install). Prefer that sequence over ad-hoc
+tool use.
+
 ## ✅ TRANSPARENT PNG EXPORT (Issue 16)
 
 **DO: Export with default alpha-preserving path**

@@ -237,6 +237,9 @@ uv run gimp-agent verify out.png --spec spec.json --json  # host-only artifact g
 uv run gimp-agent recipes --json  # list shipped versioned recipes
 uv run gimp-agent run compare-artifacts --param path_a=a.png --param path_b=b.png --json
 uv run gimp-agent batch web-export --output-dir out/ --inputs a.png --inputs b.png --json
+uv run gimp-agent skills list --json          # portable Agent Skills package
+uv run gimp-agent skills validate
+uv run gimp-agent skills install --target <dir> [--dry-run]
 ```
 
 JSON envelopes use `{ok, exit_code, code, message, data}`. Prefer `--json`, or set
@@ -287,6 +290,20 @@ hardcoded `Program Files\GIMP 3\bin\…` wrappers for local operators. Those shi
 are **not** versioned with the `gimp-mcp` package. Prefer
 `uv run gimp-agent` / the installed `gimp-agent` entrypoint for path discovery,
 doctor, and exit-code contracts.
+
+### Agent skills (portable runtime package)
+
+Committed Agent Skills for *operating* GIMP (router `gimp` + orient/edit/batch/verify/install)
+live under [`skills/`](skills/README.md). Install notes cover Grok (`.grok/skills/`),
+Codex / open Agent Skills (`.agents/skills/`), and Claude-compatible layouts. Always
+copy `references/` with the skills. Review content from untrusted clones before
+activation. Maintainer governance skills (`gimp-core`, etc.) stay local/gitignored
+and are not this package.
+
+```bash
+uv run gimp-agent skills validate
+uv run gimp-agent skills install --target .grok/skills
+```
 
 ### 4. Configure Your MCP Client
 
