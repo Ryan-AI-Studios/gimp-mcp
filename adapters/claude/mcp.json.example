@@ -5,11 +5,12 @@
       "args": [
         "run",
         "--directory",
-        ".",
+        "C:/path/to/gimp-mcp",
         "gimp_mcp_server.py"
       ],
       "env": {
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "GIMP_WORKSPACE_ROOT": "C:/path/to/workspace"
       }
     }
   }
