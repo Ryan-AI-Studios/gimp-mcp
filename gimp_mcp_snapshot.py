@@ -16,6 +16,7 @@ import os
 import tempfile
 import time
 from collections.abc import Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,9 +35,220 @@ ENV_SNAPSHOT_DIR = "GIMP_MCP_SNAPSHOT_DIR"
 SNAPSHOT_TMP_SUBDIR = ".gimp-mcp-tmp"
 SNAPSHOT_WRITE_SUBDIR = "snapshots"
 
+# Snapshot edge / timeout policy (track 0023)
+DEFAULT_SNAPSHOT_MAX_EDGE = 1024
+HARD_MAX_SNAPSHOT_EDGE = 4096
+MAX_REGION_EDGE = 8192
+DEFAULT_COMMAND_TIMEOUT_S = 60.0
+MIN_COMMAND_TIMEOUT_S = 5.0
+MAX_COMMAND_TIMEOUT_S = 600.0
+
+ENV_SNAPSHOT_MAX_EDGE = "GIMP_MCP_SNAPSHOT_MAX_EDGE"
+ENV_SNAPSHOT_HARD_MAX_EDGE = "GIMP_MCP_SNAPSHOT_HARD_MAX_EDGE"
+ENV_COMMAND_TIMEOUT_S = "GIMP_MCP_COMMAND_TIMEOUT_S"
+
 # Truthy / falsey sets aligned with product env conventions (+ explicit off for default-on).
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSY = frozenset({"0", "false", "no", "off"})
+
+
+# ---------------------------------------------------------------------------
+# Snapshot budget (track 0023)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSnapshotBudget:
+    """Complete max box for a snapshot request plus optional filled region."""
+
+    max_width: int
+    max_height: int
+    region: dict[str, Any] | None = None
+
+
+def hard_max_snapshot_edge(environ: Mapping[str, str] | None = None) -> int:
+    """Resolve absolute snapshot edge ceiling (default 4096). Invalid env → default."""
+    env = environ if environ is not None else os.environ
+    raw = env.get(ENV_SNAPSHOT_HARD_MAX_EDGE)
+    if raw is None or str(raw).strip() == "":
+        return HARD_MAX_SNAPSHOT_EDGE
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return HARD_MAX_SNAPSHOT_EDGE
+    if value <= 0:
+        return HARD_MAX_SNAPSHOT_EDGE
+    return value
+
+
+def default_snapshot_max_edge(environ: Mapping[str, str] | None = None) -> int:
+    """Resolve default max edge (default 1024), clamped to hard max. Invalid → default."""
+    env = environ if environ is not None else os.environ
+    hard = hard_max_snapshot_edge(environ)
+    raw = env.get(ENV_SNAPSHOT_MAX_EDGE)
+    if raw is None or str(raw).strip() == "":
+        return min(DEFAULT_SNAPSHOT_MAX_EDGE, hard)
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return min(DEFAULT_SNAPSHOT_MAX_EDGE, hard)
+    if value <= 0:
+        return min(DEFAULT_SNAPSHOT_MAX_EDGE, hard)
+    return min(value, hard)
+
+
+def clamp_edge(value: Any, *, hard_max: int | None = None) -> int:
+    """Clamp a positive edge to *hard_max* (default: env-resolved hard max).
+
+    Call only with non-None resolved values. ``None`` means “use default” and
+    must be handled by :func:`resolve_snapshot_max_box`, not here.
+    """
+    if value is None:
+        raise TypeError("clamp_edge requires a non-None value")
+    try:
+        edge = int(value)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"edge must be a positive integer, got {value!r}") from e
+    if edge <= 0:
+        raise ValueError(f"edge must be positive, got {edge}")
+    ceiling = hard_max if hard_max is not None else hard_max_snapshot_edge()
+    try:
+        ceiling_i = int(ceiling)
+    except (TypeError, ValueError):
+        ceiling_i = HARD_MAX_SNAPSHOT_EDGE
+    if ceiling_i <= 0:
+        ceiling_i = HARD_MAX_SNAPSHOT_EDGE
+    return min(edge, ceiling_i)
+
+
+def validate_region_edges(region: Mapping[str, Any] | None) -> None:
+    """Reject region width/height above ``MAX_REGION_EDGE`` (source crop cap).
+
+    Raises:
+        ValueError: when width or height exceeds the cap.
+    """
+    if region is None:
+        return
+    for key in ("width", "height"):
+        if key not in region or region[key] is None:
+            continue
+        try:
+            dim = int(region[key])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"region {key} must be an integer, got {region[key]!r}") from e
+        if dim > MAX_REGION_EDGE:
+            raise ValueError(
+                f"region {key} {dim} exceeds MAX_REGION_EDGE {MAX_REGION_EDGE} "
+                f"(source crop cap; output still limited by hard max edge "
+                f"{HARD_MAX_SNAPSHOT_EDGE})"
+            )
+
+
+def command_timeout_s(environ: Mapping[str, str] | None = None) -> float:
+    """Host TCP command I/O timeout seconds (default 60; clamp 5-600). Invalid env → default."""
+    env = environ if environ is not None else os.environ
+    raw = env.get(ENV_COMMAND_TIMEOUT_S)
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_COMMAND_TIMEOUT_S
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_COMMAND_TIMEOUT_S
+    if value != value:  # NaN
+        return DEFAULT_COMMAND_TIMEOUT_S
+    if value < MIN_COMMAND_TIMEOUT_S:
+        return MIN_COMMAND_TIMEOUT_S
+    if value > MAX_COMMAND_TIMEOUT_S:
+        return MAX_COMMAND_TIMEOUT_S
+    return float(value)
+
+
+def resolve_snapshot_max_box(
+    max_width: int | None = None,
+    max_height: int | None = None,
+    *,
+    max_size: int | None = None,
+    region: Mapping[str, Any] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> ResolvedSnapshotBudget:
+    """Resolve a complete snapshot max box and optionally fill region max_* (M3).
+
+    Rules (product lock 0023):
+    1. ``max_size`` (advanced path) maps to both dims; ``max_size<=0`` rejected.
+    2. Both ``max_width`` and ``max_height`` → use them (clamped).
+    3. Only one dim → square box after clamp.
+    4. Neither → default max edge (env) for both.
+    5. Region width/height validated against ``MAX_REGION_EDGE``.
+    6. Region max fill: both → clamp; one → fill missing from full box; none → inherit box.
+    7. Always returns a complete ``(max_width, max_height)``.
+    8. :func:`clamp_edge` is only called on non-None values.
+    """
+    hard = hard_max_snapshot_edge(environ)
+
+    if max_size is not None:
+        try:
+            size_i = int(max_size)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"max_size must be a positive integer, got {max_size!r}") from e
+        if size_i <= 0:
+            raise ValueError(f"max_size must be positive, got {size_i}")
+        edge = clamp_edge(size_i, hard_max=hard)
+        mw = mh = edge
+    else:
+        has_w = max_width is not None
+        has_h = max_height is not None
+        if has_w and has_h:
+            mw = clamp_edge(max_width, hard_max=hard)
+            mh = clamp_edge(max_height, hard_max=hard)
+        elif has_w:
+            mw = mh = clamp_edge(max_width, hard_max=hard)
+        elif has_h:
+            mw = mh = clamp_edge(max_height, hard_max=hard)
+        else:
+            mw = mh = default_snapshot_max_edge(environ)
+
+    region_out: dict[str, Any] | None = None
+    if region is not None:
+        region_out = normalize_region(region)
+        if region_out is not None:
+            validate_region_edges(region_out)
+            rmw = region_out.get("max_width")
+            rmh = region_out.get("max_height")
+            if rmw is not None and rmh is not None:
+                region_out["max_width"] = clamp_edge(rmw, hard_max=hard)
+                region_out["max_height"] = clamp_edge(rmh, hard_max=hard)
+            elif rmw is not None:
+                region_out["max_width"] = clamp_edge(rmw, hard_max=hard)
+                region_out["max_height"] = mh
+            elif rmh is not None:
+                region_out["max_width"] = mw
+                region_out["max_height"] = clamp_edge(rmh, hard_max=hard)
+            else:
+                region_out["max_width"] = mw
+                region_out["max_height"] = mh
+
+    return ResolvedSnapshotBudget(max_width=mw, max_height=mh, region=region_out)
+
+
+def snapshot_budget_probe_fields(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Resolved snapshot budget fields for ``session_probe`` honesty."""
+    return {
+        "default_max_edge": default_snapshot_max_edge(environ),
+        "hard_max_edge": hard_max_snapshot_edge(environ),
+        "max_region_edge": MAX_REGION_EDGE,
+        "command_timeout_s": command_timeout_s(environ),
+        "env_names": {
+            "snapshot_max_edge": ENV_SNAPSHOT_MAX_EDGE,
+            "snapshot_hard_max_edge": ENV_SNAPSHOT_HARD_MAX_EDGE,
+            "command_timeout_s": ENV_COMMAND_TIMEOUT_S,
+        },
+        "guidance": (
+            "region-first detail; omit max_* → default edge 1024; hard max 4096; "
+            "huge layer stacks use orient_workspace(summary_only=True)"
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------
