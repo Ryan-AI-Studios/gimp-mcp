@@ -65,11 +65,12 @@ Audit default (split files, track 0011 — avoids Windows sharing locks):
 
 ## Start order
 
-1. Install **9 files** into the GIMP plug-ins folder (same directory):
+1. Install **10 files** into the GIMP plug-ins folder (same directory):
    `gimp-mcp-plugin.py`, `gimp_mcp_security.py`, `gimp_mcp_snapshot.py`,
    `gimp_mcp_export.py`, `gimp_mcp_handles.py`, `gimp_mcp_coords.py`,
-   `gimp_mcp_policy.py`, `gimp_mcp_atomic.py`, and `gimp_mcp_filters.py`
-   (NDE op allowlist + soft config helpers; shared install set matches
+   `gimp_mcp_policy.py`, `gimp_mcp_atomic.py`, `gimp_mcp_filters.py`,
+   and `gimp_mcp_tx.py`
+   (NDE + agent undo TX helpers; shared install set matches
    `EXPECTED_PLUGIN_FILES` / README).
 2. Set `GIMP_WORKSPACE_ROOT` (and optional `GIMP_MCP_TOKEN`) for the GIMP process if needed.
 3. Start GIMP → **Tools → MCP → Start MCP Server** (writes/reads token file, binds `127.0.0.1`).
@@ -77,8 +78,8 @@ Audit default (split files, track 0011 — avoids Windows sharing locks):
 
 ## Advanced MCP tool surface
 
-Default model-facing surface is **25 high-level tools** (tracks 0010 + 0015 + 0016,
-including NDE filter tools). Setting `GIMP_MCP_ADVANCED_TOOLS=1` exposes the full
+Default model-facing surface is **28 high-level tools** (tracks 0010 + 0015 + 0016 + 0017,
+including NDE filter and undo-group TX tools). Setting `GIMP_MCP_ADVANCED_TOOLS=1` exposes the full
 ~90-tool footgun surface (legacy filters, low-level selection primitives, `call_api`,
 etc.). After flipping this env var, restart the **stdio MCP process and the LLM
 client** — clients cache `list_tools` and will keep the old list until re-handshake.

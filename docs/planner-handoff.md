@@ -108,7 +108,12 @@ minting. Track IDs are creation order, not execution order.
   → 0016 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0016 Completed.** Next: **0017** UndoGroupTransactions (placeholder). Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010** → **25** with **0016**. Errors **0011**. CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**. NDE **0016**. Authoritative table: `conductor/conductor.md`.
+**28 tracks** (0001–0028). **0001–0016 Completed.** **0017** UndoGroupTransactions **implemented**
+on branch (orchestrator marks Completed after review). Orientation SoT is `orient_workspace`.
+Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**. Policy **0009**. HL surface
+**0010** → **28** with **0017**. Errors **0011** + honest `rollback_available` (**0017**).
+CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**. NDE **0016**.
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -220,7 +225,7 @@ Hard rules for product work:
 - Spatial edits: use snapshot **mapping** + **0008** coordinate helpers; normalize EXIF before phase-sensitive work.
 - **Source integrity (0009):** `ensure_source_immutable` before first mutation; `checkpoint_create`; flatten/live-merge need `confirm_destructive`; restore → re-orient.
 - **Default MCP surface (0010 + 0016):** **25** high-level tools via real FastMCP `include_tags={"hl"}`; design names (`session_probe`, `render_visible_composite`, `create_selection`, NDE apply/edit/remove); full ~90 tools only with `GIMP_MCP_ADVANCED_TOOLS=1` (restart MCP **and** LLM client). Prefer HL tools; do not major-bump mcp/fastmcp for 3.x visibility API.
-- **Structured errors (0011):** product failures → FastMCP `ToolError` **single-line** text (`CODE: msg (request_id=…) | {json}`); never return error dicts as success. Split audit `audit-server.jsonl` / `audit-plugin.jsonl`. `rollback_available` false until **0017**. Parse helper: `parse_tool_error_text`.
+- **Structured errors (0011):** product failures → FastMCP `ToolError` **single-line** text (`CODE: msg (request_id=…) | {json}`); never return error dicts as success. Split audit `audit-server.jsonl` / `audit-plugin.jsonl`. `rollback_available` honest post-**0017** (true when open agent undo TX). Parse helper: `parse_tool_error_text`.
 - **Agent CLI (0012 Completed):** `uv run gimp-agent doctor|probe|version|codes` with JSON + exit codes from `CODE_*` (0–12). Probe always JSON-auth; doctor connect-only TCP; `--strict` for CI. Non-strict doctor may exit 0 with `ok:false` — check envelope or use `--strict`. Headless recipes not in 0012.
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
   **0016 NDE filters:** use HL `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter`
@@ -288,13 +293,23 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Item | Value |
 |---|---|
-| Date | 2026-08-03 |
+| Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~ca3953c post-0015) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~33c9503 post-0016) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0017-UndoGroupTransactions** (placeholder); prior **0016 Completed** (NDE filters, HL 25) |
+| Active focus | **0017-UndoGroupTransactions** — **implemented** (orchestrator Completes after review); prior **0016 Completed** PR #24 / main@6bb8c9f |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
+
+### 0017 implementation notes (orchestrator Completes after review)
+
+- **Shipped:** `gimp_mcp_tx.py` (**10th** EXPECTED; pure mint/validate/TxStack/reap/recent + packaging triad); `undo_group_transactions: true`; HL **28** (`undo_group_begin` / `end` / `rollback`) + advanced `undo_group_status` / `undo_group_force_close`.
+- **Plugin:** per-image `_agent_tx_stack` + recent cap 10; begin/end/rollback/status/force_close; wall-clock reap (300s default, env `GIMP_MCP_UNDO_TX_TIMEOUT_S`); depth max 8 → `TX_DEPTH`; empty/mismatch end → `TX_MISMATCH`; mid force_close closes id+above; **`_force_end_open_tx` before `image.delete`**; pop TX in `_drop_image_generation`.
+- **Envelope path:** force-false removed; plugin `make_error` flags when open TX; **`raise_from_plugin_result`** forwards top-level `rollback_available`/`transaction_id` as **tool_fail kwargs**; host open-TX hint from successful begin/end/rollback.
+- **Codes:** `TX_MISMATCH` / `TX_NOT_FOUND` / `TX_DEPTH` → CLI exit **6**.
+- **Rollback:** end + `image.undo` + flush + gen bump; docstring **MUST re-orient**; mutator balance assumption (no bulk rewrite).
+- **Neighbor walls:** install 10th file **0018**; recipe auto-TX later; checkpoints **0009** for long work; live operator matrix waivable offline.
+- **Pins:** hold mcp/fastmcp majors.
 
 ### 0016 Completed (PR #24 / main@6bb8c9f)
 
@@ -396,7 +411,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **M5:** harvest `handle`/`handles` kwargs into `affected_handles` on INTERNAL.
 - **Capability:** `structured_errors: true`. Pins hold (mcp/fastmcp no major).
 - **Codex final:** **PASS WITH DEFERRED P3** (bare Exception residuals + plugin TCP body without rid).
-- **Residuals:** CLI exit map → **0012 Completed**; `rollback_available` true → **0017**; InputRequiredResult/traceparent → post major.
+- **Residuals:** CLI exit map → **0012 Completed**; `rollback_available` true → **0017 implemented**; InputRequiredResult/traceparent → post major.
 - **Next:** **0012–0013 Completed** (see later notes).
 
 ### 0012 completion notes (planners / implementers)

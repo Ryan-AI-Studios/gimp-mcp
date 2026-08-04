@@ -24,14 +24,14 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 
 - The AI can *see* the image at any point in the workflow without saving to disk (`render_visible_composite`)
 - Supports fully autonomous multi-step pipelines: open → edit → verify → refine → export
-- Default **25 high-level tools** (full ~90-tool advanced surface via env flag)
+- Default **28 high-level tools** (full ~90-tool advanced surface via env flag)
 - Versioned **recipe library** (`list_recipes` / `apply_recipe` + CLI `run` / `batch`)
 - **Non-destructive filters** (`apply_nde_filter` / `edit_filter_config` / `remove_nde_filter`)
 - Fully compatible with GIMP 3.2.x (all breaking API changes resolved)
 
-## Default high-level tool surface (track 0010 + 0015 + 0016)
+## Default high-level tool surface (track 0010 + 0015 + 0016 + 0017)
 
-By default the MCP server lists **25 high-level tools** (FastMCP `include_tags={"hl"}`).
+By default the MCP server lists **28 high-level tools** (FastMCP `include_tags={"hl"}`).
 Set **`GIMP_MCP_ADVANCED_TOOLS=1`** on the **host / stdio MCP process** for the full
 ~90-tool advanced surface. After flipping the env var, restart the **MCP server
 process and the LLM client session** (clients cache `list_tools`).
@@ -45,6 +45,7 @@ process and the LLM client session** (clients cache `list_tools`).
 | `open_image` / `close_image` / `new_canvas` | Session lifecycle |
 | `ensure_source_immutable` | Source layer policy |
 | `checkpoint_create` / `checkpoint_restore` | XCF checkpoints |
+| `undo_group_begin` / `undo_group_end` / `undo_group_rollback` | Agent multi-step undo TX |
 | `render_visible_composite` | Visible composite PNG + mapping |
 | `normalize_image_orientation` | EXIF normalize |
 | `map_preview_to_image` | Preview → image coords |
@@ -136,10 +137,11 @@ uv sync
 
 Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, **`gimp_mcp_snapshot.py`**,
 **`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, **`gimp_mcp_coords.py`**,
-**`gimp_mcp_policy.py`**, **`gimp_mcp_atomic.py`**, and **`gimp_mcp_filters.py`**
+**`gimp_mcp_policy.py`**, **`gimp_mcp_atomic.py`**, **`gimp_mcp_filters.py`**, and
+**`gimp_mcp_tx.py`**
 to GIMP's plug-ins directory (same folder) and restart GIMP.
-The security, snapshot, export, handles, coords, policy, atomic, and filters modules are
-stdlib-only and must sit next to the plugin (**9 files** total: plugin + 8 shared modules).
+The security, snapshot, export, handles, coords, policy, atomic, filters, and tx modules are
+stdlib-only and must sit next to the plugin (**10 files** total: plugin + 9 shared modules).
 (`gimp_mcp_state.py` / `gimp_mcp_surface.py` are host-side only.)
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
@@ -166,7 +168,7 @@ fi
 mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
 cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py gimp_mcp_export.py \
   gimp_mcp_handles.py gimp_mcp_coords.py gimp_mcp_policy.py gimp_mcp_atomic.py \
-  gimp_mcp_filters.py \
+  gimp_mcp_filters.py gimp_mcp_tx.py \
   "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
 chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
 echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
@@ -183,8 +185,9 @@ echo "Installed into: $GIMP_DIR/plug-ins/gimp-mcp-plugin"
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_policy.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_atomic.py
 %APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_filters.py
+%APPDATA%\GIMP\<VERSION>\plug-ins\gimp-mcp-plugin\gimp_mcp_tx.py
 ```
-Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **eight** shared modules listed above (9 files total) and restart GIMP.
+Replace `<VERSION>` with your GIMP major.minor (e.g. `3.2`). No chmod needed on Windows. Copy the plugin plus the **nine** shared modules listed above (10 files total) and restart GIMP.
 
 > For all platforms: [GIMP Plugin Installation Guide](https://en.wikibooks.org/wiki/GIMP/Installing_Plugins)
 
@@ -232,7 +235,7 @@ SSIM (not ImageMagick windowed SSIM). Optional ImageMagick is detected by
 
 **Recipe library (track 0015):** versioned allowlisted JSON under
 `gimp_agent/recipes/` (package data). MCP tools `list_recipes` + `apply_recipe`
-(HL catalog **25**). CLI: `recipes`, `run RECIPE_ID`, `batch RECIPE_ID`
+(HL catalog **28**). CLI: `recipes`, `run RECIPE_ID`, `batch RECIPE_ID`
 (multi-file continue-on-fail). Capability `recipe_library: true`;
 `batch_interpreter` stays **false** until track 0019. Recipe steps call plugin
 TCP / host modules **directly** (not filtered by `GIMP_MCP_ADVANCED_TOOLS`).
@@ -567,6 +570,7 @@ gimp-mcp-plugin.py          ← Runs inside GIMP process (generation registry + 
   + gimp_mcp_policy.py      ← Source_Immutable + checkpoint paths/sidecar (shared install file)
   + gimp_mcp_atomic.py      ← collision resolve + same-dir temp/backup paths (shared install)
   + gimp_mcp_filters.py     ← NDE op allowlist + soft config helpers (shared install file)
+  + gimp_mcp_tx.py          ← pure agent undo TX stack helpers (shared install file)
       │  PyGObject
       ▼
 GIMP 3.2 (gi.repository.Gimp)
@@ -600,8 +604,8 @@ Export prep always runs on a **duplicate** (user document unchanged). Alpha path
 `merge_visible_layers(CLIP_TO_IMAGE)` + GIMP 3 `file-*-export` only (no `file-*-save`).
 Install must include **`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**,
 **`gimp_mcp_coords.py`**, **`gimp_mcp_policy.py`**, **`gimp_mcp_atomic.py`**,
-and **`gimp_mcp_filters.py`** next to the plugin (9 files total with
-security/snapshot/plugin).
+**`gimp_mcp_filters.py`**, and **`gimp_mcp_tx.py`** next to the plugin
+(**10 files** total with security/snapshot/plugin).
 
 For intentional opaque bake: `flatten=True` (or `preserve_alpha=False`).
 Do **not** confuse with `flatten_image`, which mutates the open document.
