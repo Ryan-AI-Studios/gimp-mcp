@@ -14,11 +14,22 @@ metrics, or artifact gates before claiming done.
 | `compare_images` | Before/after PNG metrics |
 | `verify_artifact` | Dims / format / alpha / sha256 on export path |
 
+### ImageContent may not reach the model
+
+`session_probe.image_delivery.client_model_visibility` is always **`unknown`**.
+Server emits MCP `ImageContent` and (by default) a jailed filesystem snapshot —
+that is **not** proof the client model rendered the PNG.
+
+If ImageContent is omitted or unrendered, open **`filesystem_path`** from
+`structuredContent` or the TextContent JSON mapping via host tools
+(`{workspace}/.gimp-mcp-tmp/snapshots/snap-*.png`). Prefer that path when visual
+proof is mandatory.
+
 Typical loop:
 
 1. Composite (or export) baseline  
 2. Mutate (max **3** refine loops)  
-3. Composite again → `compare_images` / visual check  
+3. Composite again → `compare_images` / visual check (or open `filesystem_path`)  
 4. On deliverable: `verify_artifact` + alpha checks  
 
 ## Host-only (no TCP)

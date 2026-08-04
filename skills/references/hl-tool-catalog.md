@@ -16,7 +16,7 @@ require `GIMP_MCP_ADVANCED_TOOLS=1` on the host MCP process plus a written reaso
 | `ensure_source_immutable` | Source_Immutable layer policy before mutation |
 | `checkpoint_create` | XCF checkpoint snapshot |
 | `checkpoint_restore` | Restore checkpoint (then re-orient) |
-| `render_visible_composite` | Visible composite PNG + mapping for vision |
+| `render_visible_composite` | Visible composite PNG + mapping for vision; dual-delivery TextContent + ImageContent + optional `filesystem_path` (do not assume model saw the image) |
 | `normalize_image_orientation` | EXIF orientation normalize |
 | `map_preview_to_image` | Preview/composite coords → image coords |
 | `save_xcf` | Atomic XCF save (temp→replace); collision `fail`/`version`/`replace` |

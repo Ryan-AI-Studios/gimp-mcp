@@ -17,7 +17,10 @@ When operating GIMP images with this product:
 7. Re-orient after structural mutation; max 3 refine loops
 8. `save_xcf` then `export_image` separately; never sole-source overwrite
 9. Never trust status alone — verify with composite/metrics/artifacts
-10. Headless: `plug-in-gimp-mcp-batch` only; never product `python-fu-eval`
+10. Never assume MCP ImageContent reached the model; prefer
+    `structuredContent.filesystem_path` / TextContent mapping JSON when visual
+    proof is required (`session_probe.image_delivery.client_model_visibility=unknown`)
+11. Headless: `plug-in-gimp-mcp-batch` only; never product `python-fu-eval`
 
 Package root: repo `skills/` (or `GIMP_MCP_SKILLS_ROOT`). Install helper:
 `uv run gimp-agent skills install --target <dir>`.

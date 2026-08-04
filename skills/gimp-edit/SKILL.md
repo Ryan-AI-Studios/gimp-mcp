@@ -6,7 +6,7 @@ description: >
   checkpoint, map_preview_to_image, confirm_destructive flatten.
 license: MIT
 metadata:
-  version: "1.0"
+  version: "1.1"
   package: gimp-mcp-skills
 ---
 
@@ -30,7 +30,7 @@ Interactive edit path on a live MCP session. Prefer non-destructive ops.
 | Selections | `create_selection` |
 | Multi-step TX | `undo_group_begin` → … → `undo_group_end` or `undo_group_rollback` |
 | Spatial map | `map_preview_to_image`; `normalize_image_orientation` when needed |
-| Vision | `render_visible_composite` between steps |
+| Vision | `render_visible_composite` between steps (prefer `filesystem_path` if ImageContent unrendered) |
 
 ## Destructive
 

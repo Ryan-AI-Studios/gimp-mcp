@@ -21,7 +21,7 @@ from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools.tool import ToolResult
 from fastmcp.utilities.types import Image
-from mcp.types import Annotations, ToolAnnotations
+from mcp.types import Annotations, TextContent, ToolAnnotations
 
 import gimp_mcp_coords as coords
 import gimp_mcp_filters as filters
@@ -121,8 +121,23 @@ def _snapshot_tool_result(
     plugin_results: dict[str, Any],
     *,
     image_index: int = 0,
+    write_filesystem: bool | None = None,
 ) -> ToolResult:
-    """Build MCP ToolResult: PNG ImageContent + structuredContent mapping metadata."""
+    """Build MCP ToolResult for a visible-composite snapshot.
+
+    Content order (locked):
+    1. **TextContent** — compact JSON mirror of the structured mapping
+       (includes ``filesystem_path`` when the jailed write succeeds) so clients
+       that ignore ``structuredContent`` still surface the path.
+    2. **ImageContent** — PNG vision payload (same as pre-0021).
+
+    Dual-delivery (track 0021): when filesystem write is enabled (param or
+    ``GIMP_MCP_SNAPSHOT_WRITE``, default on), PNG bytes are also written under
+    ``{workspace}/.gimp-mcp-tmp/snapshots/`` and ``filesystem_*`` fields are
+    merged into the mapping. Write failure is **non-fatal** — ImageContent is
+    still returned with ``filesystem_write: false`` (+ optional
+    ``filesystem_error``).
+    """
     base64_data = plugin_results["image_data"]
     as_bytes = base64.b64decode(base64_data)
 
@@ -197,10 +212,26 @@ def _snapshot_tool_result(
             if k in plugin_results:
                 mapping[k] = v
 
+    # Dual-delivery filesystem write (non-fatal).
+    if snap.snapshot_write_enabled(param=write_filesystem):
+        write_result = snap.write_snapshot_png(as_bytes, param=True)
+    else:
+        write_result = {
+            "ok": False,
+            "filesystem_write": False,
+            "filesystem_path": None,
+        }
+    snap.merge_filesystem_fields(mapping, write_result)
+
     img = Image(data=as_bytes, format="png")
-    content = img.to_image_content()
-    content.annotations = Annotations(audience=["user", "assistant"])
-    return ToolResult(content=[content], structured_content=mapping)
+    image_content = img.to_image_content()
+    image_content.annotations = Annotations(audience=["user", "assistant"])
+    text_content = TextContent(
+        type="text",
+        text=json.dumps(mapping, separators=(",", ":")),
+    )
+    # Order: TextContent first (mapping + filesystem_path), then ImageContent.
+    return ToolResult(content=[text_content, image_content], structured_content=mapping)
 
 
 class GimpConnection:
@@ -777,12 +808,20 @@ def _ann(
 def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
     """Build a FastMCP instance with HL or advanced include_tags (track 0010)."""
     mode = surface.surface_mode(advanced_mode=advanced_mode)
+    # First 512 chars must be self-contained (Codex/Grok clients truncate).
+    instructions = (
+        "GIMP MCP — default HL 28 tools (GIMP_MCP_ADVANCED_TOOLS=1 for ~90 advanced). "
+        "GIMP must be open; Tools → MCP → Start MCP Server. "
+        "Set GIMP_WORKSPACE_ROOT jail for file tools. "
+        "image_delivery.client_model_visibility=unknown — prefer filesystem_path "
+        "fallback when ImageContent is omitted/unrendered. "
+        "Prefer HL tools; no Class-A exec. "
+        "Snapshots dual-deliver ImageContent + TextContent JSON mapping "
+        "(structuredContent.filesystem_path under .gimp-mcp-tmp/snapshots/)."
+    )
     return FastMCP(
         "GimpMCP",
-        instructions=(
-            "GIMP MCP — default 28 high-level tools "
-            "(set GIMP_MCP_ADVANCED_TOOLS=1 for full ~90-tool advanced surface)"
-        ),
+        instructions=instructions,
         include_tags=surface.include_tags_for_mode(mode),
     )
 
@@ -828,6 +867,18 @@ def _surface_probe_fields(
         "nonce": nonce,
         "version_ok": surface.soft_version_ok(gimp_version, min_plugin_version),
         "min_plugin_version": min_plugin_version,
+        # Honest image-delivery report (0021) — never claims client/model vision.
+        "image_delivery": {
+            "emits_mcp_image_content": True,
+            "filesystem_snapshot_write": True,
+            "client_model_visibility": "unknown",
+            "fallback": (
+                "If ImageContent is omitted/unrendered, open "
+                "structuredContent.filesystem_path (or TextContent mapping JSON) "
+                "via host tools"
+            ),
+            "snapshot_write_env": "GIMP_MCP_SNAPSHOT_WRITE",
+        },
     }
     return out
 
@@ -850,8 +901,10 @@ def session_probe(
       if unparseable
 
     Returns: connected, host, port, gimp_version (when up), tool_surface,
-    advanced_tools_enabled, hl_tool_names, capabilities, nonce, version_ok,
-    and error when disconnected.
+    advanced_tools_enabled, hl_tool_names, capabilities, image_delivery
+    (emits_mcp_image_content, filesystem_snapshot_write,
+    client_model_visibility always ``"unknown"``, fallback, snapshot_write_env),
+    nonce, version_ok, and error when disconnected.
     """
     probe = _probe_connection()
     gimp_version = probe.get("gimp_version") if probe.get("connected") else None
@@ -975,6 +1028,7 @@ def _render_visible_composite_impl(
     max_width: int | None = None,
     max_height: int | None = None,
     region: dict | None = None,
+    write_filesystem: bool | None = None,
 ) -> ToolResult:
     """Shared visible-composite snapshot (plugin get_image_bitmap + ToolResult)."""
     if handle is None and image_index is None:
@@ -1005,7 +1059,7 @@ def _render_visible_composite_impl(
             idx = int(results["image_index"])
         else:
             idx = int(image_index) if image_index is not None else 0
-        return _snapshot_tool_result(results, image_index=idx)
+        return _snapshot_tool_result(results, image_index=idx, write_filesystem=write_filesystem)
     raise_from_plugin_result(result, "gimp")
 
 
@@ -1018,6 +1072,7 @@ def render_visible_composite(
     max_width: int | None = None,
     max_height: int | None = None,
     region: dict | None = None,
+    write_filesystem: bool | None = None,
 ) -> ToolResult:
     """Render the visible composite of an open GIMP image as PNG + mapping metadata.
 
@@ -1026,13 +1081,20 @@ def render_visible_composite(
     opacity, blend modes, masks — GIMP's canvas projection), not a single top
     layer. Never mutates the user's original image.
 
+    Dual-delivery: TextContent (JSON mapping) + ImageContent PNG, plus optional
+    jailed filesystem write (``write_filesystem`` / ``GIMP_MCP_SNAPSHOT_WRITE``;
+    default on). Prefer ``structuredContent.filesystem_path`` when ImageContent
+    is not model-visible.
+
     Parameters:
     - handle: Preferred image handle from orient_workspace / mutators
     - image_index: Legacy open-image index when handle is omitted (default 0)
     - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved)
     - region: Optional region dict (origin_x/origin_y or x/y, width, height)
+    - write_filesystem: Override snapshot disk write (None → env default on)
 
-    Returns ToolResult with PNG ImageContent plus structuredContent mapping.
+    Returns ToolResult with TextContent mapping + PNG ImageContent and
+    structuredContent (including filesystem_* when write succeeds).
     """
     try:
         print("Requesting visible composite from GIMP...")
@@ -1042,6 +1104,7 @@ def render_visible_composite(
             max_width=max_width,
             max_height=max_height,
             region=region,
+            write_filesystem=write_filesystem,
         )
     except ToolError:
         raise
@@ -1060,6 +1123,7 @@ def get_image_bitmap(
     max_height: int | None = None,
     region: dict | None = None,
     handle: dict | None = None,
+    write_filesystem: bool | None = None,
 ) -> ToolResult:
     """Get the visible composite of an open GIMP image as PNG + mapping metadata.
 
@@ -1071,8 +1135,10 @@ def get_image_bitmap(
     - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved)
     - region: Dictionary with origin_x/origin_y (or x/y), width, height
     - handle: Optional image handle (preferred when known)
+    - write_filesystem: Override snapshot disk write (None → env default on)
 
-    Returns ToolResult with PNG ImageContent plus structuredContent mapping.
+    Returns ToolResult with TextContent mapping + PNG ImageContent and
+    structuredContent (including filesystem_* when write succeeds).
     """
     try:
         print("Requesting current image bitmap from GIMP...")
@@ -1082,6 +1148,7 @@ def get_image_bitmap(
             max_width=max_width,
             max_height=max_height,
             region=region,
+            write_filesystem=write_filesystem,
         )
     except ToolError:
         raise
@@ -1515,13 +1582,16 @@ def get_state_snapshot(
     region: dict | None = None,
     label: str = "",
 ) -> ToolResult:
-    """Return a live visual snapshot of the visible composite — no file save needed.
+    """Return a live visual snapshot of the visible composite (dual-delivery).
 
     Prefer ``orient_workspace`` for structural SoT and ``render_visible_composite``
     for full-fidelity composite + mapping on the default surface.
 
-    AI agents call this to get immediate visual feedback after any edit operation,
-    letting them verify results and decide next steps without saving to disk.
+    AI agents call this for visual feedback after edits. Dual-delivery matches
+    ``render_visible_composite``: TextContent JSON mapping + ImageContent PNG,
+    plus optional jailed filesystem write under ``.gimp-mcp-tmp/snapshots/``
+    (``GIMP_MCP_SNAPSHOT_WRITE``, default on). Client model vision is unknown —
+    prefer ``filesystem_path`` when ImageContent is omitted/unrendered.
 
     Captures the **visible composite** (all visible layers / opacity / blend), not a
     single layer. Never mutates the user's original image.
@@ -1535,9 +1605,9 @@ def get_state_snapshot(
     - label: Optional annotation label (logged but not drawn — for agent bookkeeping)
 
     Returns:
-    - ToolResult with PNG ImageContent of the GIMP canvas composite, plus
+    - ToolResult with TextContent (JSON mapping) + PNG ImageContent, plus
       structuredContent mapping (mode, image_index, source/rendered sizes,
-      scale_x/scale_y, region, composite_method) for coordinate recovery
+      scale_x/scale_y, region, composite_method, optional filesystem_path)
 
     Typical agent workflow:
         1. open_image / new_canvas

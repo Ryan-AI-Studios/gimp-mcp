@@ -46,7 +46,7 @@ process and the LLM client session** (clients cache `list_tools`).
 | `ensure_source_immutable` | Source layer policy |
 | `checkpoint_create` / `checkpoint_restore` | XCF checkpoints |
 | `undo_group_begin` / `undo_group_end` / `undo_group_rollback` | Agent multi-step undo TX |
-| `render_visible_composite` | Visible composite PNG + mapping |
+| `render_visible_composite` | Visible composite PNG + mapping (+ filesystem_path dual-delivery) |
 | `normalize_image_orientation` | EXIF normalize |
 | `map_preview_to_image` | Preview → image coords |
 | `save_xcf` / `export_image` | Atomic XCF/export (temp→replace); collision `fail`\|`version`\|`replace` |
@@ -72,7 +72,7 @@ process and the LLM client session** (clients cache `list_tools`).
 
 | | |
 |---|---|
-| 👁️ **Live Visual Feedback** | `render_visible_composite` returns a PNG + mapping mid-workflow so the AI verifies each step |
+| 👁️ **Live Visual Feedback** | `render_visible_composite` returns PNG ImageContent + TextContent mapping mid-workflow; also writes a jailed `filesystem_path` fallback (do not assume the model saw the image) |
 | 🧭 **Workspace Orientation** | `orient_workspace` returns a schema-versioned state manifest (layers tree, kinds, handles, capabilities) |
 | 🎨 **28 HL / ~90 advanced** | Curated default surface; NDE filters + undo TX + adjustments, transforms, layers, drawing in advanced mode |
 | 📦 **Recipe library** | Versioned JSON recipes; MCP `apply_recipe` + CLI `gimp-agent run` / `batch` |
@@ -307,6 +307,13 @@ uv run gimp-agent skills install --target .grok/skills
 
 ### 4. Configure Your MCP Client
 
+#### Client adapters (Grok / Codex / Claude)
+
+Committed examples (timeouts, Windows forward-slash paths, dual-delivery notes,
+server id **`gimp`**) live under **[`adapters/`](adapters/README.md)**. Copy
+Grok/Codex TOML examples into user or project client config; project `.mcp.json`
+already uses key `gimp` (migration: rename older `gimp-mcp` → `gimp`).
+
 #### Claude Desktop
 `~/.config/Claude/claude_desktop_config.json` (Linux/macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
@@ -329,7 +336,7 @@ claude  # .mcp.json is auto-detected
 
 Or manually:
 ```bash
-claude mcp add gimp-mcp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
+claude mcp add gimp -- uv run --directory /full/path/to/gimp-mcp gimp_mcp_server.py
 ```
 
 #### Gemini CLI

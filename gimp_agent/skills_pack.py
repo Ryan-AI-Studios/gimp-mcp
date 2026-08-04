@@ -19,7 +19,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 PACKAGE_NAME = "gimp-mcp-skills"
-PACKAGE_VERSION = "1.0"
+PACKAGE_VERSION = "1.1"
 ENV_SKILLS_ROOT = "GIMP_MCP_SKILLS_ROOT"
 
 SKILL_NAMES: tuple[str, ...] = (
@@ -74,6 +74,15 @@ EXTRA_ALLOWED_IDENTIFIERS: frozenset[str] = frozenset(
         "GIMP_MCP_SKILLS_ROOT",
         "GIMP_MCP_BATCH_MODE",
         "GIMP_MCP_BATCH_TIMEOUT_S",
+        "GIMP_MCP_SNAPSHOT_WRITE",
+        # Dual-delivery / image-delivery mapping fields (0021)
+        "filesystem_path",
+        "filesystem_write",
+        "structuredContent",
+        "ImageContent",
+        "TextContent",
+        "client_model_visibility",
+        "image_delivery",
         "--batch-interpreter",
         "--backend",
         "--strict",

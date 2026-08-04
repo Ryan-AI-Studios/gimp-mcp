@@ -1,0 +1,32 @@
+# Codex MCP example — merge into ~/.codex/config.toml
+# Project .codex/config.toml is only for trusted projects (see README).
+#
+# Codex defaults (startup 10s / tool 60s) are too low for uv run cold-start.
+# Always set explicit timeouts below.
+#
+# Paths: forward slashes only on Windows. Placeholders only — no real home paths.
+
+[mcp_servers.gimp]
+command = "uv"
+args = [
+  "run",
+  "--directory",
+  "C:/path/to/gimp-mcp",
+  "gimp_mcp_server.py",
+]
+enabled = true
+startup_timeout_sec = 60
+tool_timeout_sec = 300
+# optional: required = true
+# optional: cwd = "C:/path/to/gimp-mcp"   # alternative to uv --directory
+# optional: default_tools_approval_mode = "writes"
+
+[mcp_servers.gimp.env]
+GIMP_WORKSPACE_ROOT = "C:/path/to/workspace"
+PYTHONUNBUFFERED = "1"
+# GIMP_MCP_ADVANCED_TOOLS = "0"
+# GIMP_MCP_SNAPSHOT_WRITE = "1"
+
+# Alternative: forward host env instead of hardcoding workspace:
+# env_vars = ["GIMP_WORKSPACE_ROOT"]
+# Note: `env` sets values; `env_vars` forwards names from the host process.
