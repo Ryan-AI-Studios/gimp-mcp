@@ -42,6 +42,9 @@ tree). This package is for *running* image work.
 11. **Never assume** MCP ImageContent reached the model
     (`image_delivery.client_model_visibility=unknown`). If vision is missing,
     open `filesystem_path` from structuredContent / TextContent via host tools.
+12. **Snapshot budget** — omit max dims → default edge **1024** (hard **4096**).
+    Region-first detail after a coarse preview; huge stacks →
+    orient with summary_only.
 
 ## Hard safety
 

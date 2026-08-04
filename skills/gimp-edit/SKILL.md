@@ -30,7 +30,7 @@ Interactive edit path on a live MCP session. Prefer non-destructive ops.
 | Selections | `create_selection` |
 | Multi-step TX | `undo_group_begin` → … → `undo_group_end` or `undo_group_rollback` |
 | Spatial map | `map_preview_to_image`; `normalize_image_orientation` when needed |
-| Vision | `render_visible_composite` between steps (prefer `filesystem_path` if ImageContent unrendered) |
+| Vision | `render_visible_composite` between steps (prefer `filesystem_path` if ImageContent unrendered). Default max edge **1024**; use region for detail (512-1024), not full-res vision |
 
 ## Destructive
 
@@ -50,6 +50,9 @@ the working stack.
 - Declaration honesty: server does not hard-gate spatial mutators.
 - Advanced tools only with `GIMP_MCP_ADVANCED_TOOLS=1` + reason.
 - After `undo_group_rollback` / `checkpoint_restore`: re-orient before spatial work.
+- Snapshot budget: omit `max_*` → default edge 1024 (not full-res); hard max 4096.
+  Region-first after a coarse preview; objective full-res via export/verify.
+- Huge layer stacks: `orient_workspace(summary_only=True)` (or filter by image index).
 
 ## References
 

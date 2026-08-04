@@ -115,6 +115,8 @@ TextContent then ImageContent. `client_model_visibility` is always unknown — p
 - **Composite:** all visible layers / opacity / blend / masks as GIMP's canvas projection
   (not the top layer alone). Works on a temporary duplicate; never mutates the user's image.
 - **image_index:** which open document to capture (default `0`)
+- **max_width / max_height:** optional fit-scale max box; **omit → default max edge 1024**
+  (hard max **4096**). Prefer region-first detail rather than full-res vision.
 - **Format:** PNG
 - **Returns:** ToolResult — TextContent mapping + vision ImageContent + structured mapping:
   `mode`, `image_index`, `source_width`/`source_height`, `rendered_width`/`rendered_height`,
@@ -126,13 +128,15 @@ TextContent then ImageContent. `client_model_visibility` is always unknown — p
 - **Recovery:** use host tools `map_preview_to_image` / `map_image_to_preview` with mapping
   scales + region origin (do not invent formulas)
 
-#### `get_state_snapshot(image_index=0, max_size=512, region=None, label="")`
+#### `get_state_snapshot(image_index=0, max_size=1024, region=None, label="")`
 Agent-oriented live preview of the **visible composite** (same capture path as
-`get_image_bitmap`). Default max edge is **512**. Region may use `{x,y,width,height}`
-shorthand. Returns ToolResult with **TextContent** (JSON mapping mirror) +
-**ImageContent** + structuredContent (same dual-delivery schema as
-`render_visible_composite` / `get_image_bitmap`), including optional
-`filesystem_path` under `.gimp-mcp-tmp/snapshots/` when snapshot write is on.
+`get_image_bitmap`). Default max edge is **1024** (aligned with HL render;
+explicit `max_size=512` still valid for cheaper previews). Hard max edge
+**4096**. Region may use `{x,y,width,height}` shorthand. Returns ToolResult with
+**TextContent** (JSON mapping mirror) + **ImageContent** + structuredContent
+(same dual-delivery schema as `render_visible_composite` / `get_image_bitmap`),
+including optional `filesystem_path` under `.gimp-mcp-tmp/snapshots/` when
+snapshot write is on.
 
 #### `orient_workspace(image_index=None, summary_only=False)` — **orientation SoT**
 Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_version`
@@ -745,8 +749,11 @@ The GIMP MCP server now provides dedicated tools for image export that return MC
 #### Using `get_image_bitmap()` / `get_state_snapshot()`
 ```python
 # Visible composite of image 0 as PNG + structuredContent mapping
+# omit max_* → default edge 1024 (not full-res)
 image = get_image_bitmap()
-preview = get_state_snapshot(max_size=512)
+preview = get_state_snapshot(max_size=1024)
+# cheaper intermediate still valid:
+# preview = get_state_snapshot(max_size=512)
 ```
 
 **Purpose:** Capture the **visible composite** of a specified open image as PNG with
@@ -754,25 +761,28 @@ coordinate-mapping metadata (`structuredContent`). Not a single-layer export.
 
 **Parameters (`get_image_bitmap`):**
 - `image_index` (integer, default 0): which open image to capture
-- `max_width` / `max_height` (integer, optional): full-image fit scale (aspect preserved)
-- `region` (dict, optional): crop then optional scale
+- `max_width` / `max_height` (integer, optional): full-image fit scale (aspect preserved);
+  omit both → default max edge **1024** (hard max **4096**)
+- `region` (dict, optional): crop then scale into complete max box
   - `origin_x`/`origin_y` or `x`/`y`, `width`, `height`
   - optional `max_width`/`max_height` for the cropped region
 
 **Parameters (`get_state_snapshot`):**
 - `image_index` (integer, default 0)
-- `max_size` (integer, default **512**): max edge for the preview
+- `max_size` (integer, default **1024**): max edge for the preview (`512` still valid)
 - `region` (dict, optional): `{x,y,width,height}` or origin_* keys
 - `label` (string, optional): agent bookkeeping only
 
 **Usage Modes:**
-1. **Full Image:** omit max_* — full-resolution visible composite
-2. **Full Image Scaled:** `max_width`+`max_height` or `max_size` — fit scale
-3. **Region Extract:** region dict — crop composite, then optional scale
+1. **Default preview:** omit max_* — product default max edge **1024** (not full-res)
+2. **Explicit max box:** `max_width`+`max_height` or `max_size` — fit scale, clamped to hard max **4096**
+3. **Region extract:** region dict — crop composite, then scale into complete max box (prefer region-first detail)
 4. **Other document:** `image_index=N`
 
-**Scaling Behavior:** Aspect-preserving fit. Mapping `scale_*` uses **region** dims when
-a region is set (`rendered / region_*`); otherwise `rendered / source_*`.
+**Scaling Behavior:** Aspect-preserving fit into the resolved max box (default edge
+1024, hard max edge **4096**). Mapping `scale_*` uses **region** dims when a region
+is set (`rendered / region_*`); otherwise `rendered / source_*`. Region source crop
+edges are capped at **8192** (output still hard-max 4096). Padding remains **0**.
 
 **Response Format:**
 ```json
@@ -781,8 +791,8 @@ a region is set (`rendered / region_*`); otherwise `rendered / source_*`.
   "results": {
     "image_data": "<base64-encoded-png-data>",
     "format": "png", 
-    "width": 800,
-    "height": 600,
+    "width": 1024,
+    "height": 576,
     "original_width": 1920,
     "original_height": 1080,
     "encoding": "base64",

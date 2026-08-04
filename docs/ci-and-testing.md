@@ -2,7 +2,9 @@
 
 This document is the product SoT for offline CI policy, pytest markers, fixture
 corpus rules, and the branch-protection checklist. Required merge gates never
-start GIMP GUI or install GIMP from apt on GitHub-hosted runners.
+start GIMP GUI or install GIMP from apt on GitHub-hosted runners. Snapshot edge
+defaults, timeouts, and operator bench methodology live in
+[performance.md](performance.md) (offline tests never require live large-image timing).
 
 ## Offline vs live vs headless
 
