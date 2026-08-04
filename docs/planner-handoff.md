@@ -296,7 +296,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
-### 0016 Completed (NDE Filter Tools)
+### 0016 Completed (PR #24 / main@6bb8c9f)
 
 - **Shipped:** `gimp_mcp_filters.py` (9th EXPECTED; pure allowlist/soft validate/normalize/coerce + `classify_drawable_filter_new_failure`); packaging triad; `nde_filters: true`; HL **25** + advanced `list_drawable_filters` / `merge_nde_filters`.
 - **HL handle-first:** `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter` **require** `layer_handle` (no layer_name/layer_id/image_index fallback on HL). Advanced list/merge still allow legacy targeting.
