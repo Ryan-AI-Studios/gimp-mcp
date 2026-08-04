@@ -43,6 +43,9 @@ Re-run `orient_workspace` after create/delete/reorder/merge/rasterize/relink,
   mutators without a declaration. Missing declaration is still a skill violation.
 - Prefer handles from the latest orient over remembered names.
 - After `restart_server`, full re-probe + re-orient.
+- Huge layer trees → `orient_workspace(summary_only=True)` (or filter by image).
+- `session_probe.snapshot_budget` reports resolved edges/timeouts (default/hard
+  max edge, region edge, host TCP timeout seconds).
 
 ## References
 

@@ -46,6 +46,7 @@ Rules:
 - **No** API keys, MCP session credentials, or real user-home absolute paths in committed examples.
 - Plugin auth uses a **file token** under the GIMP config dir (not client env secrets).
 - Codex defaults (startup 10s / tool 60s) are **too low** for `uv run` cold-start — examples set **60 / 300**.
+- Harness `tool_timeout_sec` should **exceed** host `GIMP_MCP_COMMAND_TIMEOUT_S` (default **60s**, clamp 5–600). Raise **both** for large interactive work so the host can surface `TIMEOUT` before the harness hard-kills.
 - Codex: `env` **sets** vars; `env_vars` **forwards** host vars (document both in [codex/README.md](codex/README.md)).
 - Prefer **native Windows** (PowerShell / Codex / Grok), **not WSL**, so TCP `127.0.0.1:9877` and paths match GIMP.
 

@@ -16,7 +16,7 @@ require `GIMP_MCP_ADVANCED_TOOLS=1` on the host MCP process plus a written reaso
 | `ensure_source_immutable` | Source_Immutable layer policy before mutation |
 | `checkpoint_create` | XCF checkpoint snapshot |
 | `checkpoint_restore` | Restore checkpoint (then re-orient) |
-| `render_visible_composite` | Visible composite PNG + mapping for vision; dual-delivery TextContent + ImageContent + optional `filesystem_path` (do not assume model saw the image) |
+| `render_visible_composite` | Visible composite PNG + mapping for vision; dual-delivery TextContent + ImageContent + optional `filesystem_path` (do not assume model saw the image). **Default max edge 1024** when max dims omitted (hard 4096); intermediate **768**; detail via region **512–1024**. Prefer region-first. Advanced surface aliases of this path share the same budget policy. |
 | `normalize_image_orientation` | EXIF orientation normalize |
 | `map_preview_to_image` | Preview/composite coords → image coords |
 | `save_xcf` | Atomic XCF save (temp→replace); collision `fail`/`version`/`replace` |

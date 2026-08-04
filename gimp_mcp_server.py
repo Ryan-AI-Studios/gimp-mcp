@@ -249,16 +249,34 @@ class GimpConnection:
         try:
             # AF_INET + literal 127.0.0.1 — no hostname resolution on default path
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(10)
+            # Per-command reconnect re-enters connect(); timeout always fresh from env.
+            self.sock.settimeout(snap.command_timeout_s())
             self.sock.connect((self.host, self.port))
             logger.info(f"Connected to GIMP at {self.host}:{self.port}")
+        except TimeoutError as e:
+            # Do not wrap as ConnectionError — raise_from_exception maps to CODE_TIMEOUT.
+            self._discard_sock()
+            timeout_s = snap.command_timeout_s()
+            logger.error("Timeout connecting to GIMP: %s", e)
+            raise TimeoutError(
+                f"Timed out connecting to GIMP at {self.host}:{self.port} after {timeout_s}s"
+            ) from e
         except Exception as e:
-            self.sock = None
+            self._discard_sock()
             logger.error(f"Failed to connect: {e}")
             raise ConnectionError(
                 f"Could not connect to GIMP at {self.host}:{self.port}. "
                 "Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
-            )
+            ) from e
+
+    def _discard_sock(self) -> None:
+        """Close a partially created socket and clear the handle."""
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
 
     def disconnect(self):
         if self.sock:
@@ -351,7 +369,12 @@ class GimpConnection:
                 self.disconnect()
                 return self._send_command_once(command_type, params, force_reload_token=True)
             return result
-        except (ConnectionError, TimeoutError, OSError) as e:
+        except TimeoutError as e:
+            # Do not wrap as ConnectionError — raise_from_exception maps to CODE_TIMEOUT.
+            timeout_s = snap.command_timeout_s()
+            logger.error("GIMP command timed out after %ss: %s", timeout_s, e)
+            raise TimeoutError(f"GIMP command timed out after {timeout_s}s: {e}") from e
+        except (ConnectionError, OSError) as e:
             logger.error("Communication error: %s", e)
             # M8: map transport failures to CONNECTION_FAILED via raise path
             raise ConnectionError(f"Error communicating with GIMP: {e}") from e
@@ -605,7 +628,8 @@ def raise_from_exception(
 
     - ToolError: re-raise unchanged
     - SecurityError / GimpMcpError: use their code
-    - ConnectionError / TimeoutError / OSError: CONNECTION_FAILED
+    - TimeoutError: TIMEOUT (retryable) with details ``timeout_s``
+    - ConnectionError / OSError: CONNECTION_FAILED
     - else: INTERNAL_ERROR (pass affected_handles when known)
 
     ``image_id`` enables host open-TX hint merge for pre-TCP honesty (0017).
@@ -649,7 +673,18 @@ def raise_from_exception(
             image_id=image_id,
         )
 
-    if isinstance(exc, (ConnectionError, TimeoutError)):
+    if isinstance(exc, TimeoutError):
+        tool_fail(
+            sec.CODE_TIMEOUT,
+            str(exc) or "GIMP command timed out",
+            request_id=rid,
+            affected_handles=affected_handles,
+            details={"timeout_s": snap.command_timeout_s()},
+            cause=exc,
+            image_id=image_id,
+        )
+
+    if isinstance(exc, ConnectionError):
         tool_fail(
             sec.CODE_CONNECTION_FAILED,
             str(exc) or "Connection to GIMP failed",
@@ -879,6 +914,8 @@ def _surface_probe_fields(
             ),
             "snapshot_write_env": "GIMP_MCP_SNAPSHOT_WRITE",
         },
+        # Snapshot edge/timeout honesty (0023)
+        "snapshot_budget": snap.snapshot_budget_probe_fields(),
     }
     return out
 
@@ -904,7 +941,8 @@ def session_probe(
     advanced_tools_enabled, hl_tool_names, capabilities, image_delivery
     (emits_mcp_image_content, filesystem_snapshot_write,
     client_model_visibility always ``"unknown"``, fallback, snapshot_write_env),
-    nonce, version_ok, and error when disconnected.
+    snapshot_budget (default/hard max edges, region edge, command_timeout_s,
+    env_names, guidance), nonce, version_ok, and error when disconnected.
     """
     probe = _probe_connection()
     gimp_version = probe.get("gimp_version") if probe.get("connected") else None
@@ -1030,7 +1068,11 @@ def _render_visible_composite_impl(
     region: dict | None = None,
     write_filesystem: bool | None = None,
 ) -> ToolResult:
-    """Shared visible-composite snapshot (plugin get_image_bitmap + ToolResult)."""
+    """Shared visible-composite snapshot (plugin get_image_bitmap + ToolResult).
+
+    Always resolves a complete max box (default edge 1024, hard max 4096) and
+    validates region source edges before any TCP send.
+    """
     if handle is None and image_index is None:
         image_index = 0
     params: dict[str, Any] = {}
@@ -1038,17 +1080,25 @@ def _render_visible_composite_impl(
         params["handle"] = handle
     if image_index is not None:
         params["image_index"] = int(image_index)
-    if max_width is not None:
-        params["max_width"] = max_width
-    if max_height is not None:
-        params["max_height"] = max_height
-    if region is not None:
-        try:
-            norm = snap.normalize_region(region)
-        except (TypeError, ValueError) as e:
-            raise Exception(f"Invalid region: {e}") from e
-        if norm is not None:
-            params["region"] = norm
+
+    try:
+        budget = snap.resolve_snapshot_max_box(max_width, max_height, region=region)
+    except (TypeError, ValueError) as e:
+        tool_fail(sec.CODE_POLICY_DENIED, str(e))
+
+    params["max_width"] = budget.max_width
+    params["max_height"] = budget.max_height
+    if budget.region is not None:
+        params["region"] = budget.region
+
+    timeout_s = snap.command_timeout_s()
+    logger.debug(
+        "snapshot budget max_box=%sx%s timeout_s=%s has_region=%s",
+        budget.max_width,
+        budget.max_height,
+        timeout_s,
+        budget.region is not None,
+    )
 
     conn = get_gimp_connection()
     result = conn.send_command("get_image_bitmap", params)
@@ -1086,10 +1136,15 @@ def render_visible_composite(
     default on). Prefer ``structuredContent.filesystem_path`` when ImageContent
     is not model-visible.
 
+    Snapshot budget (0023): omitting ``max_width``/``max_height`` applies the
+    product default max edge **1024** (not full-res). Hard max edge **4096**.
+    Prefer **region-first** detail crops (source edge cap 8192) rather than
+    full-canvas vision. Explicit smaller edges (e.g. 512) remain valid.
+
     Parameters:
     - handle: Preferred image handle from orient_workspace / mutators
     - image_index: Legacy open-image index when handle is omitted (default 0)
-    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved)
+    - max_width, max_height: Target max box (aspect preserved); omit → default 1024
     - region: Optional region dict (origin_x/origin_y or x/y, width, height)
     - write_filesystem: Override snapshot disk write (None → env default on)
 
@@ -1128,11 +1183,12 @@ def get_image_bitmap(
     """Get the visible composite of an open GIMP image as PNG + mapping metadata.
 
     Advanced alias — prefer ``render_visible_composite`` on the default surface.
-    Same implementation (visible composite, never mutates the original image).
+    Same implementation and snapshot budget (default max edge **1024**, hard
+    **4096**, region-first detail; never mutates the original image).
 
     Parameters:
     - image_index: Which open image to capture (default 0)
-    - max_width, max_height: Target dimensions for scaling (aspect-ratio preserved)
+    - max_width, max_height: Target max box (aspect preserved); omit → default 1024
     - region: Dictionary with origin_x/origin_y (or x/y), width, height
     - handle: Optional image handle (preferred when known)
     - write_filesystem: Override snapshot disk write (None → env default on)
@@ -1578,7 +1634,7 @@ def get_gimp_info(ctx: Context) -> dict:
 def get_state_snapshot(
     ctx: Context,
     image_index: int = 0,
-    max_size: int = 512,
+    max_size: int = 1024,
     region: dict | None = None,
     label: str = "",
 ) -> ToolResult:
@@ -1596,9 +1652,13 @@ def get_state_snapshot(
     Captures the **visible composite** (all visible layers / opacity / blend), not a
     single layer. Never mutates the user's original image.
 
+    Snapshot budget (0023): default ``max_size`` is **1024** (aligned with HL
+    render path). Hard max edge **4096**. Explicit ``max_size=512`` remains valid
+    for cheaper previews. Prefer region-first detail crops.
+
     Parameters:
     - image_index: Which open image to snapshot (default: 0 = most recent)
-    - max_size: Maximum width/height of the returned preview in pixels (default: 512)
+    - max_size: Maximum width/height of the returned preview in pixels (default: 1024)
     - region: Optional dict {x, y, width, height} or {origin_x, origin_y, width, height}
               to zoom into a specific area
               e.g. {"x": 200, "y": 300, "width": 100, "height": 80} for mouth area
@@ -1620,28 +1680,43 @@ def get_state_snapshot(
     try:
         if label:
             print(f"[snapshot] {label}")
-        conn = get_gimp_connection()
-        params: dict[str, Any] = {"image_index": image_index}
-        if max_size:
-            params["max_width"] = max_size
-            params["max_height"] = max_size
-        if region:
-            try:
-                norm = snap.normalize_region(region)
-            except (TypeError, ValueError) as e:
-                raise Exception(f"Invalid region: {e}") from e
-            if norm is None:
-                norm = {}
+        try:
+            budget = snap.resolve_snapshot_max_box(max_size=max_size, region=region)
+        except (TypeError, ValueError) as e:
+            tool_fail(sec.CODE_POLICY_DENIED, str(e))
+
+        params: dict[str, Any] = {
+            "image_index": image_index,
+            "max_width": budget.max_width,
+            "max_height": budget.max_height,
+        }
+        if budget.region is not None:
+            norm = dict(budget.region)
             # Defaults for partial shorthand from agents
             if "origin_x" not in norm:
                 norm["origin_x"] = 0
             if "origin_y" not in norm:
                 norm["origin_y"] = 0
             if "width" not in norm:
-                norm["width"] = int(max_size)
+                norm["width"] = int(budget.max_width)
             if "height" not in norm:
-                norm["height"] = int(max_size)
+                norm["height"] = int(budget.max_height)
+            # Re-validate after filling width/height defaults
+            try:
+                snap.validate_region_edges(norm)
+            except ValueError as e:
+                tool_fail(sec.CODE_POLICY_DENIED, str(e))
             params["region"] = norm
+
+        logger.debug(
+            "get_state_snapshot budget max_box=%sx%s timeout_s=%s has_region=%s",
+            budget.max_width,
+            budget.max_height,
+            snap.command_timeout_s(),
+            budget.region is not None,
+        )
+
+        conn = get_gimp_connection()
         result = conn.send_command("get_image_bitmap", params)
         if result["status"] == "success":
             return _snapshot_tool_result(result["results"], image_index=image_index)
