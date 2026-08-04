@@ -7,10 +7,12 @@ import shutil
 import socket
 import sys
 from dataclasses import dataclass, field
+from importlib import metadata
 from typing import Any
 
 import gimp_mcp_security as sec
 from gimp_agent import exit_codes as ec
+from gimp_agent import install as install_mod
 from gimp_agent import paths as pathmod
 
 
@@ -133,10 +135,22 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
     data["plugin_dir"] = str(plugin_dir) if plugin_dir else None
     missing = pathmod.missing_plugin_files(plugin_dir)
     data["missing_plugin_files"] = missing
+    expected_list = list(pathmod.EXPECTED_PLUGIN_FILES)
+    expected_count = len(expected_list)
+    present = (
+        [n for n in expected_list if (plugin_dir / n).is_file()] if plugin_dir is not None else []
+    )
+    data["plugin_files_present"] = present
+    data["plugin_files_expected_count"] = expected_count
+    files_detail: dict[str, Any] = {
+        "expected": expected_list,
+        "present": present,
+        "missing": missing,
+        "expected_count": expected_count,
+    }
+    if plugin_dir is not None:
+        files_detail["plugin_dir"] = str(plugin_dir)
     if plugin_dir is None or missing:
-        detail: dict[str, Any] = {"missing": missing}
-        if plugin_dir is not None:
-            detail["plugin_dir"] = str(plugin_dir)
         msg = (
             "GIMP plug-in directory not found under %APPDATA%/GIMP/3.*"
             if plugin_dir is None
@@ -149,7 +163,7 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
                 status="fail",
                 message=msg,
                 code=ec.PLUGIN_NOT_FOUND,
-                detail=detail,
+                detail=files_detail,
             )
         )
         if first_required_code is None:
@@ -161,10 +175,69 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
                 name="plugin_files",
                 severity="required",
                 status="pass",
-                message=f"all {len(pathmod.EXPECTED_PLUGIN_FILES)} ship files present in {plugin_dir}",
-                detail={"plugin_dir": str(plugin_dir)},
+                message=f"all {expected_count} ship files present in {plugin_dir}",
+                detail=files_detail,
             )
         )
+
+    # 2b. plugin_stale (warn only) — after plugin_files; never strict-fail
+    # Only when all files present AND source resolvable; sha256 both-present mismatches.
+    if plugin_dir is None or missing:
+        checks.append(
+            CheckResult(
+                name="plugin_stale",
+                severity="warn",
+                status="skip",
+                message="skipped (plugin_files incomplete)",
+            )
+        )
+    else:
+        try:
+            source_dir = install_mod.resolve_source_dir(None)
+        except FileNotFoundError:
+            checks.append(
+                CheckResult(
+                    name="plugin_stale",
+                    severity="warn",
+                    status="skip",
+                    message="skipped (plugin source not resolvable; pass --source for install)",
+                )
+            )
+        else:
+            mismatches = install_mod.compare_installed(source_dir, plugin_dir)
+            data["plugin_stale_mismatches"] = mismatches
+            data["plugin_stale_source"] = str(source_dir)
+            if mismatches:
+                checks.append(
+                    CheckResult(
+                        name="plugin_stale",
+                        severity="warn",
+                        status="warn",
+                        message=(
+                            f"{len(mismatches)} installed file(s) differ from source "
+                            f"{source_dir}: {', '.join(mismatches)}"
+                        ),
+                        detail={
+                            "mismatches": mismatches,
+                            "source_dir": str(source_dir),
+                            "plugin_dir": str(plugin_dir),
+                        },
+                    )
+                )
+            else:
+                checks.append(
+                    CheckResult(
+                        name="plugin_stale",
+                        severity="warn",
+                        status="pass",
+                        message=f"installed ship files match source {source_dir}",
+                        detail={
+                            "mismatches": [],
+                            "source_dir": str(source_dir),
+                            "plugin_dir": str(plugin_dir),
+                        },
+                    )
+                )
 
     # 3. Token env or file readable (warn)
     env_tok = os.environ.get(sec.ENV_TOKEN)
@@ -287,19 +360,32 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
         )
     )
 
-    # 8. python / tool pin notes (info)
+    # 8. python / tool pin notes (info) — live package versions when installed
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    data["python_version"] = py_ver
+
+    def _pkg_version(name: str) -> str:
+        try:
+            return metadata.version(name)
+        except metadata.PackageNotFoundError:
+            return "(not installed)"
+
+    mcp_ver = _pkg_version("mcp")
+    fastmcp_ver = _pkg_version("fastmcp")
+    data["mcp_version"] = mcp_ver
+    data["fastmcp_version"] = fastmcp_ver
     pin_msg = (
-        f"python {py_ver}; mcp/fastmcp pins held (mcp>=1.10,<2, fastmcp>=2.10,<3); "
+        f"python {py_ver}; mcp={mcp_ver} fastmcp={fastmcp_ver}; "
+        "mcp/fastmcp pins held (mcp>=1.10,<2, fastmcp>=2.10,<3); "
         "batch_interpreter=false until track 0019"
     )
-    data["python_version"] = py_ver
     checks.append(
         CheckResult(
             name="tool_pins",
             severity="info",
             status="info",
             message=pin_msg,
+            detail={"mcp": mcp_ver, "fastmcp": fastmcp_ver, "python": py_ver},
         )
     )
 

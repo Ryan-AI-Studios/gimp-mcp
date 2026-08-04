@@ -15,6 +15,7 @@ import gimp_mcp_security as sec
 from gimp_agent import __version__ as package_version
 from gimp_agent import doctor as doctor_mod
 from gimp_agent import exit_codes as ec
+from gimp_agent import install as install_mod
 from gimp_agent import jsonio
 from gimp_agent import paths as pathmod
 from gimp_agent import probe as probe_mod
@@ -49,6 +50,85 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     )
     jsonio.emit(envelope, as_json=jsonio.json_mode_enabled(flag=_json_flag(args)))
     return report.exit_code
+
+
+def _install_human_lines(report: install_mod.InstallReport) -> list[str]:
+    n = len(pathmod.EXPECTED_PLUGIN_FILES)
+    copied_n = len(report.copied)
+    lines = [report.message]
+    if report.target_dir:
+        lines.append(f"  target: {report.target_dir}")
+    if report.source_dir:
+        lines.append(f"  source: {report.source_dir}")
+    lines.append(f"  files: {copied_n}/{n} (expected {n})")
+    if report.failed:
+        lines.append(f"  failed: {len(report.failed)}")
+    if report.backed_up:
+        lines.append(f"  backed_up: {len(report.backed_up)}")
+    if report.dry_run:
+        lines.append(f"  planned ops: {len(report.planned)}")
+    if report.restart_required:
+        lines.append("  restart GIMP required")
+    if not report.ok:
+        lines.append("  if copy failed, fully quit GIMP and re-run install")
+    return lines
+
+
+def _cmd_install(args: argparse.Namespace) -> int:
+    source = Path(args.source) if getattr(args, "source", None) else None
+    target = Path(args.target) if getattr(args, "target", None) else None
+    report = install_mod.install_plugin(
+        source=source,
+        target=target,
+        dry_run=bool(args.dry_run),
+        backup=not bool(args.no_backup),
+    )
+    exit_n = ec.EXIT_SUCCESS if report.ok else ec.exit_code_for(report.code or ec.PLUGIN_NOT_FOUND)
+    envelope = jsonio.make_envelope(
+        ok=report.ok,
+        exit_code=exit_n,
+        code=report.code,
+        message=report.message,
+        data=report.envelope_data(),
+    )
+    jsonio.emit(
+        envelope,
+        as_json=jsonio.json_mode_enabled(flag=_json_flag(args)),
+        human_lines=_install_human_lines(report),
+    )
+    return exit_n
+
+
+def _cmd_uninstall(args: argparse.Namespace) -> int:
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
+    dry_run = bool(args.dry_run)
+    if not dry_run and not bool(args.yes):
+        envelope = jsonio.make_envelope(
+            ok=False,
+            exit_code=ec.EXIT_CLI_USAGE,
+            code=ec.CLI_USAGE,
+            message="uninstall requires --yes (non-interactive; no prompt). Use --dry-run to preview.",
+            data={},
+        )
+        jsonio.emit(envelope, as_json=as_json)
+        return ec.EXIT_CLI_USAGE
+
+    target = Path(args.target) if getattr(args, "target", None) else None
+    report = install_mod.uninstall_plugin(target=target, dry_run=dry_run)
+    exit_n = ec.EXIT_SUCCESS if report.ok else ec.exit_code_for(report.code or ec.PLUGIN_NOT_FOUND)
+    envelope = jsonio.make_envelope(
+        ok=report.ok,
+        exit_code=exit_n,
+        code=report.code,
+        message=report.message,
+        data=report.envelope_data(),
+    )
+    jsonio.emit(
+        envelope,
+        as_json=as_json,
+        human_lines=_install_human_lines(report),
+    )
+    return exit_n
 
 
 def _cmd_probe(args: argparse.Namespace) -> int:
@@ -850,7 +930,8 @@ def build_parser() -> argparse.ArgumentParser:
         prog="gimp-agent",
         description=(
             "Deterministic CLI sidecar for GIMP MCP "
-            "(doctor, probe, save-xcf, export, compare, verify, recipes, run, batch)."
+            "(install, uninstall, doctor, probe, save-xcf, export, compare, verify, "
+            "recipes, run, batch)."
         ),
     )
     # Separate dest from subcommand --json so parent True is not overwritten by
@@ -863,6 +944,62 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit JSON envelope on stdout (overrides GIMP_AGENT_JSON)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_install = sub.add_parser(
+        "install",
+        help="Install full EXPECTED plug-in ship set into GIMP user plug-ins dir",
+    )
+    p_install.add_argument(
+        "--source",
+        default=None,
+        help="Directory containing all EXPECTED ship files (default: auto-resolve)",
+    )
+    p_install.add_argument(
+        "--target",
+        default=None,
+        help=(
+            "Exact full plug-in directory path "
+            "(default: highest GIMP 3.*/plug-ins/gimp-mcp-plugin); no auto-append"
+        ),
+    )
+    p_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Plan only: zero filesystem writes",
+    )
+    p_install.add_argument(
+        "--no-backup",
+        action="store_true",
+        default=False,
+        help="Skip timestamped .bak.* siblings before overwrite",
+    )
+    _add_json_arg(p_install)
+    p_install.set_defaults(func=_cmd_install)
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help="Remove EXPECTED ship files from plug-in dir (requires --yes unless --dry-run)",
+    )
+    p_uninstall.add_argument(
+        "--target",
+        default=None,
+        help="Exact full plug-in directory path (default: discovered plug-in dir)",
+    )
+    p_uninstall.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Plan only: zero filesystem writes (does not require --yes)",
+    )
+    p_uninstall.add_argument(
+        "--yes",
+        action="store_true",
+        default=False,
+        help="Confirm non-dry-run uninstall (required; no interactive prompt)",
+    )
+    _add_json_arg(p_uninstall)
+    p_uninstall.set_defaults(func=_cmd_uninstall)
 
     p_doctor = sub.add_parser("doctor", help="Run ordered environment diagnostics")
     p_doctor.add_argument(
