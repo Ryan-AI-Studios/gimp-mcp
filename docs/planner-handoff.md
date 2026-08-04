@@ -295,13 +295,13 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0017 merge — see PR) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~8acea07 post-0017) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0018-PluginInstallAndDoctor** (placeholder); prior **0017 Completed** |
+| Active focus | **0018-PluginInstallAndDoctor** (placeholder); prior **0017 Completed** PR #25 / main@8acea07 |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
-### 0017 Completed
+### 0017 Completed (PR #25 / main@8acea07)
 
 - **Shipped:** `gimp_mcp_tx.py` (**10th** EXPECTED; pure mint/validate/TxStack/reap/recent + packaging triad); `undo_group_transactions: true`; HL **28** (`undo_group_begin` / `end` / `rollback`) + advanced `undo_group_status` / `undo_group_force_close`.
 - **Plugin:** per-image `_agent_tx_stack` + recent cap 10; begin/end/rollback/status/force_close; wall-clock reap (300s default, env `GIMP_MCP_UNDO_TX_TIMEOUT_S`); depth max 8 → `TX_DEPTH`; empty/mismatch end → `TX_MISMATCH`; mid force_close closes id+above; **`_force_end_open_tx` before `image.delete`**; pop TX in `_drop_image_generation`; send-path error enrich stamps `rollback_available` when open TX.
