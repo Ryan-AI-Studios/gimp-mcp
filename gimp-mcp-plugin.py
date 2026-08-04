@@ -9169,11 +9169,16 @@ class MCPPlugin(Gimp.PlugIn):
             end_started = True
             ug_ok = image.undo_group_end()
             self._gimp_bool_or_fail(ug_ok, "image.undo_group_end")
+            # image.undo() may return False (gboolean) or raise — both are failure.
+            # Group is already closed in GIMP: pop stack to avoid phantom open TxRecord.
+            undo_failed_msg = None
             try:
-                image.undo()
+                undo_ok = image.undo()
+                if undo_ok is False:
+                    undo_failed_msg = "image.undo returned False"
             except Exception as undo_exc:
-                # Group already closed in GIMP — must not leave a phantom open TxRecord
-                # (subsequent end/rollback would unbalance nesting). Pop + recent.
+                undo_failed_msg = str(undo_exc)
+            if undo_failed_msg is not None:
                 rec = stack.pop()
                 rec.status = "force_closed"
                 self._tx_push_recent(iid, rec)
@@ -9182,7 +9187,7 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._tx_make_error(
                     _sec.CODE_INTERNAL,
                     "undo_group_rollback: undo_group_end ok but image.undo failed "
-                    f"(group closed; stack cleared): {undo_exc}",
+                    f"(group closed; stack cleared): {undo_failed_msg}",
                     image_id=iid,
                     state_may_have_changed=True,
                 )

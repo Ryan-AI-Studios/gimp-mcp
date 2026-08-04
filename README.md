@@ -74,7 +74,7 @@ process and the LLM client session** (clients cache `list_tools`).
 |---|---|
 | 👁️ **Live Visual Feedback** | `render_visible_composite` returns a PNG + mapping mid-workflow so the AI verifies each step |
 | 🧭 **Workspace Orientation** | `orient_workspace` returns a schema-versioned state manifest (layers tree, kinds, handles, capabilities) |
-| 🎨 **25 HL / ~90 advanced** | Curated default surface; NDE filters + adjustments, transforms, layers, drawing in advanced mode |
+| 🎨 **28 HL / ~90 advanced** | Curated default surface; NDE filters + undo TX + adjustments, transforms, layers, drawing in advanced mode |
 | 📦 **Recipe library** | Versioned JSON recipes; MCP `apply_recipe` + CLI `gimp-agent run` / `batch` |
 | ✅ **Pixel verification** | `compare_images` / CLI `compare` + `verify_artifact` / CLI `verify` — objective before/after gates |
 | 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested |

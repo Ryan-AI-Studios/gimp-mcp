@@ -537,19 +537,17 @@ def raise_from_plugin_result(
         ah = result.get("affected_handles")
         handles = list(ah) if isinstance(ah, list) else None
 
-    # 0017 H1: top-level rollback fields → tool_fail kwargs (not details-only)
+    # 0017 H1: top-level rollback fields → tool_fail kwargs (not details-only).
+    # Plugin is SoT for TCP errors: do NOT merge host open-TX hint here (stale
+    # after plugin-side reap/close). Host hint is for pre-TCP tool_fail only.
     extra: dict[str, Any] = {}
     if "rollback_available" in result:
         extra["rollback_available"] = bool(result.get("rollback_available"))
+    else:
+        # Explicit false when plugin omitted fields → no open agent TX on SoT
+        extra["rollback_available"] = False
     if "transaction_id" in result and result.get("transaction_id") is not None:
         extra["transaction_id"] = result.get("transaction_id")
-
-    # Prefer explicit image_id; else affected_handles; else contextvar (via tool_fail).
-    if image_id is None and handles:
-        for h in handles:
-            if isinstance(h, dict) and h.get("image_id") is not None:
-                image_id = h["image_id"]
-                break
 
     tool_fail(
         code,
@@ -557,7 +555,7 @@ def raise_from_plugin_result(
         request_id=rid if isinstance(rid, str) else None,
         affected_handles=handles,
         details=details or None,
-        image_id=image_id,
+        # No image_id: prevents tool_fail host-hint fill on TCP path
         **extra,
     )
 
@@ -780,7 +778,7 @@ def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
     return FastMCP(
         "GimpMCP",
         instructions=(
-            "GIMP MCP — default 25 high-level tools "
+            "GIMP MCP — default 28 high-level tools "
             "(set GIMP_MCP_ADVANCED_TOOLS=1 for full ~90-tool advanced surface)"
         ),
         include_tags=surface.include_tags_for_mode(mode),
@@ -5572,6 +5570,10 @@ def close_image(
             params["image_index"] = int(image_index)
         result = conn.send_command("close_image", params)
         if result["status"] == "success":
+            # Plugin force-ended any open agent TX before delete — clear host hint.
+            iid = _image_id_from_handle(handle)
+            if iid is not None:
+                _host_tx_hint_clear(iid)
             return result["results"]
         raise_from_plugin_result(result, "tool")
     except ToolError:

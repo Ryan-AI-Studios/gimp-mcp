@@ -52,7 +52,7 @@ Objective before/after and artifact checks so silent no-ops fail closed.
 
 | Surface | Tools / verbs |
 |---|---|
-| MCP HL (catalog **25**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe`, NDE filter tools |
+| MCP HL (catalog **28**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe`, NDE filter tools, undo_group_* |
 | CLI (host-only) | `gimp-agent compare`, `gimp-agent verify` |
 | Capability | `pixel_verification: true` (extension; not `_CAPABILITY_REQUIRED`) |
 | **Not** flipped | `alpha_snapshot` stays **false** (live GIMP `render_alpha` unfinished) |
@@ -92,7 +92,7 @@ PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `f
 
 ## Available MCP Tools
 
-> **Default surface (0010 + 0014 + 0015 + 0016):** hosts list **25** high-level tools unless
+> **Default surface (0010 + 0014 + 0015 + 0016 + 0017):** hosts list **28** high-level tools unless
 > `GIMP_MCP_ADVANCED_TOOLS=1`. Prefer design names: `session_probe`,
 > `render_visible_composite` (alias of the composite path below), `create_selection`,
 > `orient_workspace`, `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter`.
@@ -254,7 +254,7 @@ Versioned allowlisted multi-step pipelines so agents run few-decision workflows.
 
 | Surface | API |
 |---|---|
-| MCP HL (catalog **25**) | `list_recipes`, `apply_recipe` (+ NDE filter tools) |
+| MCP HL (catalog **28**) | `list_recipes`, `apply_recipe` (+ NDE + undo_group tools) |
 | CLI | `gimp-agent recipes` / `run` / `batch` |
 | Module | `gimp_mcp_recipes.py` (host pure; not EXPECTED plug-in ship) |
 | Package data | `gimp_agent/recipes/*.json` via `importlib.resources` |

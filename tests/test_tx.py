@@ -419,13 +419,15 @@ def test_plugin_reap_uses_image_id_from_params() -> None:
 
 
 def test_partial_rollback_undo_fail_pops_stack() -> None:
-    """Structure: after undo_group_end ok + image.undo fail, stack is popped."""
+    """Structure: after undo_group_end ok + image.undo fail (False or raise), stack popped."""
     body = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
     rb_start = body.find("def _tx_rollback")
     rb_end = body.find("\n    def _tx_status", rb_start)
     assert rb_start > 0 and rb_end > rb_start
     rb_src = body[rb_start:rb_end]
     assert "image.undo()" in rb_src or "image.undo(" in rb_src
+    # gboolean False and exceptions both fail (Codex P1)
+    assert "undo_ok is False" in rb_src or "is False" in rb_src
     # On undo failure path: pop + force_closed + recent + state_may_have_changed
     assert "force_closed" in rb_src
     assert "stack.pop()" in rb_src
@@ -442,8 +444,11 @@ def test_sync_image_generations_prunes_tx_stacks() -> None:
     assert "_agent_tx_recent" in sync_src
 
 
-def test_raise_from_plugin_result_host_hint_when_fields_absent() -> None:
-    """Host open-TX hint fills envelope when plugin omits rollback fields."""
+def test_raise_from_plugin_result_no_host_hint_when_fields_absent() -> None:
+    """TCP path: plugin is SoT — omit fields → false (do not use stale host hint).
+
+    Host open-TX hint is for pre-TCP tool_fail only (Codex P2).
+    """
     from unittest.mock import patch
 
     import pytest
@@ -452,7 +457,7 @@ def test_raise_from_plugin_result_host_hint_when_fields_absent() -> None:
     import gimp_mcp_security as sec
     import gimp_mcp_server as srv
 
-    # Reset host hint cache for isolation
+    # Stale host hint must NOT override plugin omission on TCP errors
     srv._HOST_OPEN_TX.clear()
     srv._host_tx_hint_set(55, "txn_host_hint_55")
 
@@ -460,7 +465,7 @@ def test_raise_from_plugin_result_host_hint_when_fields_absent() -> None:
         "status": "error",
         "code": sec.CODE_POLICY_DENIED,
         "error": "Source_Immutable protected",
-        # no rollback_available / transaction_id from plugin
+        # no rollback_available / transaction_id from plugin → no open TX on SoT
     }
     try:
         with patch.object(srv.sec, "write_audit_event"):
@@ -473,8 +478,7 @@ def test_raise_from_plugin_result_host_hint_when_fields_absent() -> None:
                 )
         parsed = sec.parse_tool_error_text(str(ei.value))
         assert parsed is not None
-        assert parsed["error"]["rollback_available"] is True
-        assert parsed["error"]["transaction_id"] == "txn_host_hint_55"
+        assert parsed["error"]["rollback_available"] is False
     finally:
         srv._HOST_OPEN_TX.clear()
 
