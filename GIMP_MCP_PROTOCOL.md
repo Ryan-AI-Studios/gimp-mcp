@@ -43,6 +43,42 @@ See [SECURITY.md](SECURITY.md) for env vars, start order, and residuals.
 | `flatten_image` | **Yes** (explicit) | Strips alpha on the open document |
 | `merge_visible_layers` | **Yes** (explicit) | Can preserve alpha on the open document |
 | `verify_alpha_channel` | **No** (read-only) | Image-level `has_alpha` + format capability matrix |
+| `compare_images` | **No** (host-only) | MAE / max AE / changed pixels / alpha counts / global SSIM; optional grayscale diff PNG |
+| `verify_artifact` | **No** (host-only) | Signature-based format + dims/alpha/sha256/bytes gates (PNG v1) |
+
+### Pixel verification protocol (track 0014)
+
+Objective before/after and artifact checks so silent no-ops fail closed.
+
+| Surface | Tools / verbs |
+|---|---|
+| MCP HL (catalog **20**) | `compare_images`, `verify_artifact` |
+| CLI (host-only) | `gimp-agent compare`, `gimp-agent verify` |
+| Capability | `pixel_verification: true` (extension; not `_CAPABILITY_REQUIRED`) |
+| **Not** flipped | `alpha_snapshot` stays **false** (live GIMP `render_alpha` unfinished) |
+
+**`ok` vs `pass`:** successful operations always return `ok: true`. `pass` is the
+threshold/expectation gate. Path jail / unsupported / budget errors **raise**
+structured codes — they never return `ok: false`.
+
+**Metrics (stdlib):** `mae`, `max_ae`, `changed_pixels`, `changed_fraction`,
+`alpha_transparent_pixels_{a,b}`, optional `ssim` / `ssim_computed`.
+
+**SSIM honesty:** product SSIM is **global** luminance (single window,
+`C1=(0.01*255)²`, `C2=(0.03*255)²`). It is **not** ImageMagick windowed
+`-metric SSIM`. `compute_ssim="auto"` disables when `w*h > 1_000_000`.
+
+**PNG decoder:** 8-bit non-interlaced, color types 0/2/4/6, defilter types 0–4
+including **Paeth**. Reject 16-bit, palette (3), interlaced → `UNSUPPORTED`.
+
+**Budgets:** trusted default **50M** decoded pixels (untrusted **25M** when
+`GIMP_MCP_UNTRUSTED_IMAGES` truthy); override `GIMP_MCP_MAX_DECODED_PIXELS`.
+Max file size default **500 MiB** (`GIMP_MCP_MAX_VERIFY_FILE_BYTES`). Exceed →
+`POLICY_DENIED`.
+
+**Optional ImageMagick:** doctor reports `magick` or legacy `compare` on PATH;
+subprocess list-args only; process exit **0 and 1** both OK (1 = images differ).
+Stdlib metrics remain source of truth.
 
 **Policy:**
 - `flatten=True` + `preserve_alpha=None` → opaque bake (`preserve_alpha` forced false) — safe for icons/sprites.
@@ -56,7 +92,7 @@ PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `f
 
 ## Available MCP Tools
 
-> **Default surface (0010):** hosts list ~18 high-level tools unless
+> **Default surface (0010 + 0014):** hosts list **20** high-level tools unless
 > `GIMP_MCP_ADVANCED_TOOLS=1`. Prefer design names: `session_probe`,
 > `render_visible_composite` (alias of the composite path below), `create_selection`,
 > `orient_workspace`. Legacy names such as `get_image_bitmap` / `check_server` remain
@@ -194,7 +230,16 @@ CLI-local codes (not raised by the TCP plugin): `CLI_USAGE`, `GIMP_NOT_FOUND`,
 
 Commands: `doctor [--strict]`, `probe [--timeout]`, `version`, `codes`,
 `save-xcf PATH [--collision fail|version|replace] [--verify-reopen|--no-verify-reopen]`,
-`export PATH --format {png,jpeg,webp,tiff} [--collision …] [--verify]`.
+`export PATH --format {png,jpeg,webp,tiff} [--collision …] [--verify]`,
+`compare PATH_A PATH_B [--require-mutation] [--max-mae …] [--diff-out] [--json]`,
+`verify PATH --spec SPEC.json [--json]`.
+
+**Host-only pixel verification (track 0014):** `compare` and `verify` never open the
+plug-in TCP socket (no token required). They import `gimp_mcp_verify` and jail paths
+under `GIMP_WORKSPACE_ROOT`. Threshold / expectation failures → `VERIFY_FAILED` →
+exit **8**. Pixel / file-size budget exceed → `POLICY_DENIED` → exit **6**.
+Unsupported PNG (16-bit, palette, interlaced) or non-PNG `format` in verify →
+`UNSUPPORTED` → exit **12**.
 
 **Doctor (non-strict):** default `doctor` is diagnostics-only. When a **required**
 check fails without `--strict`, process exit stays **0** and the envelope keeps

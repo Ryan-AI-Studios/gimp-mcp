@@ -27,6 +27,7 @@ import gimp_mcp_coords as coords
 import gimp_mcp_security as sec
 import gimp_mcp_snapshot as snap
 import gimp_mcp_surface as surface
+import gimp_mcp_verify as verify
 from gimp_mcp_state import default_capabilities, finalize_manifest
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -628,7 +629,7 @@ def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
     return FastMCP(
         "GimpMCP",
         instructions=(
-            "GIMP MCP — default ~18 high-level tools "
+            "GIMP MCP — default 20 high-level tools "
             "(set GIMP_MCP_ADVANCED_TOOLS=1 for full ~90-tool advanced surface)"
         ),
         include_tags=surface.include_tags_for_mode(mode),
@@ -1912,6 +1913,113 @@ def verify_alpha_channel(
         if sec.debug_enabled():
             traceback.print_exc()
         raise
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
+def compare_images(
+    ctx: Context,
+    path_a: str,
+    path_b: str,
+    thresholds: dict | None = None,
+    write_diff_path: str | None = None,
+    raise_on_fail: bool = False,
+    ignore_alpha: bool = False,
+    compute_ssim: bool | str = "auto",
+    change_threshold: int = 1,
+) -> dict:
+    """Compare two workspace-jailed PNG paths with objective pixel metrics (host-only).
+
+    Does **not** call the GIMP plug-in. Loads 8-bit non-interlaced PNG (color types
+    0/2/4/6) with full defilter (0-4 incl. Paeth).
+
+    **ok vs pass:** returned dict always has ``ok: true`` when the operation
+    succeeds (files loaded, metrics computed). ``pass`` is the threshold gate.
+    Path jail / unsupported PNG / pixel budget errors **raise** structured errors
+    (never ``ok: false``).
+
+    **SSIM honesty:** when computed, ``ssim`` is **global** luminance SSIM
+    (single window, C1/C2 Wang constants). It is **not** ImageMagick windowed
+    ``-metric SSIM``. ``compute_ssim="auto"`` disables when ``w*h > 1_000_000``.
+
+    Parameters:
+    - path_a / path_b: Workspace-jailed PNG paths (before/after or artifact pair)
+    - thresholds: optional gates — ``require_mutation``, ``min_changed_pixels``,
+      ``max_mae``, ``max_max_ae``, ``min_ssim``, ``max_changed_fraction``,
+      ``require_same_size`` (default true)
+    - write_diff_path: optional grayscale heatmap PNG (max |ΔRGB| per pixel)
+    - raise_on_fail: when true and ``pass`` is false → raise ``VERIFY_FAILED``
+    - ignore_alpha: allow RGB vs RGBA compare on RGB only (default false = fail)
+    - compute_ssim: true | false | \"auto\" (default auto)
+    - change_threshold: per-channel abs delta to count a pixel changed (default 1)
+
+    Returns metrics: mae, max_ae, changed_pixels, changed_fraction, alpha
+    transparent counts, ssim/ssim_computed, failures[], pass, ok.
+    """
+    try:
+        ja = _jail_path_or_raise(path_a, "path_a")
+        jb = _jail_path_or_raise(path_b, "path_b")
+        jdiff = _jail_path_or_raise(write_diff_path, "write_diff_path") if write_diff_path else None
+        return verify.compare_images(
+            ja,
+            jb,
+            thresholds=thresholds,
+            write_diff_path=jdiff,
+            raise_on_fail=bool(raise_on_fail),
+            ignore_alpha=bool(ignore_alpha),
+            compute_ssim=compute_ssim,
+            change_threshold=int(change_threshold),
+        )
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(exc, tool_name="compare_images")
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
+def verify_artifact(
+    ctx: Context,
+    path: str,
+    expected: dict,
+    raise_on_fail: bool = False,
+) -> dict:
+    """Validate one workspace-jailed artifact against a typed expectation (host-only).
+
+    Does **not** call the GIMP plug-in. Format detection is **signature-based**
+    (not extension). v1 supports ``format: \"png\"`` only; other formats raise
+    ``UNSUPPORTED``.
+
+    **ok vs pass:** ``ok: true`` means the check ran; ``pass`` is the expectation
+    gate. Path/budget/unsupported raise structured errors.
+
+    Expected keys (v1):
+    - ``min_width`` / ``max_width`` / ``width`` / ``height`` / ``min_height`` / ``max_height``
+    - ``format``: \"png\" (jpeg/webp/tiff → UNSUPPORTED)
+    - ``require_alpha``: true | false | null
+    - ``sha256``: hex digest
+    - ``min_bytes`` / ``max_bytes``
+
+    Parameters:
+    - path: Workspace-jailed artifact path
+    - expected: expectation object (see keys above)
+    - raise_on_fail: when true and ``pass`` is false → raise ``VERIFY_FAILED``
+    """
+    try:
+        jpath = _jail_path_or_raise(path, "path")
+        return verify.verify_artifact(
+            jpath,
+            expected if expected is not None else {},
+            raise_on_fail=bool(raise_on_fail),
+        )
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(exc, tool_name="verify_artifact")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

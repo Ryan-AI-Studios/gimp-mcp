@@ -289,6 +289,184 @@ def _cmd_export(args: argparse.Namespace) -> int:
     return _run_plugin_command("export_image", params, args=args, human_ok=human)
 
 
+def _jail_cli_path(path: str, label: str = "path") -> str:
+    """Workspace-jail a path for host-only verify/compare (PATH_DENIED if unset/escape)."""
+    try:
+        return str(sec.resolve_under_root(path))
+    except sec.SecurityError:
+        raise
+
+
+def _emit_host_error(
+    *,
+    code: str,
+    message: str,
+    as_json: bool,
+    data: dict[str, Any] | None = None,
+) -> int:
+    exit_n = ec.exit_code_for(code)
+    envelope = jsonio.make_envelope(
+        ok=False,
+        exit_code=exit_n,
+        code=code,
+        message=message,
+        data=data or {},
+    )
+    jsonio.emit(envelope, as_json=as_json)
+    return exit_n
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    """Host-only PNG compare — no TCP/token/plugin."""
+    import gimp_mcp_verify as verify
+
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
+    try:
+        path_a = _jail_cli_path(str(args.path_a), "path_a")
+        path_b = _jail_cli_path(str(args.path_b), "path_b")
+        diff_out = (
+            _jail_cli_path(str(args.diff_out), "diff_out")
+            if getattr(args, "diff_out", None)
+            else None
+        )
+    except sec.SecurityError as exc:
+        return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
+
+    thresholds: dict[str, Any] = {}
+    if getattr(args, "require_mutation", False):
+        thresholds["require_mutation"] = True
+    if getattr(args, "min_changed_pixels", None) is not None:
+        thresholds["min_changed_pixels"] = int(args.min_changed_pixels)
+    if getattr(args, "max_mae", None) is not None:
+        thresholds["max_mae"] = float(args.max_mae)
+    if getattr(args, "max_max_ae", None) is not None:
+        thresholds["max_max_ae"] = int(args.max_max_ae)
+    if getattr(args, "min_ssim", None) is not None:
+        thresholds["min_ssim"] = float(args.min_ssim)
+    if getattr(args, "max_changed_fraction", None) is not None:
+        thresholds["max_changed_fraction"] = float(args.max_changed_fraction)
+
+    compute_ssim: bool | str
+    if args.ssim is None:
+        compute_ssim = "auto"
+    else:
+        compute_ssim = bool(args.ssim)
+
+    try:
+        report = verify.compare_images(
+            path_a,
+            path_b,
+            thresholds=thresholds or None,
+            write_diff_path=diff_out,
+            raise_on_fail=False,
+            ignore_alpha=bool(args.ignore_alpha),
+            compute_ssim=compute_ssim,
+            change_threshold=int(args.change_threshold),
+        )
+    except sec.GimpMcpError as exc:
+        return _emit_host_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=as_json,
+            data=exc.details or {},
+        )
+    except sec.SecurityError as exc:
+        return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
+
+    if not report.get("pass", False):
+        exit_n = ec.exit_code_for(sec.CODE_VERIFY_FAILED)
+        envelope = jsonio.make_envelope(
+            ok=False,
+            exit_code=exit_n,
+            code=sec.CODE_VERIFY_FAILED,
+            message="compare thresholds failed",
+            data=report,
+        )
+        jsonio.emit(envelope, as_json=as_json)
+        return exit_n
+
+    envelope = jsonio.make_envelope(
+        ok=True,
+        exit_code=ec.EXIT_SUCCESS,
+        code=None,
+        message="compare ok",
+        data=report,
+    )
+    human = [
+        f"compare pass mae={report.get('mae')} max_ae={report.get('max_ae')} "
+        f"changed={report.get('changed_pixels')}"
+    ]
+    jsonio.emit(envelope, as_json=as_json, human_lines=human)
+    return ec.EXIT_SUCCESS
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    """Host-only artifact verify — no TCP/token/plugin."""
+    import gimp_mcp_verify as verify
+
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
+    try:
+        path = _jail_cli_path(str(args.path), "path")
+        # Spec JSON is a path under workspace rules (no out-of-root reads / exfil).
+        spec_path = _jail_cli_path(str(args.spec), "spec")
+    except sec.SecurityError as exc:
+        return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
+
+    try:
+        with open(spec_path, encoding="utf-8") as fh:
+            expected = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        return _emit_host_error(
+            code=ec.CLI_USAGE,
+            message=f"invalid --spec {spec_path!r}: {exc}",
+            as_json=as_json,
+        )
+    if not isinstance(expected, dict):
+        return _emit_host_error(
+            code=ec.CLI_USAGE,
+            message="--spec JSON must be an object",
+            as_json=as_json,
+        )
+
+    try:
+        report = verify.verify_artifact(path, expected, raise_on_fail=False)
+    except sec.GimpMcpError as exc:
+        return _emit_host_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=as_json,
+            data=exc.details or {},
+        )
+    except sec.SecurityError as exc:
+        return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
+
+    if not report.get("pass", False):
+        exit_n = ec.exit_code_for(sec.CODE_VERIFY_FAILED)
+        envelope = jsonio.make_envelope(
+            ok=False,
+            exit_code=exit_n,
+            code=sec.CODE_VERIFY_FAILED,
+            message="verify_artifact expectations failed",
+            data=report,
+        )
+        jsonio.emit(envelope, as_json=as_json)
+        return exit_n
+
+    envelope = jsonio.make_envelope(
+        ok=True,
+        exit_code=ec.EXIT_SUCCESS,
+        code=None,
+        message="verify ok",
+        data=report,
+    )
+    human = [
+        f"verify pass {report.get('path')} "
+        f"{report.get('width')}x{report.get('height')} {report.get('detected_format')}"
+    ]
+    jsonio.emit(envelope, as_json=as_json, human_lines=human)
+    return ec.EXIT_SUCCESS
+
+
 def _add_image_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--index",
@@ -318,7 +496,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gimp-agent",
         description=(
-            "Deterministic CLI sidecar for GIMP MCP (doctor, probe, save-xcf, export, exit codes)."
+            "Deterministic CLI sidecar for GIMP MCP "
+            "(doctor, probe, save-xcf, export, compare, verify, exit codes)."
         ),
     )
     # Separate dest from subcommand --json so parent True is not overwritten by
@@ -455,6 +634,77 @@ def build_parser() -> argparse.ArgumentParser:
     _add_image_selection_args(p_export)
     _add_json_arg(p_export)
     p_export.set_defaults(func=_cmd_export)
+
+    p_compare = sub.add_parser(
+        "compare",
+        help="Host-only PNG pixel compare (no plugin/TCP); exit 8 on threshold fail",
+    )
+    p_compare.add_argument("path_a", help="Workspace-jailed PNG path A")
+    p_compare.add_argument("path_b", help="Workspace-jailed PNG path B")
+    p_compare.add_argument(
+        "--diff-out",
+        default=None,
+        help="Optional grayscale max-|ΔRGB| heatmap PNG path (workspace-jailed)",
+    )
+    p_compare.add_argument(
+        "--require-mutation",
+        action="store_true",
+        default=False,
+        help="Fail when changed_pixels < min-changed-pixels",
+    )
+    p_compare.add_argument(
+        "--min-changed-pixels",
+        type=int,
+        default=None,
+        help="With --require-mutation (default min 1)",
+    )
+    p_compare.add_argument("--max-mae", type=float, default=None, help="Max mean absolute error")
+    p_compare.add_argument(
+        "--max-max-ae",
+        type=int,
+        default=None,
+        help="Max per-channel absolute error",
+    )
+    p_compare.add_argument("--min-ssim", type=float, default=None, help="Min global luminance SSIM")
+    p_compare.add_argument(
+        "--max-changed-fraction",
+        type=float,
+        default=None,
+        help="Max changed_pixels/(w*h)",
+    )
+    p_compare.add_argument(
+        "--ignore-alpha",
+        action="store_true",
+        default=False,
+        help="Compare RGB only when modes are RGB vs RGBA",
+    )
+    p_compare.add_argument(
+        "--change-threshold",
+        type=int,
+        default=1,
+        help="Per-channel abs delta to count a pixel changed (default 1)",
+    )
+    p_compare.add_argument(
+        "--ssim",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Force SSIM on/off (default: auto, off when w*h > 1e6)",
+    )
+    _add_json_arg(p_compare)
+    p_compare.set_defaults(func=_cmd_compare)
+
+    p_verify = sub.add_parser(
+        "verify",
+        help="Host-only artifact verify against JSON spec (no plugin/TCP); exit 8 on fail",
+    )
+    p_verify.add_argument("path", help="Workspace-jailed artifact path")
+    p_verify.add_argument(
+        "--spec",
+        required=True,
+        help="Path to JSON expectation object (format/dims/alpha/sha256/bytes)",
+    )
+    _add_json_arg(p_verify)
+    p_verify.set_defaults(func=_cmd_verify)
 
     return parser
 

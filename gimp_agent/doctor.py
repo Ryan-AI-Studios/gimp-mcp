@@ -269,6 +269,24 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
         )
     )
 
+    # 7b. ImageMagick magick or legacy compare (info) — optional pixel companion
+    magick = shutil.which("magick")
+    compare_bin = shutil.which("compare") if not magick else None
+    im_path = magick or compare_bin
+    data["imagemagick"] = im_path
+    data["imagemagick_backend"] = "magick" if magick else ("compare" if compare_bin else None)
+    checks.append(
+        CheckResult(
+            name="imagemagick",
+            severity="info",
+            status="pass" if im_path else "info",
+            message=(
+                im_path if im_path else "magick/compare not on PATH (optional AE/SSIM companion)"
+            ),
+            detail={"backend": data["imagemagick_backend"]},
+        )
+    )
+
     # 8. python / tool pin notes (info)
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     pin_msg = (

@@ -114,6 +114,7 @@ def test_expected_plugin_files_completeness() -> None:
     assert len(pathmod.EXPECTED_PLUGIN_FILES) == 8
     assert "gimp_mcp_state.py" not in pathmod.EXPECTED_PLUGIN_FILES
     assert "gimp_mcp_surface.py" not in pathmod.EXPECTED_PLUGIN_FILES
+    assert "gimp_mcp_verify.py" not in pathmod.EXPECTED_PLUGIN_FILES
 
 
 def test_exit_output_collision_is_11() -> None:
@@ -682,3 +683,126 @@ def test_subprocess_gimp_agent_codes_json() -> None:
     body = json.loads(completed.stdout)
     assert body["ok"] is True
     assert "code_to_exit" in body["data"]
+
+
+# ---------------------------------------------------------------------------
+# compare / verify host-only (track 0014 — no TCP)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_compare_identical_no_tcp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tests.test_export_alpha import build_minimal_png
+
+    monkeypatch.setenv(sec.ENV_WORKSPACE, str(tmp_path))
+    data = build_minimal_png(width=2, height=2, color_type=2)
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.png"
+    a.write_bytes(data)
+    b.write_bytes(data)
+
+    # Ensure no plugin path is used
+    def _should_not_call(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("compare must not call plugin TCP")
+
+    monkeypatch.setattr(probe_mod, "send_authenticated_command", _should_not_call)
+
+    code = main(["compare", str(a), str(b), "--json"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["data"]["mae"] == 0.0
+    assert body["data"]["pass"] is True
+
+
+def test_cli_compare_require_mutation_exit_8(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tests.test_export_alpha import build_minimal_png
+
+    monkeypatch.setenv(sec.ENV_WORKSPACE, str(tmp_path))
+    p = tmp_path / "x.png"
+    p.write_bytes(build_minimal_png(width=2, height=2, color_type=2))
+    code = main(["compare", str(p), str(p), "--require-mutation", "--json"])
+    assert code == 8
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False
+    assert body["code"] == sec.CODE_VERIFY_FAILED
+    assert body["exit_code"] == 8
+
+
+def test_cli_verify_png_spec(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tests.test_export_alpha import build_minimal_png
+
+    monkeypatch.setenv(sec.ENV_WORKSPACE, str(tmp_path))
+    p = tmp_path / "out.png"
+    p.write_bytes(build_minimal_png(width=4, height=3, color_type=6))
+    spec = tmp_path / "spec.json"
+    spec.write_text(
+        json.dumps({"format": "png", "width": 4, "height": 3, "require_alpha": True}),
+        encoding="utf-8",
+    )
+    code = main(["verify", str(p), "--spec", str(spec), "--json"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["data"]["pass"] is True
+
+
+def test_cli_verify_spec_outside_workspace_path_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--spec must be workspace-jailed (Codex P1: no out-of-root exfil)."""
+    from tests.test_export_alpha import build_minimal_png
+
+    ws = tmp_path / "ws"
+    outside = tmp_path / "outside"
+    ws.mkdir()
+    outside.mkdir()
+    monkeypatch.setenv(sec.ENV_WORKSPACE, str(ws))
+    p = ws / "out.png"
+    p.write_bytes(build_minimal_png(width=2, height=2, color_type=2))
+    secret = outside / "secret.json"
+    secret.write_text(json.dumps({"format": "png", "secret": "exfil"}), encoding="utf-8")
+    code = main(["verify", str(p), "--spec", str(secret), "--json"])
+    assert code == 6
+    out = capsys.readouterr().out
+    body = json.loads(out)
+    assert body["code"] == sec.CODE_PATH_DENIED
+    assert "exfil" not in out
+
+
+def test_cli_compare_no_workspace_path_denied(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv(sec.ENV_WORKSPACE, raising=False)
+    p = tmp_path / "a.png"
+    p.write_bytes(b"x")
+    code = main(["compare", str(p), str(p), "--json"])
+    assert code == 6
+    body = json.loads(capsys.readouterr().out)
+    assert body["code"] == sec.CODE_PATH_DENIED
+
+
+def test_doctor_lists_imagemagick_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_doctor_incomplete_plugin(tmp_path, monkeypatch)
+    report = run_doctor(strict=False)
+    names = [c.name for c in report.checks]
+    assert "imagemagick" in names
+    assert "exiftool" in names
