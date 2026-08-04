@@ -104,11 +104,11 @@ minting. Track IDs are creation order, not execution order.
   → 0012 DeterministicCliSidecar — Completed
   → 0013 AtomicSaveExport — Completed
   → 0014 PixelVerificationProtocol — Completed
-  → 0015 RecipeLibrary — In progress (feature/0015-recipe-library)
+  → 0015 RecipeLibrary — Completed
   → 0016 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0014 Completed.** **0015** in progress (HL **22**, recipes).
+**28 tracks** (0001–0028). **0001–0015 Completed.** Next Ready/placeholder: **0016** NdeFilterTools.
 Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**.
 EXIF **0008**. Policy **0009**. HL surface **0010** → **22** with **0015**. Errors **0011**.
 CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**.
@@ -293,7 +293,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0015-RecipeLibrary** — In progress on `feature/0015-recipe-library`; prior **0014 Completed** PR #20 / main@00cc49a |
+| Active focus | **0016-NdeFilterTools** — Proposed (placeholder); prior **0015 Completed** PR #22 / main@51adaeb |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
@@ -396,7 +396,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **probe:** token + JSON `auth` + `get_gimp_info`; require `status=="success"`; no `gimp_mcp_server` import.
 - **Packaging:** `packages = ["gimp_agent"]` explicit + py-modules; ruff/basedpyright include.
 - **Codex final:** **PASS** (after P1/P2 fixes: global `--json`, probe success, version rc, env JSON, NaN JSON).
-- **Residuals:** live probe matrix (ops); incomplete APPDATA install → **0018**; batch/recipes → **0019/0015**; atomic verbs → **0013 Completed**.
+- **Residuals:** live probe matrix (ops); incomplete APPDATA install → **0018**; headless batch → **0019**; recipes → **0015 Completed**; atomic verbs → **0013 Completed**.
 - **Next:** **0013** AtomicSaveExport.
 
 ### 0013 completion notes (planners / implementers)
@@ -429,22 +429,23 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Caps:** `pixel_verification: true`; **`alpha_snapshot` stays false** (live renderer only).
 - **Doctor:** optional `magick` else `compare` info check.
 - **Codex final:** **PASS WITH DEFERRED P3** (hand-authored Paeth fixture residual; mitigated by corner tests).
-- **Residuals:** windowed SSIM; 16-bit/interlaced/palette; live `render_alpha`; recipes **0015 plan**; skills **0020**.
-- **Next:** **0015 Ready** — RecipeLibrary (implement when asked).
+- **Residuals:** windowed SSIM; 16-bit/interlaced/palette; live `render_alpha`; recipes **0015 Completed**; skills **0020**.
+- **Next:** **0015 Completed** (PR #22). Next product track **0016**.
 
-### 0015 implementation notes (in progress on `feature/0015-recipe-library`)
+### 0015 Completed (PR #22 / main@51adaeb)
 
-- **Status:** Implementing — versioned allowlisted recipe library on branch
-  `feature/0015-recipe-library` (ledger TX FEATURE).
-- **Module:** `gimp_mcp_recipes.py` (py-modules + isort + basedpyright; **not** EXPECTED ship).
-- **Recipes:** package-data `gimp_agent/recipes/*.json` (≥4 + optional `exif-strip`).
-- **MCP HL 22:** `list_recipes` + `apply_recipe`; capability `recipe_library: true`;
-  `batch_interpreter` remains **false**.
-- **CLI:** `gimp-agent recipes` / `run` / `batch` (append inputs, continue-on-fail).
+- **Status:** **Completed** — Codex final **PASS WITH DEFERRED P3**.
+- **Module:** `gimp_mcp_recipes.py` (py-modules + package-data; **not** EXPECTED ship).
+- **Recipes:** `gimp_agent/recipes/*.json` — transparent-png, exif-normalize, web-export,
+  compare-artifacts, exif-strip (5).
+- **MCP HL 22:** `list_recipes` + `apply_recipe`; `recipe_library: true`;
+  `batch_interpreter` remains **false** until **0019**.
+- **CLI:** `gimp-agent recipes` / `run` / `batch` (append inputs, continue-on-fail;
+  bad params exit 2; partial exit 10).
 - **Locked:** whole-value `$name`; allowlist ≠ MCP advanced tags; `created_paths` rollback;
-  batch_safe + plugin down → UNSUPPORTED.
-- **OOS:** BatchProcedure **0019**; NDE **0016**; ML; MCP `batch_run` not HL.
-- **Next after 0015:** **0016** NdeFilterTools (or next Ready track per conductor).
+  rebind `$output_path` after collision=version; batch_safe + plugin down → UNSUPPORTED.
+- **Residuals:** half-set scale skip; live GIMP matrix; headless batch_safe → **0019**.
+- **Next:** **0016-NdeFilterTools** (placeholder — needs full plan) or next Ready track.
 
 ---
 
@@ -452,6 +453,7 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-04 | **0015 Completed:** recipe library, HL 22, CLI recipes/run/batch; PR #22 / main@51adaeb; Codex PASS WITH DEFERRED P3; next=0016 |
 | 2026-08-04 | **0015 in progress:** recipe registry/runner, HL 22, CLI recipes/run/batch, package-data JSON on feature branch |
 | 2026-08-04 | Folded AI-review into **0015**: whole-value `$name`; package-data recipes; created_paths; allowlist≠surface; batch continue-on-fail |
 | 2026-08-04 | Full plan **0015** RecipeLibrary: JSON recipes, allowlist runner, HL 22, CLI run/batch; Ready — not started |
