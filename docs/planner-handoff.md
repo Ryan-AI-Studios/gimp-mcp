@@ -112,21 +112,34 @@ minting. Track IDs are creation order, not execution order.
   → 0020 Agent Skill Packaging — Completed
   → 0021 Codex/Grok adapters — Completed
   → 0022 E2E/CI — Completed
-  → 0023 … through 0028 Final product polish (v1)
+  → 0023 Performance snapshot budget — Implemented (product defaults landed)
+  → 0024 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0022 Completed.** Next: **0023** PerformanceSnapshotBudget
-(placeholder — full plan pass first). Orientation SoT is
+**28 tracks** (0001–0028). **0001–0022 Completed.** **0023** product behavior
+landed on this branch (conductor registry Completed is orchestrator closeout).
+Next implement focus: **0024** DocumentationProductPolish. Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
-Pixel verify **0014**. Recipes **0015**. NDE **0016**. Undo groups **0017**. Install SoT
+Pixel verify **0014** (decoded budget **50M** trusted / **25M** untrusted — do not
+raise to design 250M). Recipes **0015**. NDE **0016**. Undo groups **0017**. Install SoT
 **`uv run gimp-agent install`** (**0018**, EXPECTED **10**). Headless batch **0019**
 (constrained BatchProcedure). Runtime Agent Skills package **`skills/`** (**0020**).
 Client adapters + dual image delivery **0021**. Fixture corpus + offline E2E + CI policy
 **0022** (`tests/fixtures/`, `docs/ci-and-testing.md`; headless GIMP on GA is
-**document-only**; self-hosted Windows residual). Authoritative table:
-`conductor/conductor.md`.
+**document-only**; self-hosted Windows residual).
+
+**0023 product facts (landed; not plan-only):** Default max edge **1024** (HL
+`render_visible_composite` + advanced `get_image_bitmap` shared path;
+`get_state_snapshot` `max_size` default **1024**). Hard max **4096**, region source
+edge **8192** (crop cap; output still hard-capped), host TCP timeout **60s**
+(`GIMP_MCP_COMMAND_TIMEOUT_S`, clamp **5–600**). `TimeoutError` → `CODE_TIMEOUT`
+via **connect + recv** (reconnect-per-command re-enters `connect()` with fresh
+timeout). Soft encoded-byte ImageContent guard still **deferred**. Verify budgets
+stay **50M/25M**; mapping padding **0**. Residuals: H2 soft byte guard, live Windows
+bench numbers, plugin cooperative GEGL cancel. No mcp/fastmcp major bump.
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -315,7 +328,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~e7f534f post-0022) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest (fixtures + offline E2E); ledgerful verify |
-| Active focus | **0023-PerformanceSnapshotBudget** (placeholder — full plan pass first); prior **0022 Completed** fixtures + offline E2E + CI policy |
+| Active focus | **0023 implemented** (product defaults); next **0024-DocumentationProductPolish**; prior **0022 Completed** fixtures + offline E2E + CI policy |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
@@ -330,7 +343,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Docs:** `docs/ci-and-testing.md` (markers, fixtures, branch-protection checklist text, operator live-matrix index, checkout@v7/`pull_request_target` note, CRLF SoT); README one-line pointer.
 - **Cross-model:** Claude Sonnet **PASS** final gate after P2 Linux path-traversal fix (Codex rate-limited 2026-08-04).
 - **Residuals:** branch-protection UI apply (ops); self-hosted Windows runner; Paeth shared predictor residual → deferred.md.
-- **Neighbor walls:** perf **0023** (placeholder); docs polish **0024**; eval corpus **0025**.
+- **Neighbor walls:** perf **0023 implemented** (defaults/timeouts); docs polish **0024**; eval corpus **0025**.
 - **PR/SHA:** PR #35 / main@e7f534f
 
 ### 0021 Completed — CodexGrokAdapters
@@ -341,7 +354,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Tests:** `tests/test_adapters.py` + dual-delivery snapshot coverage.
 - **Cross-model:** Claude Sonnet 5/high **PASS** final gate (Codex rate-limited 2026-08-04); internal + Claude P2/P3 fixed before final gate.
 - **Residuals:** prune CLI verb; marketplace plugin; age prune; WSL bridge; Grok hooks → deferred.md.
-- **Neighbor walls:** E2E/CI **0022 Completed**; perf **0023**; docs polish **0024**.
+- **Neighbor walls:** E2E/CI **0022 Completed**; perf **0023 implemented**; docs polish **0024**.
 - **PR/SHA:** PR #33 / main@3d9e5b4
 
 ### 0020 Completed — AgentSkillPackaging
@@ -421,7 +434,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Hygiene:** `get_image_metadata(image_index)` three coordinated edits (server + dispatcher + plugin).
 - **Guards:** summary_only count + `_iter_layers_recursive` also depth/visited (Codex P1).
 - **OOS still:** CLI orient (**0012**). EXIF normalize → **0008 Ready plan**. Handles/STALE → **0007 Completed**.
-- Residuals: live GIMP matrix (ops); large manifest size → **0023**.
+- Residuals: live GIMP matrix (ops); large manifest size → **0023** (budget/summary_only landed; soft byte guard still deferred).
 - Codex final: **PASS WITH DEFERRED P3** (live matrix).
 
 ### 0007 completion notes (planners)

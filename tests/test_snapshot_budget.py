@@ -348,3 +348,37 @@ def test_timeout_error_maps_to_code_timeout() -> None:
     assert "timeout_s" in details
     assert isinstance(details["timeout_s"], (int, float))
     assert parsed["error"]["retryable"] is True
+
+
+def test_connect_timeout_error_maps_to_code_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R1-F1/F5: connect-path TimeoutError stays TimeoutError → CODE_TIMEOUT."""
+    import gimp_mcp_server as srv
+
+    mock_sock = MagicMock()
+    mock_sock.connect.side_effect = TimeoutError("connect timed out")
+    monkeypatch.setattr(srv.socket, "socket", MagicMock(return_value=mock_sock))
+    monkeypatch.setattr(srv.sec, "write_audit_event", lambda *a, **k: None)
+
+    conn = srv.GimpConnection(host="127.0.0.1", port=9876)
+    with pytest.raises(TimeoutError) as te:
+        conn.connect()
+    assert "Timed out connecting" in str(te.value)
+    assert "after" in str(te.value)
+    assert conn.sock is None
+    mock_sock.close.assert_called()
+
+    with pytest.raises(ToolError) as ei:
+        srv.raise_from_exception(
+            te.value,
+            request_id="req_" + "c" * 32,
+            tool_name="render_visible_composite",
+        )
+    parsed = sec.parse_tool_error_text(str(ei.value))
+    assert parsed is not None
+    assert parsed["error"]["code"] == sec.CODE_TIMEOUT
+    details = parsed["error"].get("details") or {}
+    assert "timeout_s" in details
+    assert isinstance(details["timeout_s"], (int, float))
+    assert parsed["error"]["retryable"] is True

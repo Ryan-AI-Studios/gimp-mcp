@@ -253,13 +253,30 @@ class GimpConnection:
             self.sock.settimeout(snap.command_timeout_s())
             self.sock.connect((self.host, self.port))
             logger.info(f"Connected to GIMP at {self.host}:{self.port}")
+        except TimeoutError as e:
+            # Do not wrap as ConnectionError — raise_from_exception maps to CODE_TIMEOUT.
+            self._discard_sock()
+            timeout_s = snap.command_timeout_s()
+            logger.error("Timeout connecting to GIMP: %s", e)
+            raise TimeoutError(
+                f"Timed out connecting to GIMP at {self.host}:{self.port} after {timeout_s}s"
+            ) from e
         except Exception as e:
-            self.sock = None
+            self._discard_sock()
             logger.error(f"Failed to connect: {e}")
             raise ConnectionError(
                 f"Could not connect to GIMP at {self.host}:{self.port}. "
                 "Ensure the MCP Server plugin is running (Tools > Start MCP Server)."
-            )
+            ) from e
+
+    def _discard_sock(self) -> None:
+        """Close a partially created socket and clear the handle."""
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
 
     def disconnect(self):
         if self.sock:
