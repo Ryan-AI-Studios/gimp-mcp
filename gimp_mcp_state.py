@@ -212,6 +212,7 @@ def default_capabilities() -> dict[str, bool]:
         "high_level_mcp_surface": True,  # 0010
         "structured_errors": True,  # 0011
         "pixel_verification": True,  # 0014 host PNG compare/verify (not _CAPABILITY_REQUIRED)
+        "recipe_library": True,  # 0015 allowlisted recipes (not _CAPABILITY_REQUIRED)
     }
 
 

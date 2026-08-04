@@ -629,7 +629,7 @@ def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
     return FastMCP(
         "GimpMCP",
         instructions=(
-            "GIMP MCP — default 20 high-level tools "
+            "GIMP MCP — default 22 high-level tools "
             "(set GIMP_MCP_ADVANCED_TOOLS=1 for full ~90-tool advanced surface)"
         ),
         include_tags=surface.include_tags_for_mode(mode),
@@ -2020,6 +2020,91 @@ def verify_artifact(
         if sec.debug_enabled():
             traceback.print_exc()
         raise_from_exception(exc, tool_name="verify_artifact")
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
+@with_structured_error()
+def list_recipes(ctx: Context) -> dict:
+    """List shipped versioned recipes (id, version, title, routing flags).
+
+    Host-only: loads package-data JSON under ``gimp_agent/recipes/``. Does not
+    call GIMP. Returns exactly the fields agents need to choose a recipe — no
+    steps/parameters in the list payload.
+
+    Returns::
+
+        {"recipes": [{"id", "version", "title", "batch_safe",
+                      "requires_open_session", "requires_gimp"}, ...]}
+    """
+    try:
+        import gimp_mcp_recipes as recipes
+
+        return {"recipes": recipes.list_recipes()}
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(exc, tool_name="list_recipes")
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
+def apply_recipe(
+    ctx: Context,
+    recipe_id: str,
+    version: str | None = None,
+    params: dict | None = None,
+    input_path: str | None = None,
+    output_path: str | None = None,
+    handle: dict | None = None,
+) -> dict:
+    """Run a versioned allowlisted recipe; return a mutation log.
+
+    Recipe step ops call the plug-in TCP bridge / host verify modules **directly**
+    — they are **not** filtered by ``GIMP_MCP_ADVANCED_TOOLS`` (e.g. ``scale_image``
+    inside ``web-export`` works with advanced tools unset).
+
+    Parameters:
+    - recipe_id: Recipe id (e.g. ``transparent-png``, ``compare-artifacts``)
+    - version: Optional semver; default = latest
+    - params: Optional parameter object (recipe-specific keys)
+    - input_path: Workspace-jailed input (mutually exclusive with handle)
+    - output_path: Workspace-jailed output path
+    - handle: Open image handle for ``requires_open_session`` recipes
+
+    Returns mutation log: ``ok``, ``recipe_id``, ``version``, ``backend``
+    (``session``|``host``), ``steps``, ``artifacts``, ``created_paths``.
+
+    Errors: unknown id → UNSUPPORTED; bad params / both handle+input → structured
+    policy error; verification fail → VERIFY_FAILED.
+    """
+    try:
+        import gimp_mcp_recipes as recipes
+
+        # Jail paths on the host before the runner (runner also jails).
+        j_input = _jail_path_or_raise(input_path, "input_path") if input_path else None
+        j_output = _jail_path_or_raise(output_path, "output_path") if output_path else None
+
+        def _session_send(command_type: str, payload: dict) -> dict:
+            conn = get_gimp_connection()
+            return conn.send_command(command_type, payload)
+
+        return recipes.run_recipe(
+            recipe_id,
+            version=version,
+            params=params,
+            input_path=j_input,
+            output_path=j_output,
+            handle=handle,
+            session_send=_session_send,
+        )
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
+        raise
+    except Exception as exc:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise_from_exception(exc, tool_name="apply_recipe")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

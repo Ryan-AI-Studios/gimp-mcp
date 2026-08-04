@@ -1,0 +1,19 @@
+{
+  "id": "exif-strip",
+  "version": "1.0.0",
+  "title": "Strip EXIF with ExifTool",
+  "description": "Host-only metadata strip via exiftool -overwrite_original_in_place -all= (missing binary → UNSUPPORTED).",
+  "batch_safe": true,
+  "requires_open_session": false,
+  "requires_gimp": false,
+  "parameters": {
+    "path": { "type": "path", "required": true }
+  },
+  "steps": [
+    {
+      "op": "exiftool_strip",
+      "with": { "path": "$path" }
+    }
+  ],
+  "rollback": { "delete_outputs_on_fail": false }
+}
