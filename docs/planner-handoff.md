@@ -105,15 +105,19 @@ minting. Track IDs are creation order, not execution order.
   → 0013 AtomicSaveExport — Completed
   → 0014 PixelVerificationProtocol — Completed
   → 0015 RecipeLibrary — Completed
-  → 0016 … through 0028 Final product polish (v1)
+  → 0016 NDE — Completed
+  → 0017 undo groups — Completed
+  → 0018 install/doctor — Completed
+  → 0019 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0017 Completed.** Next: **0018** PluginInstallAndDoctor
+**28 tracks** (0001–0028). **0001–0018 Completed.** Next: **0019** BatchProcedureRecipes
 (placeholder). Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**.
 Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010** → **28** with **0017**.
 Errors **0011** + honest `rollback_available` when open agent undo TX (**0017**).
 CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**. NDE **0016**.
-Undo groups **0017**. Authoritative table: `conductor/conductor.md`.
+Undo groups **0017**. Install SoT **`uv run gimp-agent install`** (**0018**, EXPECTED **10**).
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -295,11 +299,23 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~8acea07 post-0017) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~5b9d50a post-0018) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0018-PluginInstallAndDoctor** (placeholder); prior **0017 Completed** PR #25 / main@8acea07 |
+| Active focus | **0019-BatchProcedureRecipes** (placeholder); prior **0018 Completed** PR #27 / main@5b9d50a |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
+| Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade |
+
+### 0018 Completed (PR #27 / main@5b9d50a)
+
+- **Shipped:** `gimp_agent/install.py` + CLI `gimp-agent install` / `uninstall`; thin `scripts/install-plugin.ps1|.sh` (`$LASTEXITCODE`); doctor `plugin_files` present/missing + `plugin_stale` warn + `tool_pins` versions.
+- **SoT:** `paths.EXPECTED_PLUGIN_FILES` (len **10**); source: `--source` → `GIMP_MCP_SOURCE` → cwd → package parents; target = highest GIMP `3.*` `plug-ins/gimp-mcp-plugin/` (exact `--target`).
+- **Semantics:** backup `.bak.YYYYMMDD-HHMMSS` default; dry-run; per-file OSError → `failed[]` continue; mkdir OSError → exit 3; uninstall requires `--yes`; POSIX chmod 0o755 entrypoint; never host-only modules.
+- **Docs:** README primary install + bak note; CLAUDE H1 (no four-file rot) + real dev commands; protocol one-liner; doc guard test.
+- **Live:** install 10/10 + `doctor --strict` ok (restart GIMP for plugin load).
+- **Neighbor walls:** next **0019** BatchProcedure; ops live matrices after GIMP restart; `--prune-backups` residual; MS Store OOS.
+- **Pins:** hold mcp/fastmcp majors.
+- **Codex final:** PASS WITH DEFERRED P3 (R1 FAIL mkdir envelope → fix → R2 PASS).
 
 ### 0017 Completed (PR #25 / main@8acea07)
 
@@ -308,10 +324,10 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Envelope path:** force-false removed; plugin SoT stamps mid-TX errors; **`raise_from_plugin_result`** forwards top-level kwargs (no stale host hint on TCP); host open-TX hint for pre-TCP only; clear hint on close_image.
 - **Codes:** `TX_MISMATCH` / `TX_NOT_FOUND` / `TX_DEPTH` → CLI exit **6**.
 - **Rollback:** end + `image.undo` (False or exception = fail + stack pop) + flush + gen bump; docstring **MUST re-orient**; mutator balance assumption (no bulk rewrite).
-- **Neighbor walls:** install 10th file **0018**; recipe auto-TX later; checkpoints **0009** for long work.
+- **Neighbor walls:** install 10th file → **0018 Completed** (`gimp-agent install`); recipe auto-TX later; checkpoints **0009** for long work.
 - **Pins:** hold mcp/fastmcp majors.
 - **Codex final:** PASS WITH DEFERRED P3 (live matrix; `_last_cmd_params` thread-local residual).
-- **Offline waiver:** live operator matrix deferred to ops after APPDATA 10-file install (**0018**).
+- **Offline waiver:** live operator matrix deferred to ops after APPDATA 10-file install (**0018 Completed** — reinstall done; restart GIMP then matrix).
 
 ### 0016 Completed (PR #24 / main@6bb8c9f)
 
