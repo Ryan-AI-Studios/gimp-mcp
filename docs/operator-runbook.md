@@ -7,7 +7,7 @@ gimp-mcp product on a workstation. For architecture context see
 
 ---
 
-## Start order {#start-order}
+## Start order
 
 Numbered sequence for a working interactive MCP session:
 

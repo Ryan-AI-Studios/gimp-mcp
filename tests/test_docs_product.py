@@ -102,3 +102,30 @@ def test_readme_future_enhancements_no_shipped_bullets() -> None:
 def test_run_tests_py_retained() -> None:
     """Product policy: demote in README, do not delete the live harness."""
     assert (ROOT / "run_tests.py").is_file()
+
+
+def test_security_tmp_and_timeout_residuals() -> None:
+    """SECURITY: workspace .gimp-mcp-tmp primary; distinct TIMEOUT code."""
+    text = _read("SECURITY.md")
+    assert ".gimp-mcp-tmp" in text
+    assert "TIMEOUT" in text
+    # Must not present system temp as the primary residual path.
+    assert "system temp (not workspace)" not in text.lower()
+
+
+def test_operator_runbook_start_order_gfm_anchor() -> None:
+    """GFM does not honor Pandoc {#id}; keep auto-slug or HTML id."""
+    text = _read("docs/operator-runbook.md")
+    assert re.search(r"(?m)^##\s+Start order\s*\{#start-order\}", text) is None
+    plain = re.search(r"(?m)^##\s+Start order\s*$", text)
+    html_id = 'id="start-order"' in text
+    assert plain or html_id, (
+        'operator-runbook must use ## Start order (GFM slug) or id="start-order"'
+    )
+
+
+def test_architecture_no_track_ids() -> None:
+    """Product architecture doc must not cite conductor track IDs 0000-0029."""
+    text = _read("docs/architecture.md")
+    match = re.search(r"\b00[0-2][0-9]\b", text)
+    assert match is None, f"architecture.md must not contain track id {match.group(0)!r}"
