@@ -721,7 +721,7 @@ def test_cli_compare_identical_no_tcp(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from tests.test_export_alpha import build_minimal_png
+    from tests._png_builder import build_minimal_png
 
     monkeypatch.setenv(sec.ENV_WORKSPACE, str(tmp_path))
     data = build_minimal_png(width=2, height=2, color_type=2)
@@ -749,7 +749,7 @@ def test_cli_compare_require_mutation_exit_8(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from tests.test_export_alpha import build_minimal_png
+    from tests._png_builder import build_minimal_png
 
     monkeypatch.setenv(sec.ENV_WORKSPACE, str(tmp_path))
     p = tmp_path / "x.png"
@@ -767,7 +767,7 @@ def test_cli_verify_png_spec(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from tests.test_export_alpha import build_minimal_png
+    from tests._png_builder import build_minimal_png
 
     monkeypatch.setenv(sec.ENV_WORKSPACE, str(tmp_path))
     p = tmp_path / "out.png"
@@ -790,7 +790,7 @@ def test_cli_verify_spec_outside_workspace_path_denied(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """--spec must be workspace-jailed (Codex P1: no out-of-root exfil)."""
-    from tests.test_export_alpha import build_minimal_png
+    from tests._png_builder import build_minimal_png
 
     ws = tmp_path / "ws"
     outside = tmp_path / "outside"
