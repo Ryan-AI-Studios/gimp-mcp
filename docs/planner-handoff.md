@@ -108,12 +108,12 @@ minting. Track IDs are creation order, not execution order.
   → 0016 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0016 Completed.** **0017** UndoGroupTransactions **implemented**
-on branch (orchestrator marks Completed after review). Orientation SoT is `orient_workspace`.
-Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**. Policy **0009**. HL surface
-**0010** → **28** with **0017**. Errors **0011** + honest `rollback_available` (**0017**).
+**28 tracks** (0001–0028). **0001–0017 Completed.** Next: **0018** PluginInstallAndDoctor
+(placeholder). Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**.
+Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010** → **28** with **0017**.
+Errors **0011** + honest `rollback_available` when open agent undo TX (**0017**).
 CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**. NDE **0016**.
-Authoritative table: `conductor/conductor.md`.
+Undo groups **0017**. Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -295,21 +295,23 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~33c9503 post-0016) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0017 merge — see PR) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0017-UndoGroupTransactions** — **implemented** (orchestrator Completes after review); prior **0016 Completed** PR #24 / main@6bb8c9f |
+| Active focus | **0018-PluginInstallAndDoctor** (placeholder); prior **0017 Completed** |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
-### 0017 implementation notes (orchestrator Completes after review)
+### 0017 Completed
 
 - **Shipped:** `gimp_mcp_tx.py` (**10th** EXPECTED; pure mint/validate/TxStack/reap/recent + packaging triad); `undo_group_transactions: true`; HL **28** (`undo_group_begin` / `end` / `rollback`) + advanced `undo_group_status` / `undo_group_force_close`.
-- **Plugin:** per-image `_agent_tx_stack` + recent cap 10; begin/end/rollback/status/force_close; wall-clock reap (300s default, env `GIMP_MCP_UNDO_TX_TIMEOUT_S`); depth max 8 → `TX_DEPTH`; empty/mismatch end → `TX_MISMATCH`; mid force_close closes id+above; **`_force_end_open_tx` before `image.delete`**; pop TX in `_drop_image_generation`.
-- **Envelope path:** force-false removed; plugin `make_error` flags when open TX; **`raise_from_plugin_result`** forwards top-level `rollback_available`/`transaction_id` as **tool_fail kwargs**; host open-TX hint from successful begin/end/rollback.
+- **Plugin:** per-image `_agent_tx_stack` + recent cap 10; begin/end/rollback/status/force_close; wall-clock reap (300s default, env `GIMP_MCP_UNDO_TX_TIMEOUT_S`); depth max 8 → `TX_DEPTH`; empty/mismatch end → `TX_MISMATCH`; mid force_close closes id+above; **`_force_end_open_tx` before `image.delete`**; pop TX in `_drop_image_generation`; send-path error enrich stamps `rollback_available` when open TX.
+- **Envelope path:** force-false removed; plugin SoT stamps mid-TX errors; **`raise_from_plugin_result`** forwards top-level kwargs (no stale host hint on TCP); host open-TX hint for pre-TCP only; clear hint on close_image.
 - **Codes:** `TX_MISMATCH` / `TX_NOT_FOUND` / `TX_DEPTH` → CLI exit **6**.
-- **Rollback:** end + `image.undo` + flush + gen bump; docstring **MUST re-orient**; mutator balance assumption (no bulk rewrite).
-- **Neighbor walls:** install 10th file **0018**; recipe auto-TX later; checkpoints **0009** for long work; live operator matrix waivable offline.
+- **Rollback:** end + `image.undo` (False or exception = fail + stack pop) + flush + gen bump; docstring **MUST re-orient**; mutator balance assumption (no bulk rewrite).
+- **Neighbor walls:** install 10th file **0018**; recipe auto-TX later; checkpoints **0009** for long work.
 - **Pins:** hold mcp/fastmcp majors.
+- **Codex final:** PASS WITH DEFERRED P3 (live matrix; `_last_cmd_params` thread-local residual).
+- **Offline waiver:** live operator matrix deferred to ops after APPDATA 10-file install (**0018**).
 
 ### 0016 Completed (PR #24 / main@6bb8c9f)
 
