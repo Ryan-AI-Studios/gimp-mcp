@@ -275,7 +275,19 @@ def install_plugin(
             restart_required=False,
         )
 
-    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return _fail_report(
+            message=(
+                f"Cannot create plug-in target directory {target_dir}: {exc}. "
+                "If a file is locked, fully quit GIMP and re-run install."
+            ),
+            source_dir=str(source_dir),
+            target_dir=str(target_dir),
+            dry_run=False,
+        )
+
     suffix = backup_suffix()
     copied: list[str] = []
     failed: list[dict[str, str]] = []

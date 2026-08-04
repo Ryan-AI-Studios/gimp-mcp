@@ -230,6 +230,30 @@ def test_never_copies_host_only(tmp_path: Path) -> None:
     assert set(report.copied) == set(pathmod.EXPECTED_PLUGIN_FILES)
 
 
+def test_target_mkdir_failure_returns_envelope(tmp_path: Path) -> None:
+    """Target path that is an existing file cannot mkdir → PLUGIN_NOT_FOUND, no traceback."""
+    src = _write_complete_source(tmp_path / "src")
+    blocking_file = tmp_path / "not-a-dir"
+    blocking_file.write_text("block\n", encoding="utf-8")
+    report = install_mod.install_plugin(source=src, target=blocking_file)
+    assert report.ok is False
+    assert report.code == ec.PLUGIN_NOT_FOUND
+    assert "Cannot create" in report.message or "target" in report.message.lower()
+    assert report.copied == []
+    # CLI must also emit envelope exit 3 (not uncaught)
+    code = main(
+        [
+            "install",
+            "--source",
+            str(src),
+            "--target",
+            str(blocking_file),
+            "--json",
+        ]
+    )
+    assert code == 3
+
+
 def test_extra_files_in_target_left_untouched(tmp_path: Path) -> None:
     src = _write_complete_source(tmp_path / "src")
     target = tmp_path / "plug-ins" / "gimp-mcp-plugin"
