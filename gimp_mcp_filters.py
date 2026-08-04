@@ -20,6 +20,7 @@ from typing import Any
 
 # Product codes as strings so this module stays free of security import.
 CODE_UNSUPPORTED = "UNSUPPORTED"
+CODE_INTERNAL = "INTERNAL"
 
 # ---------------------------------------------------------------------------
 # Allowlist (v1) — curated ops only
@@ -219,6 +220,70 @@ def check_runtime_probe(
             "details": {"operation": op, "reason": "operation_get_available"},
         }
     return {"ok": True, "probed": True, "operation": op}
+
+
+# Markers that indicate DrawableFilter.new failed because the op is unavailable
+# (map to UNSUPPORTED). Other failures stay INTERNAL for the caller.
+_NEW_UNAVAILABLE_MARKERS: tuple[str, ...] = (
+    "unavailable",
+    "unknown operation",
+    "unknown op",
+    "not available",
+    "no such operation",
+    "invalid operation",
+    "unsupported operation",
+    "returned none",
+    "could not create filter",
+    "failed to create filter",
+    "operation does not exist",
+)
+
+
+def classify_drawable_filter_new_failure(
+    operation: str,
+    *,
+    filtr_is_none: bool = False,
+    exception_message: str | None = None,
+) -> dict[str, Any]:
+    """Map ``DrawableFilter.new`` None/raise to a product error decision (pure).
+
+    Returns ``{"ok": False, "code": ..., "message": ..., "details": ...}``.
+
+    - ``filtr_is_none`` or clearly unavailable/unknown-op messages → ``UNSUPPORTED``
+    - other exception messages → ``INTERNAL`` (plugin may set ``state_may_have_changed``
+      after a later mutation; new() itself is pre-append)
+    """
+    op = operation.strip() if isinstance(operation, str) else str(operation or "")
+    base_details: dict[str, Any] = {"operation": op, "reason": "drawable_filter_new"}
+
+    if filtr_is_none:
+        return {
+            "ok": False,
+            "code": CODE_UNSUPPORTED,
+            "message": (
+                f"DrawableFilter.new returned None for {op!r} "
+                "(operation unavailable or unsupported in this GIMP build)"
+            ),
+            "details": {**base_details, "reason": "drawable_filter_new_none"},
+        }
+
+    msg = (exception_message or "").strip()
+    lower = msg.lower()
+    if any(marker in lower for marker in _NEW_UNAVAILABLE_MARKERS):
+        return {
+            "ok": False,
+            "code": CODE_UNSUPPORTED,
+            "message": msg
+            or (f"DrawableFilter.new failed for {op!r}: operation unavailable or unsupported"),
+            "details": {**base_details, "reason": "drawable_filter_new_unavailable"},
+        }
+
+    return {
+        "ok": False,
+        "code": CODE_INTERNAL,
+        "message": msg or f"DrawableFilter.new failed for {op!r}",
+        "details": base_details,
+    }
 
 
 def is_expand_class_op(operation: str) -> bool:

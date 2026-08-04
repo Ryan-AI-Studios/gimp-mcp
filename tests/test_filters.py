@@ -311,6 +311,132 @@ def test_server_nde_tools_use_gimp_mcp_error_unsupported() -> None:
 
 
 # ---------------------------------------------------------------------------
+# HL handle-first (Codex P1)
+# ---------------------------------------------------------------------------
+
+
+def test_require_hl_layer_handle_rejects_missing() -> None:
+    """Host helper: missing/None/non-dict layer_handle → INVALID_HANDLE."""
+    from gimp_mcp_server import _require_hl_layer_handle
+
+    for bad in (None, "not-a-dict", 42, [], True):
+        with pytest.raises(sec.GimpMcpError) as ei:
+            _require_hl_layer_handle(bad)
+        assert ei.value.code == sec.CODE_INVALID_HANDLE
+        assert "layer_handle is required" in ei.value.message
+
+
+def test_require_hl_layer_handle_accepts_dict() -> None:
+    from gimp_mcp_server import _require_hl_layer_handle
+
+    h = {"kind": "item", "item_id": 1, "image_id": 2, "session_epoch": 1, "generation": 1}
+    assert _require_hl_layer_handle(h) is h
+
+
+def test_hl_nde_tools_require_layer_handle_no_legacy_targeting() -> None:
+    """Structure: apply/edit/remove require layer_handle; no layer_name/layer_id fallbacks."""
+    text = Path("gimp_mcp_server.py").read_text(encoding="utf-8")
+    for name in ("def apply_nde_filter", "def edit_filter_config", "def remove_nde_filter"):
+        start = text.find(name)
+        assert start != -1, name
+        next_def = text.find("\n@mcp.tool", start + 10)
+        body = text[start : next_def if next_def != -1 else start + 6000]
+        assert "_require_hl_layer_handle" in body, f"{name} must call _require_hl_layer_handle"
+        assert "layer_handle" in body
+        # No legacy name/id/image_index params on HL NDE mutators
+        assert "layer_name" not in body, f"{name} must not accept layer_name"
+        assert "layer_id" not in body, f"{name} must not accept layer_id"
+        assert "image_index" not in body, f"{name} must not accept image_index"
+
+    # Advanced list/merge still allow legacy targeting
+    for name in ("def list_drawable_filters", "def merge_nde_filters"):
+        start = text.find(name)
+        assert start != -1, name
+        next_def = text.find("\n@mcp.tool", start + 10)
+        body = text[start : next_def if next_def != -1 else start + 6000]
+        assert "layer_id" in body or "layer_name" in body, f"{name} may keep legacy targeting"
+        assert "_require_hl_layer_handle" not in body, f"{name} must not require HL handle gate"
+
+
+# ---------------------------------------------------------------------------
+# DrawableFilter.new failure → UNSUPPORTED (Codex P2)
+# ---------------------------------------------------------------------------
+
+
+def test_classify_drawable_filter_new_none_unsupported() -> None:
+    decision = filters.classify_drawable_filter_new_failure(
+        "gegl:gaussian-blur", filtr_is_none=True
+    )
+    assert decision["ok"] is False
+    assert decision["code"] == filters.CODE_UNSUPPORTED
+    assert decision["code"] != filters.CODE_INTERNAL
+    assert decision["details"]["reason"] == "drawable_filter_new_none"
+    assert "none" in decision["message"].lower()
+
+
+def test_classify_drawable_filter_new_unavailable_msg_unsupported() -> None:
+    for msg in (
+        "operation unavailable in this build",
+        "Unknown operation: gegl:foo",
+        "op not available",
+        "DrawableFilter.new returned None for 'gegl:x'",
+        "no such operation",
+    ):
+        decision = filters.classify_drawable_filter_new_failure(
+            "gegl:gaussian-blur", exception_message=msg
+        )
+        assert decision["code"] == filters.CODE_UNSUPPORTED, msg
+        assert decision["details"]["reason"] == "drawable_filter_new_unavailable"
+
+
+def test_classify_drawable_filter_new_other_internal() -> None:
+    decision = filters.classify_drawable_filter_new_failure(
+        "gegl:gaussian-blur",
+        exception_message="GObject type init crashed unexpectedly",
+    )
+    assert decision["ok"] is False
+    assert decision["code"] == filters.CODE_INTERNAL
+    assert decision["details"]["reason"] == "drawable_filter_new"
+
+
+def test_plugin_apply_uses_classify_new_and_state_flag() -> None:
+    """Structure: apply maps new() failure via classify; errors use make_error + mutated flag."""
+    text = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    start = text.find("def _apply_nde_filter")
+    assert start != -1
+    next_def = text.find("\n    def _", start + 10)
+    body = text[start : next_def if next_def != -1 else start + 10000]
+    assert "classify_drawable_filter_new_failure" in body
+    assert "filtr_is_none" in body
+    assert "mutated" in body
+    assert "state_may_have_changed" in body
+    assert "make_error" in body
+    # Prefer structured make_error over bare status/error INTERNAL dict for apply
+    assert '"code": _sec.CODE_INTERNAL' not in body or "make_error" in body
+
+    for name in ("def _edit_filter_config", "def _remove_nde_filter"):
+        start = text.find(name)
+        assert start != -1, name
+        next_def = text.find("\n    def _", start + 10)
+        body = text[start : next_def if next_def != -1 else start + 8000]
+        assert "mutated" in body, f"{name} must track mutated"
+        assert "state_may_have_changed" in body, f"{name} must set state_may_have_changed"
+        assert "make_error" in body, f"{name} must use make_error"
+
+
+def test_make_error_state_may_have_changed_after_mutation() -> None:
+    """Offline: partial-mutation error path sets state_may_have_changed on envelope body."""
+    err = sec.make_error(
+        sec.CODE_INTERNAL,
+        "append succeeded then flush failed",
+        state_may_have_changed=True,
+    )
+    assert err["status"] == "error"
+    assert err["code"] == sec.CODE_INTERNAL
+    assert err["state_may_have_changed"] is True
+
+
+# ---------------------------------------------------------------------------
 # Packaging / EXPECTED ship set
 # ---------------------------------------------------------------------------
 

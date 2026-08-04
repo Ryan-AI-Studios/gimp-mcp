@@ -223,13 +223,13 @@ Hard rules for product work:
 - Track layers by **stable handles**, not names (`orient_workspace` + `select_*`; re-orient or use mutator gen after structural ops; STALE_HANDLE on stale gen).
 - Spatial edits: use snapshot **mapping** + **0008** coordinate helpers; normalize EXIF before phase-sensitive work.
 - **Source integrity (0009):** `ensure_source_immutable` before first mutation; `checkpoint_create`; flatten/live-merge need `confirm_destructive`; restore → re-orient.
-- **Default MCP surface (0010):** ~18 high-level tools via real FastMCP `include_tags={"hl"}`; design names (`session_probe`, `render_visible_composite`, `create_selection`); full ~90 tools only with `GIMP_MCP_ADVANCED_TOOLS=1` (restart MCP **and** LLM client). Prefer HL tools; do not major-bump mcp/fastmcp for 3.x visibility API.
+- **Default MCP surface (0010 + 0016):** **25** high-level tools via real FastMCP `include_tags={"hl"}`; design names (`session_probe`, `render_visible_composite`, `create_selection`, NDE apply/edit/remove); full ~90 tools only with `GIMP_MCP_ADVANCED_TOOLS=1` (restart MCP **and** LLM client). Prefer HL tools; do not major-bump mcp/fastmcp for 3.x visibility API.
 - **Structured errors (0011):** product failures → FastMCP `ToolError` **single-line** text (`CODE: msg (request_id=…) | {json}`); never return error dicts as success. Split audit `audit-server.jsonl` / `audit-plugin.jsonl`. `rollback_available` false until **0017**. Parse helper: `parse_tool_error_text`.
 - **Agent CLI (0012 Completed):** `uv run gimp-agent doctor|probe|version|codes` with JSON + exit codes from `CODE_*` (0–12). Probe always JSON-auth; doctor connect-only TCP; `--strict` for CI. Non-strict doctor may exit 0 with `ok:false` — check envelope or use `--strict`. Headless recipes not in 0012.
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
-  **0016 Ready plan:** when implemented, use `apply_nde_filter` / `edit_filter_config`
-  (always `DrawableFilter.update()` before snapshot); orient `filters[]`; do not use
-  merge-bake GEGL helpers as the default agent path.
+  **0016 NDE filters:** use HL `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter`
+  with **required** `layer_handle` (always `DrawableFilter.update()` before snapshot);
+  orient `filters[]`; do not use merge-bake GEGL helpers as the default agent path.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
   `127.0.0.1`/`AF_INET` only; confine all param file I/O to `GIMP_WORKSPACE_ROOT`;
@@ -296,20 +296,21 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~ca3953c post-0015) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0016-NdeFilterTools** — **implementing** (feature branch); prior **0015 Completed** PR #22 / main@51adaeb |
+| Active focus | **0016-NdeFilterTools** — feature branch review fixes (not Completed); prior **0015 Completed** PR #22 / main@51adaeb |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
 ### 0016 implementation notes (in progress — not Completed)
 
-- **Shipped:** `gimp_mcp_filters.py` (9th EXPECTED; pure allowlist/soft validate/normalize/coerce); packaging triad; `nde_filters: true`; HL **25** + advanced `list_drawable_filters` / `merge_nde_filters`.
-- **Plugin:** `_sync_filter` = update+flush; apply order update-before-append; pspec coerce + applied/ignored; Source_Immutable via `_resolve_mutable_layer`; orient `filters[]` via defensive `_emit_filter_summaries` (topmost-first); REPLACE on `_blend_mode_from_string`; no exec / no gen bump on NDE paths; merge requires confirm + invalidation note.
+- **Shipped:** `gimp_mcp_filters.py` (9th EXPECTED; pure allowlist/soft validate/normalize/coerce + `classify_drawable_filter_new_failure`); packaging triad; `nde_filters: true`; HL **25** + advanced `list_drawable_filters` / `merge_nde_filters`.
+- **HL handle-first:** `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter` **require** `layer_handle` (no layer_name/layer_id/image_index fallback on HL). Advanced list/merge still allow legacy targeting.
+- **Plugin:** `_sync_filter` = update+flush; apply order update-before-append; pspec coerce + applied/ignored; Source_Immutable via `_resolve_mutable_layer`; orient `filters[]` via defensive `_emit_filter_summaries` (topmost-first); REPLACE on `_blend_mode_from_string`; no exec / no gen bump on NDE paths; merge requires confirm + invalidation note; `DrawableFilter.new` None/unavailable → **UNSUPPORTED**; post-mutation errors set `state_may_have_changed`.
 - **API lock (official):** `DrawableFilter.new` → config props → **`filter.update()`** → `drawable.append_filter`; list via `get_filters()`; remove via `delete()`. Config is **not** live until `update()`.
-- **Not in 0016:** CLI NDE verbs; NDE recipe ops / `$filter_id` rebind; drop-shadow allowlist; gen bump on filter ops.
+- **Not in 0016:** CLI NDE verbs; NDE recipe ops / `$filter_id` rebind; drop-shadow allowlist; gen bump on filter ops; redesign of 0006 `summary_only` early-return (`layers=[]` remains intentional cheap path).
 - **Install note:** copy **9** plug-in files to APPDATA (full install automation stays **0018**).
 - **Neighbor walls:** undo tools **0017**; install **0018**; headless **0019**; NDE recipes later.
 - **Pins:** hold mcp/fastmcp majors (re-checked PyPI 2.0.0 / 3.4.5).
-- **Do not mark Completed** until review + ledger + operator matrix / waiver.
+- **Do not mark Completed** until Codex re-review PASS + full gate + ledger + operator matrix / waiver.
 
 ### 0005 completion notes (planners)
 

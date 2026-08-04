@@ -7601,6 +7601,7 @@ class MCPPlugin(Gimp.PlugIn):
         Locked sequence: new → blend/opacity → config (coerce) → update → append → flush.
         No generation bump (layer tree topology unchanged). No exec.
         """
+        mutated = False
         try:
             params = params or {}
             op_raw = params.get("operation")
@@ -7678,9 +7679,37 @@ class MCPPlugin(Gimp.PlugIn):
 
             image.undo_group_start()
             try:
-                filtr = Gimp.DrawableFilter.new(drawable, operation, name)
+                try:
+                    filtr = Gimp.DrawableFilter.new(drawable, operation, name)
+                except Exception as new_exc:
+                    decision = _filters.classify_drawable_filter_new_failure(
+                        operation,
+                        exception_message=str(new_exc),
+                    )
+                    return _sec.make_error(
+                        decision.get("code") or _sec.CODE_INTERNAL,
+                        decision.get("message", str(new_exc)),
+                        details=decision.get("details")
+                        if isinstance(decision.get("details"), dict)
+                        else {"operation": operation, "reason": "drawable_filter_new"},
+                    )
                 if filtr is None:
-                    raise RuntimeError(f"DrawableFilter.new returned None for {operation!r}")
+                    decision = _filters.classify_drawable_filter_new_failure(
+                        operation, filtr_is_none=True
+                    )
+                    return _sec.make_error(
+                        decision.get("code") or _sec.CODE_UNSUPPORTED,
+                        decision.get(
+                            "message",
+                            f"DrawableFilter.new returned None for {operation!r}",
+                        ),
+                        details=decision.get("details")
+                        if isinstance(decision.get("details"), dict)
+                        else {
+                            "operation": operation,
+                            "reason": "drawable_filter_new_none",
+                        },
+                    )
                 filtr.set_blend_mode(self._blend_mode_from_string(blend_mode))
                 filtr.set_opacity(opacity)
                 if hasattr(filtr, "set_visible"):
@@ -7690,6 +7719,7 @@ class MCPPlugin(Gimp.PlugIn):
                 # Required: update BEFORE append (official tutorial + AI2 H3)
                 filtr.update()
                 drawable.append_filter(filtr)
+                mutated = True
                 Gimp.displays_flush()
             finally:
                 image.undo_group_end()
@@ -7714,14 +7744,20 @@ class MCPPlugin(Gimp.PlugIn):
             msg = str(e)
             if msg.startswith("HANDLE_NOT_FOUND"):
                 return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
-            return _sec.make_error(_sec.CODE_INTERNAL, msg)
+            return _sec.make_error(
+                _sec.CODE_INTERNAL,
+                msg,
+                state_may_have_changed=True if mutated else None,
+            )
         except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "code": _sec.CODE_INTERNAL,
-                "traceback": traceback.format_exc(),
-            }
+            err = _sec.make_error(
+                _sec.CODE_INTERNAL,
+                str(e),
+                state_may_have_changed=True if mutated else None,
+            )
+            if _sec.debug_enabled():
+                err["traceback"] = traceback.format_exc()
+            return err
 
     def _edit_filter_config(self, params):
         """Edit config/opacity/blend/visible on an existing NDE filter; always sync.
@@ -7729,6 +7765,7 @@ class MCPPlugin(Gimp.PlugIn):
         Order: resolve layer+filter → validate all params → undo_group → mutate → sync.
         Never mutates before full validation (invalid blend must not leave partial stack).
         """
+        mutated = False
         try:
             params = params or {}
             if "filter_id" not in params or params.get("filter_id") is None:
@@ -7788,19 +7825,24 @@ class MCPPlugin(Gimp.PlugIn):
                 if visible_norm is not None:
                     if hasattr(filtr, "set_visible"):
                         filtr.set_visible(bool(visible_norm))
+                        mutated = True
                     Gimp.displays_flush()
 
                 if blend_mode_norm is not None:
                     filtr.set_blend_mode(self._blend_mode_from_string(blend_mode_norm))
+                    mutated = True
                     need_sync = True
 
                 if opacity_norm is not None:
                     filtr.set_opacity(opacity_norm)
+                    mutated = True
                     need_sync = True
 
                 if config:
                     cfg = filtr.get_config()
                     applied_props, ignored_props = self._set_filter_config_props(cfg, config)
+                    if applied_props:
+                        mutated = True
                     need_sync = True
 
                 if need_sync:
@@ -7830,17 +7872,24 @@ class MCPPlugin(Gimp.PlugIn):
             msg = str(e)
             if msg.startswith("HANDLE_NOT_FOUND"):
                 return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
-            return _sec.make_error(_sec.CODE_INTERNAL, msg)
+            return _sec.make_error(
+                _sec.CODE_INTERNAL,
+                msg,
+                state_may_have_changed=True if mutated else None,
+            )
         except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "code": _sec.CODE_INTERNAL,
-                "traceback": traceback.format_exc(),
-            }
+            err = _sec.make_error(
+                _sec.CODE_INTERNAL,
+                str(e),
+                state_may_have_changed=True if mutated else None,
+            )
+            if _sec.debug_enabled():
+                err["traceback"] = traceback.format_exc()
+            return err
 
     def _remove_nde_filter(self, params):
         """Delete a DrawableFilter node by filter_id on a layer."""
+        mutated = False
         try:
             params = params or {}
             if "filter_id" not in params or params.get("filter_id") is None:
@@ -7852,6 +7901,7 @@ class MCPPlugin(Gimp.PlugIn):
             image.undo_group_start()
             try:
                 filtr.delete()
+                mutated = True
             finally:
                 image.undo_group_end()
             Gimp.displays_flush()
@@ -7871,14 +7921,20 @@ class MCPPlugin(Gimp.PlugIn):
             msg = str(e)
             if msg.startswith("HANDLE_NOT_FOUND"):
                 return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
-            return _sec.make_error(_sec.CODE_INTERNAL, msg)
+            return _sec.make_error(
+                _sec.CODE_INTERNAL,
+                msg,
+                state_may_have_changed=True if mutated else None,
+            )
         except Exception as e:
-            return {
-                "status": "error",
-                "error": str(e),
-                "code": _sec.CODE_INTERNAL,
-                "traceback": traceback.format_exc(),
-            }
+            err = _sec.make_error(
+                _sec.CODE_INTERNAL,
+                str(e),
+                state_may_have_changed=True if mutated else None,
+            )
+            if _sec.debug_enabled():
+                err["traceback"] = traceback.format_exc()
+            return err
 
     def _list_drawable_filters(self, params):
         """List NDE filters on a layer (advanced; topmost-first)."""

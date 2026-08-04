@@ -4199,21 +4199,29 @@ def list_fonts(ctx: Context, filter: str | None = None) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _require_hl_layer_handle(layer_handle: Any) -> dict[str, Any]:
+    """HL NDE mutators require a real item handle (no name/active-layer fallback)."""
+    if not isinstance(layer_handle, dict):
+        raise sec.GimpMcpError(
+            sec.CODE_INVALID_HANDLE,
+            "layer_handle is required for this high-level tool "
+            "(pass an item handle from orient_workspace; layer_name/layer_id/"
+            "image_index alone are not accepted on HL NDE tools)",
+        )
+    return layer_handle
+
+
 @mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=False, idempotent=False))
 @with_structured_error()
 def apply_nde_filter(
     ctx: Context,
     operation: str,
-    layer_handle: dict | None = None,
+    layer_handle: dict,
     name: str | None = None,
     config: dict | None = None,
     opacity: float = 1.0,
     blend_mode: str = "REPLACE",
     visible: bool = True,
-    layer_id: int | None = None,
-    layer_name: str | None = None,
-    handle: dict | None = None,
-    image_index: int | None = None,
 ) -> dict:
     """Append an allowlisted GEGL/GIMP op as a **non-destructive** DrawableFilter.
 
@@ -4230,19 +4238,19 @@ def apply_nde_filter(
 
     Parameters:
     - operation: allowlisted op name (required)
-    - layer_handle: preferred item handle from orient_workspace
+    - layer_handle: **required** item handle from orient_workspace (HL handle-first)
     - name: display name (default = operation string)
     - config: prop → value object (soft; e.g. ``{"std-dev-x": 5.0, "std-dev-y": 5.0}``)
     - opacity: filter opacity 0.0-1.0 (default 1.0)
     - blend_mode: default **REPLACE** (tutorial convention)
     - visible: default true
-    - layer_id / layer_name / handle / image_index: legacy targeting when handle omitted
 
     Returns: filter summary, layer_handle, updated, applied_props, ignored_props, optional notes.
     No generation bump (re-orient to refresh filters[]). Verify with render_visible_composite
     + compare_images after edits.
     """
     try:
+        lh = _require_hl_layer_handle(layer_handle)
         op_v = filters.validate_operation(operation)
         if not op_v.get("ok"):
             raise sec.GimpMcpError(
@@ -4269,21 +4277,12 @@ def apply_nde_filter(
             "opacity": float(opacity),
             "blend_mode": bm_v["blend_mode"],
             "visible": bool(visible),
+            "layer_handle": lh,
         }
         if name is not None:
             params["name"] = name
         if config is not None:
             params["config"] = config
-        if layer_handle is not None:
-            params["layer_handle"] = layer_handle
-        if layer_id is not None:
-            params["layer_id"] = int(layer_id)
-        if layer_name is not None:
-            params["layer_name"] = layer_name
-        if handle is not None:
-            params["handle"] = handle
-        if image_index is not None:
-            params["image_index"] = int(image_index)
 
         conn = get_gimp_connection()
         result = conn.send_command("apply_nde_filter", params)
@@ -4303,15 +4302,11 @@ def apply_nde_filter(
 def edit_filter_config(
     ctx: Context,
     filter_id: int,
-    layer_handle: dict | None = None,
+    layer_handle: dict,
     config: dict | None = None,
     opacity: float | None = None,
     blend_mode: str | None = None,
     visible: bool | None = None,
-    layer_id: int | None = None,
-    layer_name: str | None = None,
-    handle: dict | None = None,
-    image_index: int | None = None,
 ) -> dict:
     """Edit config / opacity / blend / visibility of an existing NDE filter.
 
@@ -4324,13 +4319,13 @@ def edit_filter_config(
 
     Parameters:
     - filter_id: session filter id from orient ``filters[]`` or list_drawable_filters
-    - layer_handle: preferred item handle
+    - layer_handle: **required** item handle (HL handle-first)
     - config / opacity / blend_mode / visible: partial updates (omit to leave unchanged)
-    - layer_id / layer_name / handle / image_index: legacy targeting
 
     Returns: filter summary, applied_props, ignored_props, updated=true.
     """
     try:
+        lh = _require_hl_layer_handle(layer_handle)
         if blend_mode is not None:
             bm_v = filters.validate_blend_mode(blend_mode)
             if not bm_v.get("ok"):
@@ -4346,7 +4341,10 @@ def edit_filter_config(
                 "config must be an object when provided",
             )
 
-        params: dict[str, Any] = {"filter_id": int(filter_id)}
+        params: dict[str, Any] = {
+            "filter_id": int(filter_id),
+            "layer_handle": lh,
+        }
         if config is not None:
             params["config"] = config
         if opacity is not None:
@@ -4355,16 +4353,6 @@ def edit_filter_config(
             params["blend_mode"] = blend_mode
         if visible is not None:
             params["visible"] = bool(visible)
-        if layer_handle is not None:
-            params["layer_handle"] = layer_handle
-        if layer_id is not None:
-            params["layer_id"] = int(layer_id)
-        if layer_name is not None:
-            params["layer_name"] = layer_name
-        if handle is not None:
-            params["handle"] = handle
-        if image_index is not None:
-            params["image_index"] = int(image_index)
 
         conn = get_gimp_connection()
         result = conn.send_command("edit_filter_config", params)
@@ -4384,11 +4372,7 @@ def edit_filter_config(
 def remove_nde_filter(
     ctx: Context,
     filter_id: int,
-    layer_handle: dict | None = None,
-    layer_id: int | None = None,
-    layer_name: str | None = None,
-    handle: dict | None = None,
-    image_index: int | None = None,
+    layer_handle: dict,
 ) -> dict:
     """Delete an NDE DrawableFilter node by filter_id (non-destructive stack edit).
 
@@ -4398,35 +4382,28 @@ def remove_nde_filter(
 
     Parameters:
     - filter_id: session filter id
-    - layer_handle: preferred item handle
-    - layer_id / layer_name / handle / image_index: legacy targeting
+    - layer_handle: **required** item handle (HL handle-first)
 
     Returns: removed_filter_id, layer_handle, updated=true.
     """
     try:
-        params: dict[str, Any] = {"filter_id": int(filter_id)}
-        if layer_handle is not None:
-            params["layer_handle"] = layer_handle
-        if layer_id is not None:
-            params["layer_id"] = int(layer_id)
-        if layer_name is not None:
-            params["layer_name"] = layer_name
-        if handle is not None:
-            params["handle"] = handle
-        if image_index is not None:
-            params["image_index"] = int(image_index)
+        lh = _require_hl_layer_handle(layer_handle)
+        params: dict[str, Any] = {
+            "filter_id": int(filter_id),
+            "layer_handle": lh,
+        }
 
         conn = get_gimp_connection()
         result = conn.send_command("remove_nde_filter", params)
         if result["status"] == "success":
             return result["results"]
         raise_from_plugin_result(result, "tool")
-    except ToolError:
+    except (ToolError, sec.SecurityError, sec.GimpMcpError):
         raise
-    except Exception:
+    except Exception as exc:
         if sec.debug_enabled():
             traceback.print_exc()
-        raise
+        raise_from_exception(exc, tool_name="remove_nde_filter")
 
 
 @mcp.tool(tags={surface.ADVANCED_TAG}, annotations=_ann(read_only=True, idempotent=True))
