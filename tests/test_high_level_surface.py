@@ -26,13 +26,16 @@ from gimp_mcp_surface import (
 # ---------------------------------------------------------------------------
 
 
-def test_hl_catalog_exact_20() -> None:
+def test_hl_catalog_exact_22() -> None:
     names = get_hl_catalog_names()
-    assert len(names) == 20
+    assert len(names) == 22
     assert set(names) == HL_TOOL_NAMES
     assert names == sorted(names)
     assert "compare_images" in HL_TOOL_NAMES
     assert "verify_artifact" in HL_TOOL_NAMES
+    assert "list_recipes" in HL_TOOL_NAMES
+    assert "apply_recipe" in HL_TOOL_NAMES
+    assert "batch_run" not in HL_TOOL_NAMES
 
 
 def test_is_hl_tool() -> None:
