@@ -1,0 +1,12 @@
+{
+  "package": "gimp-mcp-skills",
+  "version": "1.0",
+  "skills": [
+    "gimp",
+    "gimp-orient",
+    "gimp-edit",
+    "gimp-batch",
+    "gimp-verify",
+    "gimp-install"
+  ]
+}
