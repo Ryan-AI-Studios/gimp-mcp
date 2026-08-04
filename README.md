@@ -24,12 +24,13 @@ GIMP MCP bridges GIMP's professional image editing capabilities with AI assistan
 
 - The AI can *see* the image at any point in the workflow without saving to disk (`render_visible_composite`)
 - Supports fully autonomous multi-step pipelines: open → edit → verify → refine → export
-- Default **20 high-level tools** (full ~90-tool advanced surface via env flag)
+- Default **22 high-level tools** (full ~90-tool advanced surface via env flag)
+- Versioned **recipe library** (`list_recipes` / `apply_recipe` + CLI `run` / `batch`)
 - Fully compatible with GIMP 3.2.x (all breaking API changes resolved)
 
-## Default high-level tool surface (track 0010)
+## Default high-level tool surface (track 0010 + 0015)
 
-By default the MCP server lists **20 high-level tools** (FastMCP `include_tags={"hl"}`).
+By default the MCP server lists **22 high-level tools** (FastMCP `include_tags={"hl"}`).
 Set **`GIMP_MCP_ADVANCED_TOOLS=1`** on the **host / stdio MCP process** for the full
 ~90-tool advanced surface. After flipping the env var, restart the **MCP server
 process and the LLM client session** (clients cache `list_tools`).
@@ -51,6 +52,8 @@ process and the LLM client session** (clients cache `list_tools`).
 | `create_selection` | Unified selection (rect/ellipse/by_color/all/none) |
 | `compare_images` | Host-only PNG MAE / max AE / changed pixels / global SSIM |
 | `verify_artifact` | Host-only artifact dims/format/alpha/sha256 gates |
+| `list_recipes` | Shipped versioned recipe catalog (flags only) |
+| `apply_recipe` | Run one allowlisted multi-step recipe (mutation log) |
 
 **Migration names (advanced only unless advanced mode):**
 
@@ -66,7 +69,8 @@ process and the LLM client session** (clients cache `list_tools`).
 |---|---|
 | 👁️ **Live Visual Feedback** | `render_visible_composite` returns a PNG + mapping mid-workflow so the AI verifies each step |
 | 🧭 **Workspace Orientation** | `orient_workspace` returns a schema-versioned state manifest (layers tree, kinds, handles, capabilities) |
-| 🎨 **20 HL / ~90 advanced** | Curated default surface; full adjustments, transforms, layers, drawing, filters in advanced mode |
+| 🎨 **22 HL / ~90 advanced** | Curated default surface; full adjustments, transforms, layers, drawing, filters in advanced mode |
+| 📦 **Recipe library** | Versioned JSON recipes; MCP `apply_recipe` + CLI `gimp-agent run` / `batch` |
 | ✅ **Pixel verification** | `compare_images` / CLI `compare` + `verify_artifact` / CLI `verify` — objective before/after gates |
 | 🔧 **GIMP 3.2 Compatible** | All GIMP 3.2 API breaks fixed and tested |
 | 🔁 **Iterative Workflows** | AI loops until a goal is met — e.g. keeps removing BG until no pixels remain |
@@ -202,6 +206,9 @@ uv run gimp-agent version --json  # agent + discovered GIMP versions
 uv run gimp-agent codes --json    # CODE_* → exit 0–12 map (+ reverse)
 uv run gimp-agent compare a.png b.png --json   # host-only pixel compare (no plugin)
 uv run gimp-agent verify out.png --spec spec.json --json  # host-only artifact gates
+uv run gimp-agent recipes --json  # list shipped versioned recipes
+uv run gimp-agent run compare-artifacts --param path_a=a.png --param path_b=b.png --json
+uv run gimp-agent batch web-export --output-dir out/ --inputs a.png --inputs b.png --json
 ```
 
 JSON envelopes use `{ok, exit_code, code, message, data}`. Prefer `--json`, or set
@@ -216,6 +223,16 @@ Paths are workspace-jailed (`GIMP_WORKSPACE_ROOT`). Metrics include MAE, max AE,
 changed-pixel stats, alpha transparent counts, and optional **global** luminance
 SSIM (not ImageMagick windowed SSIM). Optional ImageMagick is detected by
 `doctor` (`magick` or legacy `compare`) but is never required.
+
+**Recipe library (track 0015):** versioned allowlisted JSON under
+`gimp_agent/recipes/` (package data). MCP tools `list_recipes` + `apply_recipe`
+(HL catalog **22**). CLI: `recipes`, `run RECIPE_ID`, `batch RECIPE_ID`
+(multi-file continue-on-fail). Capability `recipe_library: true`;
+`batch_interpreter` stays **false** until track 0019. Recipe steps call plugin
+TCP / host modules **directly** (not filtered by `GIMP_MCP_ADVANCED_TOOLS`).
+Interpolation is whole-value `$name` only. Rollback unlinks only
+`created_paths` (never pre-existing `replace` targets). Shipped: `transparent-png`,
+`exif-normalize`, `web-export`, `compare-artifacts`, optional `exif-strip`.
 
 **Doctor non-strict vs `--strict`:** default `doctor` is diagnostics-only — required
 check failures still yield process exit **0** and envelope `exit_code: 0` with

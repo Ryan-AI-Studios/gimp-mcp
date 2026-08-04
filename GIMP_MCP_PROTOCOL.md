@@ -52,7 +52,7 @@ Objective before/after and artifact checks so silent no-ops fail closed.
 
 | Surface | Tools / verbs |
 |---|---|
-| MCP HL (catalog **20**) | `compare_images`, `verify_artifact` |
+| MCP HL (catalog **22**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe` |
 | CLI (host-only) | `gimp-agent compare`, `gimp-agent verify` |
 | Capability | `pixel_verification: true` (extension; not `_CAPABILITY_REQUIRED`) |
 | **Not** flipped | `alpha_snapshot` stays **false** (live GIMP `render_alpha` unfinished) |
@@ -232,7 +232,10 @@ Commands: `doctor [--strict]`, `probe [--timeout]`, `version`, `codes`,
 `save-xcf PATH [--collision fail|version|replace] [--verify-reopen|--no-verify-reopen]`,
 `export PATH --format {png,jpeg,webp,tiff} [--collision …] [--verify]`,
 `compare PATH_A PATH_B [--require-mutation] [--max-mae …] [--diff-out] [--json]`,
-`verify PATH --spec SPEC.json [--json]`.
+`verify PATH --spec SPEC.json [--json]`,
+`recipes [--json]`,
+`run RECIPE_ID [--version V] [--output PATH] [--input PATH] [--handle JSON] [--param KEY=VALUE …] [--collision fail|version|replace] [--json]`,
+`batch RECIPE_ID --output-dir DIR (--inputs PATH | --input-glob GLOB) [--param …] [--collision version] [--json]`.
 
 **Host-only pixel verification (track 0014):** `compare` and `verify` never open the
 plug-in TCP socket (no token required). They import `gimp_mcp_verify` and jail paths
@@ -240,6 +243,50 @@ under `GIMP_WORKSPACE_ROOT`. Threshold / expectation failures → `VERIFY_FAILED
 exit **8**. Pixel / file-size budget exceed → `POLICY_DENIED` → exit **6**.
 Unsupported PNG (16-bit, palette, interlaced) or non-PNG `format` in verify →
 `UNSUPPORTED` → exit **12**.
+
+### Recipe library (track 0015)
+
+Versioned allowlisted multi-step pipelines so agents run few-decision workflows.
+
+| Surface | API |
+|---|---|
+| MCP HL (catalog **22**) | `list_recipes`, `apply_recipe` |
+| CLI | `gimp-agent recipes` / `run` / `batch` |
+| Module | `gimp_mcp_recipes.py` (host pure; not EXPECTED plug-in ship) |
+| Package data | `gimp_agent/recipes/*.json` via `importlib.resources` |
+| Capability | `recipe_library: true` (extension); `batch_interpreter` **false** until **0019** |
+
+**Routing flags (orthogonal):**
+
+| Flag | Meaning |
+|---|---|
+| `requires_gimp` | Needs live plugin TCP for ≥1 step |
+| `requires_open_session` | Needs caller `handle` (no `open_image` of input) |
+| `batch_safe` | Recipe property: no unsaved GUI-only state; still needs plugin in 0015 if `requires_gimp` |
+
+| Condition | Path |
+|---|---|
+| `requires_gimp: false` | Host runner only (no TCP) |
+| `requires_open_session: true` | Session + required `handle` |
+| `requires_gimp: true`, open session false | Session + `open_image` from `$input_path` |
+| `batch_safe: true` + plugin down | **UNSUPPORTED** (12) until **0019** |
+
+**Interpolation:** whole-value `$name` only (`^\$([A-Za-z_][A-Za-z0-9_]*)$`); single pass;
+undefined → error. Path jail every path at step use site.
+
+**Allowlist ≠ MCP surface:** recipe ops invoke plugin TCP / host modules **directly**
+— not filtered by `GIMP_MCP_ADVANCED_TOOLS` (e.g. `scale_image` inside `web-export`
+with advanced unset).
+
+**Shipped recipes:** `transparent-png`, `exif-normalize`, `web-export`,
+`compare-artifacts`, optional `exif-strip` (ExifTool; missing binary → UNSUPPORTED).
+
+**Mutation log:** `{ok, recipe_id, version, backend: "session"|"host", steps, artifacts, created_paths}`.
+Rollback deletes only `created_paths` (never pre-existing `replace` targets).
+
+**CLI batch:** `--inputs` append and/or `--input-glob` (pathlib; `\` → `/` on Windows);
+continue-on-fail; aggregate report; non-zero if any failed; default collision `version`.
+Unknown recipe id → exit **12**; bad params → exit **2**. MCP `batch_run` is **not** HL.
 
 **Doctor (non-strict):** default `doctor` is diagnostics-only. When a **required**
 check fails without `--strict`, process exit stays **0** and the envelope keeps

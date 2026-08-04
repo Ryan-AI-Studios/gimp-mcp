@@ -104,14 +104,15 @@ minting. Track IDs are creation order, not execution order.
   → 0012 DeterministicCliSidecar — Completed
   → 0013 AtomicSaveExport — Completed
   → 0014 PixelVerificationProtocol — Completed
-  → 0015 … through 0028 Final product polish (v1)
+  → 0015 RecipeLibrary — In progress (feature/0015-recipe-library)
+  → 0016 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0014 Completed.** Orientation SoT is `orient_workspace`. Handles
-**0007**. Alpha **0005**. Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010**
-→ **20** tools after **0014** (`compare_images` / `verify_artifact`). Errors **0011**. CLI **0012**.
-Atomic save/export **0013**. Pixel verification **0014**. Next product focus **0015** recipes
-(placeholder). Authoritative table: `conductor/conductor.md`.
+**28 tracks** (0001–0028). **0001–0014 Completed.** **0015** in progress (HL **22**, recipes).
+Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**.
+EXIF **0008**. Policy **0009**. HL surface **0010** → **22** with **0015**. Errors **0011**.
+CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**.
+Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -292,7 +293,7 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0015-RecipeLibrary** — Proposed (placeholder); prior **0014 Completed** PR #20 / main@00cc49a |
+| Active focus | **0015-RecipeLibrary** — In progress on `feature/0015-recipe-library`; prior **0014 Completed** PR #20 / main@00cc49a |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 
@@ -428,8 +429,22 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Caps:** `pixel_verification: true`; **`alpha_snapshot` stays false** (live renderer only).
 - **Doctor:** optional `magick` else `compare` info check.
 - **Codex final:** **PASS WITH DEFERRED P3** (hand-authored Paeth fixture residual; mitigated by corner tests).
-- **Residuals:** windowed SSIM; 16-bit/interlaced/palette; live `render_alpha`; recipes **0015**; skills **0020**.
-- **Next:** **0015-RecipeLibrary** (placeholder — needs full plan).
+- **Residuals:** windowed SSIM; 16-bit/interlaced/palette; live `render_alpha`; recipes **0015 plan**; skills **0020**.
+- **Next:** **0015 Ready** — RecipeLibrary (implement when asked).
+
+### 0015 implementation notes (in progress on `feature/0015-recipe-library`)
+
+- **Status:** Implementing — versioned allowlisted recipe library on branch
+  `feature/0015-recipe-library` (ledger TX FEATURE).
+- **Module:** `gimp_mcp_recipes.py` (py-modules + isort + basedpyright; **not** EXPECTED ship).
+- **Recipes:** package-data `gimp_agent/recipes/*.json` (≥4 + optional `exif-strip`).
+- **MCP HL 22:** `list_recipes` + `apply_recipe`; capability `recipe_library: true`;
+  `batch_interpreter` remains **false**.
+- **CLI:** `gimp-agent recipes` / `run` / `batch` (append inputs, continue-on-fail).
+- **Locked:** whole-value `$name`; allowlist ≠ MCP advanced tags; `created_paths` rollback;
+  batch_safe + plugin down → UNSUPPORTED.
+- **OOS:** BatchProcedure **0019**; NDE **0016**; ML; MCP `batch_run` not HL.
+- **Next after 0015:** **0016** NdeFilterTools (or next Ready track per conductor).
 
 ---
 
@@ -437,6 +452,9 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-04 | **0015 in progress:** recipe registry/runner, HL 22, CLI recipes/run/batch, package-data JSON on feature branch |
+| 2026-08-04 | Folded AI-review into **0015**: whole-value `$name`; package-data recipes; created_paths; allowlist≠surface; batch continue-on-fail |
+| 2026-08-04 | Full plan **0015** RecipeLibrary: JSON recipes, allowlist runner, HL 22, CLI run/batch; Ready — not started |
 | 2026-08-03 | **0014 Completed:** pixel verify metrics, HL 20, host-only CLI compare/verify; PR #20 / main@00cc49a; Codex PASS WITH DEFERRED P3; next=0015 |
 | 2026-08-03 | Folded AI-review into **0014**: Paeth defilter; 50M budget; host-only CLI; global SSIM; alpha_snapshot false; magick exit 0\|1 |
 | 2026-08-03 | Full plan **0014** PixelVerificationProtocol: stdlib metrics, HL 20, CLI compare/verify, refine helper; Ready — not started |
