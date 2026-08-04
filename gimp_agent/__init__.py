@@ -1,4 +1,4 @@
-"""Host-side gimp-agent CLI package (doctor, probe, exit-code map).
+"""Host-side gimp-agent CLI package (install, doctor, probe, exit-code map).
 
 Does not import the FastMCP server. May import ``gimp_mcp_security`` (stdlib host module).
 """

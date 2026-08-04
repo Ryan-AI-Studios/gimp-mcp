@@ -3,6 +3,8 @@
 ## Overview
 This document describes how to execute PyGObject commands in GIMP using the MCP (Model Context Protocol) interface. The GIMP MCP server provides multiple tools for interacting with GIMP 3.0, including image export capabilities that return MCP-compliant Image objects.
 
+**Plugin install:** `uv run gimp-agent install` deploys the full 10-file ship set (`EXPECTED_PLUGIN_FILES`) into the newest GIMP `3.*` user plug-ins directory.
+
 ## Secure defaults (0003)
 
 | Topic | Default |

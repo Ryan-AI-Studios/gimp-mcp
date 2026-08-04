@@ -27,16 +27,21 @@ path is shown in **Edit > Preferences > Folders > Plug-ins**. Base dirs per plat
 - macOS: `~/Library/Application Support/GIMP/<VER>`
 - Windows: `%APPDATA%\GIMP\<VER>`
 
+**Primary install** (from repo root after `uv sync`):
+
 ```bash
-# Auto-select the newest GIMP 3.x config dir (snap example shown; adjust BASE per platform)
-BASE="$HOME/snap/gimp/current/.config/GIMP"
-GIMP_DIR="$(ls -d "$BASE"/3.* 2>/dev/null | sort -V | tail -1)"
-mkdir -p "$GIMP_DIR/plug-ins/gimp-mcp-plugin"
-cp gimp-mcp-plugin.py gimp_mcp_security.py gimp_mcp_snapshot.py gimp_mcp_export.py \
-  "$GIMP_DIR/plug-ins/gimp-mcp-plugin/"
-chmod +x "$GIMP_DIR/plug-ins/gimp-mcp-plugin/gimp-mcp-plugin.py"
+uv run gimp-agent install
+uv run gimp-agent doctor --strict --json
 ```
-Copy all four files (`gimp-mcp-plugin.py`, `gimp_mcp_security.py`, `gimp_mcp_snapshot.py`, `gimp_mcp_export.py`) into the plug-ins folder; missing any helper fails closed at plugin import. Then start it from **Tools > MCP > Start MCP Server** in GIMP.
+
+This copies the full ship set defined by `gimp_agent.paths.EXPECTED_PLUGIN_FILES`
+(**10 files**: `gimp-mcp-plugin.py` plus 9 shared modules:
+`gimp_mcp_security.py`, `gimp_mcp_snapshot.py`, `gimp_mcp_export.py`,
+`gimp_mcp_handles.py`, `gimp_mcp_coords.py`, `gimp_mcp_policy.py`,
+`gimp_mcp_atomic.py`, `gimp_mcp_filters.py`, `gimp_mcp_tx.py`). Missing any helper
+fails closed at plugin import. Host-only modules (`gimp_mcp_state` / `surface` /
+`verify` / recipes) are never deployed into plug-ins. After install, restart GIMP
+and start the server from **Tools > MCP > Start MCP Server**.
 
 ### MCP Server Configuration
 Add to Claude Desktop config (`~/.config/Claude/claude_desktop_config.json`):
@@ -53,7 +58,15 @@ Add to Claude Desktop config (`~/.config/Claude/claude_desktop_config.json`):
 
 ## Development Commands
 
-There are no build, test, or lint commands as this is a simple Python script project without dependencies or test framework.
+```bash
+uv sync
+uv run ruff check .
+uv run ruff format --check .
+uv run basedpyright
+uv run pytest -m "not integration and not slow"
+uv run gimp-agent doctor --strict --json
+uv run gimp-agent install --dry-run --json
+```
 
 ## API Usage
 

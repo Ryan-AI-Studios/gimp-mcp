@@ -135,22 +135,39 @@ uv sync
 
 ### 2. Install the GIMP Plugin
 
-Copy **`gimp-mcp-plugin.py`**, **`gimp_mcp_security.py`**, **`gimp_mcp_snapshot.py`**,
-**`gimp_mcp_export.py`**, **`gimp_mcp_handles.py`**, **`gimp_mcp_coords.py`**,
-**`gimp_mcp_policy.py`**, **`gimp_mcp_atomic.py`**, **`gimp_mcp_filters.py`**, and
-**`gimp_mcp_tx.py`**
-to GIMP's plug-ins directory (same folder) and restart GIMP.
-The security, snapshot, export, handles, coords, policy, atomic, filters, and tx modules are
-stdlib-only and must sit next to the plugin (**10 files** total: plugin + 9 shared modules).
-(`gimp_mcp_state.py` / `gimp_mcp_surface.py` are host-side only.)
+**Primary path** (recommended): from the repo root after `uv sync`, deploy the full
+**EXPECTED ship set (10 files)** into the newest GIMP `3.*` user plug-ins directory:
+
+```bash
+uv run gimp-agent install
+# optional wrappers:
+#   scripts/install-plugin.ps1   (Windows)
+#   scripts/install-plugin.sh    (macOS / Linux)
+uv run gimp-agent doctor --strict --json   # verify plugin_files 10/10
+```
+
+Useful flags: `--dry-run` (plan only), `--source DIR`, `--target DIR` (exact full
+plugin dir — no auto-append), `--no-backup`, `--json`.
+
+**Upgrade path:** after `git pull` or a GIMP minor upgrade (e.g. `3.0` → `3.2`),
+re-run `uv run gimp-agent install`. By default existing files are overwritten and a
+timestamped sibling backup `*.bak.YYYYMMDD-HHMMSS` is written beside each replaced
+file. Backups **accumulate** in the plug-in folder over repeated upgrades — prune
+old `*.bak.*` files manually when convenient (`--prune-backups` is not shipped yet).
+
+The ship set is `gimp_agent.paths.EXPECTED_PLUGIN_FILES` (plugin + 9 shared stdlib
+modules). Host-only modules (`gimp_mcp_state`, `gimp_mcp_surface`, `gimp_mcp_verify`,
+recipes) are **never** copied into the plug-ins dir. Fully quit and relaunch GIMP
+after install, then **Tools → MCP → Start MCP Server**.
 
 > **Which directory?** GIMP names its per-user folder after its **major.minor** version
 > (`3.0`, `3.2`, `3.4`, …) and creates a fresh one on each minor upgrade, so the folder
-> *moves* when you upgrade GIMP (e.g. `3.0` → `3.2`). The snippet below auto-selects the
-> newest one, so it keeps working across upgrades. To check the path manually, open GIMP
-> and look at **Edit → Preferences → Folders → Plug-ins**.
+> *moves* when you upgrade GIMP. `gimp-agent install` selects the highest `3.*` config
+> dir automatically. To check the path manually: **Edit → Preferences → Folders → Plug-ins**.
 >
-> Launch GIMP at least once before running this, so its config folder exists.
+> Launch GIMP at least once before install so its config folder exists.
+
+**Manual fallback** (still OK if you prefer not to use the CLI):
 
 **macOS / Linux:**
 ```bash
@@ -208,6 +225,8 @@ The package ships a deterministic host CLI for agents and operators (stdlib
 `argparse` — no extra deps). Install entrypoint via `uv sync`, then:
 
 ```bash
+uv run gimp-agent install         # deploy full 10-file ship set (backup on overwrite)
+uv run gimp-agent uninstall --yes # remove EXPECTED ship files only
 uv run gimp-agent doctor          # GIMP binary + plug-in files + TCP + workspace
 uv run gimp-agent doctor --strict --json   # CI-friendly: fail on required checks
 uv run gimp-agent probe --json    # authenticated get_gimp_info round-trip
