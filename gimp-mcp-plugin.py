@@ -17,6 +17,7 @@ import io
 import sys
 import json
 import socket
+import time
 import traceback
 import threading
 import base64
@@ -89,6 +90,13 @@ except ImportError as _filters_imp_err:  # pragma: no cover - fail closed at run
         "gimp_mcp_filters.py must sit next to gimp-mcp-plugin.py "
         f"(looked in {_plugin_dir}): {_filters_imp_err}"
     ) from _filters_imp_err
+try:
+    import gimp_mcp_tx as _tx
+except ImportError as _tx_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_tx.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_tx_imp_err}"
+    ) from _tx_imp_err
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
@@ -166,6 +174,10 @@ class MCPPlugin(Gimp.PlugIn):
         self._protected_item_ids: dict[int, set[int]] = {}
         # Working copies created by ensure_source_immutable (skip on re-ensure).
         self._working_item_ids: dict[int, set[int]] = {}
+        # Agent undo-group transactions (track 0017) — per image_id.
+        self._agent_tx_stack: dict[int, _tx.TxStack] = {}
+        self._agent_tx_recent: dict[int, _tx.RecentClosed] = {}
+        self._agent_tx_timeout_s = _tx.parse_timeout_s(os.environ.get(_tx.ENV_TIMEOUT))
 
         print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
         if not _sec.is_loopback_host(self.host):
@@ -549,6 +561,14 @@ class MCPPlugin(Gimp.PlugIn):
             else:
                 self._set_request_id(None)
 
+            # 0017: wall-clock reap of expired agent TXs on mutating / TX entry
+            # (healthy TX < timeout must not be closed; resolve image_id best-effort).
+            try:
+                if isinstance(raw_params, dict) and cmd_type:
+                    self._maybe_reap_on_dispatch(str(cmd_type), raw_params)
+            except Exception:
+                pass
+
             # Authenticated JSON equivalent of deprecated string command
             if cmd_type == "disable_auto_disconnect":
                 self.auto_disconnect_client = False
@@ -757,6 +777,16 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._undo(j.get("params", {}))
             elif "type" in j and j["type"] == "redo":
                 return self._redo(j.get("params", {}))
+            elif "type" in j and j["type"] == "undo_group_begin":
+                return self._tx_begin(j.get("params", {}))
+            elif "type" in j and j["type"] == "undo_group_end":
+                return self._tx_end(j.get("params", {}))
+            elif "type" in j and j["type"] == "undo_group_rollback":
+                return self._tx_rollback(j.get("params", {}))
+            elif "type" in j and j["type"] == "undo_group_status":
+                return self._tx_status(j.get("params", {}))
+            elif "type" in j and j["type"] == "undo_group_force_close":
+                return self._tx_force_close(j.get("params", {}))
             elif "type" in j and j["type"] == "convert_color_mode":
                 return self._convert_color_mode(j.get("params", {}))
             elif "type" in j and j["type"] == "close_image":
@@ -2635,6 +2665,9 @@ class MCPPlugin(Gimp.PlugIn):
         # Protected Source_Immutable set must not survive close / id recycle (0009 M1).
         self._protected_item_ids.pop(iid, None)
         self._working_item_ids.pop(iid, None)
+        # Agent TX stacks must not survive close / id recycle (0017 H3).
+        self._agent_tx_stack.pop(iid, None)
+        self._agent_tx_recent.pop(iid, None)
 
     def _sync_image_generations(self, open_images=None):
         """Prune generation map to currently open images. Does not reseed closed ids.
@@ -8773,6 +8806,433 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    # ── Agent undo-group transactions (track 0017) ───────────────────────────
+
+    _TX_COMMAND_TYPES = frozenset(
+        {
+            "undo_group_begin",
+            "undo_group_end",
+            "undo_group_rollback",
+            "undo_group_status",
+            "undo_group_force_close",
+            "close_image",
+        }
+    )
+    # Pure-read / non-mutating command types that skip dispatch-entry reap.
+    _TX_REAP_SKIP_TYPES = frozenset(
+        {
+            "get_image_bitmap",
+            "get_image_metadata",
+            "orient_workspace",
+            "get_gimp_info",
+            "get_context_state",
+            "check_server",
+            "list_images",
+            "list_layers",
+            "list_fonts",
+            "list_drawable_filters",
+            "get_selection_bounds",
+            "get_pixel_color",
+            "get_histogram",
+            "verify_alpha_channel",
+            "disable_auto_disconnect",
+        }
+    )
+
+    def _tx_timeout_s(self):
+        return float(self._agent_tx_timeout_s)
+
+    def _tx_stack_for(self, image_id):
+        iid = int(image_id)
+        stack = self._agent_tx_stack.get(iid)
+        if stack is None:
+            stack = _tx.TxStack()
+            self._agent_tx_stack[iid] = stack
+        return stack
+
+    def _tx_recent_for(self, image_id):
+        iid = int(image_id)
+        recent = self._agent_tx_recent.get(iid)
+        if recent is None:
+            recent = _tx.RecentClosed()
+            self._agent_tx_recent[iid] = recent
+        return recent
+
+    def _tx_open_top(self, image_id):
+        stack = self._agent_tx_stack.get(int(image_id))
+        if stack is None:
+            return None
+        return stack.top()
+
+    def _tx_error_kwargs(self, image_id):
+        """Kwargs for make_error when an open agent TX exists for image."""
+        top = self._tx_open_top(image_id)
+        if top is None:
+            return {}
+        return {
+            "rollback_available": True,
+            "transaction_id": top.transaction_id,
+        }
+
+    def _tx_make_error(self, code, message, image_id=None, **kw):
+        if image_id is not None:
+            for k, v in self._tx_error_kwargs(image_id).items():
+                kw.setdefault(k, v)
+        return _sec.make_error(code, message, **kw)
+
+    def _tx_push_recent(self, image_id, record, *, closed_at=None):
+        if closed_at is None:
+            closed_at = time.time()
+        record.closed_at = closed_at
+        self._tx_recent_for(image_id).push(record)
+
+    def _maybe_reap_on_dispatch(self, cmd_type, params):
+        """Best-effort wall-clock reap when image_id is resolvable from params."""
+        if not cmd_type or cmd_type in self._TX_REAP_SKIP_TYPES:
+            return
+        image_id = None
+        handle = params.get("handle") if isinstance(params, dict) else None
+        if isinstance(handle, dict) and handle.get("image_id") is not None:
+            try:
+                image_id = int(handle["image_id"])
+            except (TypeError, ValueError):
+                image_id = None
+        if image_id is None and cmd_type in self._TX_COMMAND_TYPES:
+            # TX handlers re-reap after full image resolve
+            return
+        if image_id is not None:
+            self._reap_expired_tx(image_id)
+
+    def _reap_expired_tx(self, image_id=None):
+        """Force-end expired open agent TXs (wall-clock from begin; no auto-undo).
+
+        Deepest-first via ``image.undo_group_end()`` best-effort. Marks records
+        ``force_closed`` and pushes to recent ring.
+        """
+        timeout_s = self._tx_timeout_s()
+        now_mono = time.monotonic()
+        now_wall = time.time()
+        if image_id is not None:
+            targets = [int(image_id)]
+        else:
+            targets = list(self._agent_tx_stack.keys())
+        for iid in targets:
+            stack = self._agent_tx_stack.get(iid)
+            if stack is None or stack.depth == 0:
+                continue
+            expired = stack.reap_expired(now_mono, timeout_s)
+            if not expired:
+                continue
+            image = self._try_get_image_by_id(iid)
+            for rec in expired:
+                if image is not None:
+                    try:
+                        image.undo_group_end()
+                    except Exception:
+                        pass
+                rec.status = "force_closed"
+                self._tx_push_recent(iid, rec, closed_at=now_wall)
+            if stack.depth == 0:
+                self._agent_tx_stack.pop(iid, None)
+
+    def _try_get_image_by_id(self, image_id):
+        """Best-effort live image lookup by GIMP id (for force-end)."""
+        try:
+            iid = int(image_id)
+            for img in list(Gimp.get_images() or []):
+                try:
+                    if int(img.get_id()) == iid:
+                        return img
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    def _force_end_open_tx(self, image_id, reason=""):
+        """End all open agent TXs on image (no undo); clear stack; recent entries."""
+        iid = int(image_id)
+        stack = self._agent_tx_stack.get(iid)
+        if stack is None or stack.depth == 0:
+            self._agent_tx_stack.pop(iid, None)
+            return []
+        image = self._try_get_image_by_id(iid)
+        closed = stack.force_close_all()
+        now_wall = time.time()
+        for rec in closed:
+            if image is not None:
+                try:
+                    image.undo_group_end()
+                except Exception:
+                    pass
+            rec.status = "force_closed"
+            self._tx_push_recent(iid, rec, closed_at=now_wall)
+        self._agent_tx_stack.pop(iid, None)
+        return closed
+
+    def _tx_begin(self, params):
+        """Start agent undo group TX on image (handle-first)."""
+        try:
+            try:
+                image, image_id = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+            iid = int(image_id)
+            self._reap_expired_tx(iid)
+
+            try:
+                label = _tx.validate_label(params.get("label"))
+            except ValueError as e:
+                return self._tx_make_error(
+                    _sec.CODE_POLICY_DENIED,
+                    str(e),
+                    image_id=iid,
+                )
+
+            stack = self._tx_stack_for(iid)
+            if stack.would_exceed_depth(_tx.MAX_DEPTH):
+                return self._tx_make_error(
+                    _sec.CODE_TX_DEPTH,
+                    f"agent undo TX depth would exceed max {_tx.MAX_DEPTH}",
+                    image_id=iid,
+                )
+
+            ug_ok = image.undo_group_start()
+            self._gimp_bool_or_fail(ug_ok, "image.undo_group_start")
+
+            now_mono = time.monotonic()
+            now_wall = time.time()
+            depth = stack.depth + 1
+            rec = _tx.TxRecord(
+                transaction_id=_tx.mint_transaction_id(),
+                label=label,
+                image_id=iid,
+                opened_mono=now_mono,
+                depth=depth,
+                status="open",
+                opened_at=now_wall,
+            )
+            stack.push(rec)
+            timeout_s = self._tx_timeout_s()
+            return {
+                "status": "success",
+                "results": {
+                    "transaction_id": rec.transaction_id,
+                    "label": rec.label,
+                    "image_handle": self._emit_image_handle(image),
+                    "depth": depth,
+                    "timeout_s": timeout_s,
+                    "opened_at": now_wall,
+                },
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _tx_end(self, params):
+        """Commit/close top agent undo group TX."""
+        image_id = None
+        try:
+            try:
+                image, image_id = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+            iid = int(image_id)
+            self._reap_expired_tx(iid)
+
+            stack = self._tx_stack_for(iid)
+            want_id = params.get("transaction_id")
+            if want_id is not None:
+                want_id = str(want_id)
+            code, top = stack.end_top(want_id)
+            if code != "ok" or top is None:
+                return self._tx_make_error(
+                    _sec.CODE_TX_MISMATCH,
+                    "undo_group_end: empty stack or transaction_id is not top",
+                    image_id=iid,
+                )
+
+            ug_ok = image.undo_group_end()
+            self._gimp_bool_or_fail(ug_ok, "image.undo_group_end")
+
+            rec = stack.pop()
+            rec.status = "committed"
+            self._tx_push_recent(iid, rec)
+            depth_remaining = stack.depth
+            if depth_remaining == 0:
+                self._agent_tx_stack.pop(iid, None)
+            top_remaining = stack.top()
+            out = {
+                "transaction_id": rec.transaction_id,
+                "status": "committed",
+                "depth_remaining": depth_remaining,
+            }
+            if top_remaining is not None:
+                out["top_transaction_id"] = top_remaining.transaction_id
+            return {"status": "success", "results": out}
+        except Exception as e:
+            kw = self._tx_error_kwargs(image_id) if image_id is not None else {}
+            return {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                **kw,
+            }
+
+    def _tx_rollback(self, params):
+        """Abort top agent TX: undo_group_end + image.undo + gen bump."""
+        image_id = None
+        end_started = False
+        try:
+            try:
+                image, image_id = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+            iid = int(image_id)
+            self._reap_expired_tx(iid)
+
+            stack = self._tx_stack_for(iid)
+            want_id = params.get("transaction_id")
+            if want_id is not None:
+                want_id = str(want_id)
+            code, top = stack.end_top(want_id)
+            if code != "ok" or top is None:
+                return self._tx_make_error(
+                    _sec.CODE_TX_MISMATCH,
+                    "undo_group_rollback: empty stack or transaction_id is not top",
+                    image_id=iid,
+                )
+
+            end_started = True
+            ug_ok = image.undo_group_end()
+            self._gimp_bool_or_fail(ug_ok, "image.undo_group_end")
+            try:
+                image.undo()
+            except Exception as undo_exc:
+                return self._tx_make_error(
+                    _sec.CODE_INTERNAL,
+                    f"undo_group_rollback: undo_group_end ok but image.undo failed: {undo_exc}",
+                    image_id=iid,
+                    state_may_have_changed=True,
+                )
+            try:
+                Gimp.displays_flush()
+            except Exception:
+                pass
+            gen = self._bump_image_generation(iid)
+
+            rec = stack.pop()
+            rec.status = "rolled_back"
+            self._tx_push_recent(iid, rec)
+            depth_remaining = stack.depth
+            if depth_remaining == 0:
+                self._agent_tx_stack.pop(iid, None)
+            top_remaining = stack.top()
+            out = {
+                "transaction_id": rec.transaction_id,
+                "status": "rolled_back",
+                "generation": gen,
+                "depth_remaining": depth_remaining,
+            }
+            if top_remaining is not None:
+                out["top_transaction_id"] = top_remaining.transaction_id
+            return {"status": "success", "results": out}
+        except Exception as e:
+            kw = {}
+            if image_id is not None:
+                kw.update(self._tx_error_kwargs(image_id))
+            if end_started:
+                kw["state_may_have_changed"] = True
+            body = {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                **kw,
+            }
+            if end_started:
+                body["code"] = _sec.CODE_INTERNAL
+            return body
+
+    def _tx_status(self, params):
+        """Open stack + recent closed summaries for image."""
+        try:
+            try:
+                image, image_id = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+            iid = int(image_id)
+            self._reap_expired_tx(iid)
+
+            timeout_s = self._tx_timeout_s()
+            now_mono = time.monotonic()
+            stack = self._agent_tx_stack.get(iid) or _tx.TxStack()
+            recent = self._agent_tx_recent.get(iid) or _tx.RecentClosed()
+            open_list = [
+                _tx.serialize_open_record(r, now_mono=now_mono, timeout_s=timeout_s)
+                for r in stack.open_list()
+            ]
+            recent_list = [_tx.serialize_recent_record(r) for r in recent.list()]
+            return {
+                "status": "success",
+                "results": {
+                    "image_handle": self._emit_image_handle(image),
+                    "open": open_list,
+                    "recent": recent_list,
+                    "timeout_s": timeout_s,
+                },
+            }
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _tx_force_close(self, params):
+        """Force-end open agent TXs without undo (all or id+above)."""
+        try:
+            try:
+                image, image_id = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+            iid = int(image_id)
+            self._reap_expired_tx(iid)
+
+            stack = self._tx_stack_for(iid)
+            want_id = params.get("transaction_id")
+            now_wall = time.time()
+            if want_id is None or (isinstance(want_id, str) and not want_id.strip()):
+                closed = stack.force_close_all()
+            else:
+                closed = stack.force_close_from(str(want_id))
+                if closed is None:
+                    return self._tx_make_error(
+                        _sec.CODE_TX_NOT_FOUND,
+                        f"undo_group_force_close: unknown transaction_id {want_id!r}",
+                        image_id=iid,
+                    )
+
+            for rec in closed:
+                try:
+                    image.undo_group_end()
+                except Exception:
+                    pass
+                rec.status = "force_closed"
+                self._tx_push_recent(iid, rec, closed_at=now_wall)
+
+            if stack.depth == 0:
+                self._agent_tx_stack.pop(iid, None)
+            top_remaining = stack.top()
+            note = (
+                "Force-closed without auto-undo; partial canvas work may remain "
+                "as undoable unit(s). Use advanced undo or a checkpoint."
+            )
+            out = {
+                "force_closed_count": len(closed),
+                "force_closed_ids": [r.transaction_id for r in closed],
+                "note": note,
+            }
+            if top_remaining is not None:
+                out["top_transaction_id"] = top_remaining.transaction_id
+            return {"status": "success", "results": out}
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
     def _convert_color_mode(self, params):
         """Convert image color mode."""
         try:
@@ -8848,8 +9308,10 @@ class MCPPlugin(Gimp.PlugIn):
                     cfg.set_property("image", image)
                     cfg.set_property("file", gio_file)
                     proc.run(cfg)
-            # Delete all displays for this image
+            # 0017 H3: force-end open agent TXs BEFORE display delete / image.delete
             closed_id = int(image.get_id())
+            self._force_end_open_tx(closed_id, reason="close_image")
+            # Delete all displays for this image
             for display in Gimp.get_displays():
                 try:
                     if display.get_image().get_id() == closed_id:
