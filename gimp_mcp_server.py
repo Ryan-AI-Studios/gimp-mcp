@@ -901,8 +901,10 @@ def session_probe(
       if unparseable
 
     Returns: connected, host, port, gimp_version (when up), tool_surface,
-    advanced_tools_enabled, hl_tool_names, capabilities, nonce, version_ok,
-    and error when disconnected.
+    advanced_tools_enabled, hl_tool_names, capabilities, image_delivery
+    (emits_mcp_image_content, filesystem_snapshot_write,
+    client_model_visibility always ``"unknown"``, fallback, snapshot_write_env),
+    nonce, version_ok, and error when disconnected.
     """
     probe = _probe_connection()
     gimp_version = probe.get("gimp_version") if probe.get("connected") else None

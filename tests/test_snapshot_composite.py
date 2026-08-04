@@ -484,6 +484,28 @@ def test_snapshot_write_dir_jail_rejects_outside(tmp_path: Path) -> None:
         )
 
 
+def test_snapshot_write_dir_override_in_jail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Valid GIMP_MCP_SNAPSHOT_DIR under workspace redirects the write."""
+    import gimp_mcp_server as server
+
+    root = tmp_path / "ws"
+    root.mkdir()
+    override = root / "custom-snaps"
+    monkeypatch.setenv("GIMP_WORKSPACE_ROOT", str(root))
+    monkeypatch.setenv("GIMP_MCP_SNAPSHOT_DIR", str(override))
+    monkeypatch.delenv("GIMP_MCP_SNAPSHOT_WRITE", raising=False)
+
+    tr = server._snapshot_tool_result(_minimal_plugin_results(), image_index=0)
+    _, structured = tr.to_mcp_result()
+    assert structured["filesystem_write"] is True
+    path = Path(str(structured["filesystem_path"]))
+    assert path.is_file()
+    assert path.parent.resolve() == override.resolve()
+    assert path.name.startswith("snap-")
+
+
 def test_snapshot_write_enabled_param_and_env() -> None:
     assert snap.snapshot_write_enabled(param=True) is True
     assert snap.snapshot_write_enabled(param=False) is False
