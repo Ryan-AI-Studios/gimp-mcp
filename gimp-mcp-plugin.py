@@ -100,8 +100,8 @@ except ImportError as _tx_imp_err:  # pragma: no cover - fail closed at runtime
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
-MAX_REGION_SIZE = 8192  # Maximum region dimension in pixels
-DEFAULT_TIMEOUT_SECONDS = 30  # Default timeout for operations
+# Source crop cap — SoT in gimp_mcp_snapshot (track 0023)
+MAX_REGION_EDGE = _snap.MAX_REGION_EDGE
 MAX_SELECT_LAYERS = _handles.MAX_SELECT_LAYERS
 
 
@@ -1250,15 +1250,21 @@ class MCPPlugin(Gimp.PlugIn):
 
             print(f"Getting current image bitmap with params: {params}")
 
-            max_width = params.get("max_width")
-            max_height = params.get("max_height")
-
-            # Normalize region (accepts x/y or origin_x/origin_y)
+            # Snapshot budget (0023): always complete max box; region edge cap;
+            # defense-in-depth when host is stale. Prefer host-resolved dims.
             raw_region = params.get("region")
             try:
-                region = _snap.normalize_region(raw_region) if raw_region else None
+                budget = _snap.resolve_snapshot_max_box(
+                    params.get("max_width"),
+                    params.get("max_height"),
+                    region=raw_region if raw_region else None,
+                )
             except (TypeError, ValueError) as e:
-                return {"status": "error", "error": f"Invalid region: {e!s}"}
+                return _sec.make_error(_sec.CODE_POLICY_DENIED, str(e))
+
+            max_width = budget.max_width
+            max_height = budget.max_height
+            region = budget.region
 
             origin_x = origin_y = region_width = region_height = None
             region_max_w = region_max_h = None
@@ -1374,7 +1380,8 @@ class MCPPlugin(Gimp.PlugIn):
                 )
                 dup.crop(region_width, region_height, origin_x, origin_y)
 
-            # Scale if max dimensions provided (region max_* preferred when set)
+            # Scale into resolved max box (always complete after budget resolve).
+            # Prefer complete region-local max_* when set; else full max box.
             current_width = dup.get_width()
             current_height = dup.get_height()
             target_width = current_width
@@ -1382,29 +1389,24 @@ class MCPPlugin(Gimp.PlugIn):
 
             if region_max_w is not None and region_max_h is not None:
                 max_w, max_h = int(region_max_w), int(region_max_h)
-            elif max_width is not None and max_height is not None:
-                max_w, max_h = int(max_width), int(max_height)
             else:
-                max_w = max_h = None
+                max_w, max_h = int(max_width), int(max_height)
 
-            if max_w is not None and max_h is not None:
-                target_width, target_height = _snap.compute_fit_scale(
-                    current_width, current_height, max_w, max_h
-                )
-                if target_width != current_width or target_height != current_height:
-                    scaling_ratio = (target_width * target_height) / (
-                        current_width * current_height
-                    )
-                    if scaling_ratio > LARGE_SCALING_THRESHOLD:
-                        print(
-                            f"Warning: Large scaling operation detected "
-                            f"(ratio: {scaling_ratio:.2f}). This may take time."
-                        )
+            target_width, target_height = _snap.compute_fit_scale(
+                current_width, current_height, max_w, max_h
+            )
+            if target_width != current_width or target_height != current_height:
+                scaling_ratio = (target_width * target_height) / (current_width * current_height)
+                if scaling_ratio > LARGE_SCALING_THRESHOLD:
                     print(
-                        f"Scaling composite from {current_width}x{current_height} "
-                        f"to {target_width}x{target_height}"
+                        f"Warning: Large scaling operation detected "
+                        f"(ratio: {scaling_ratio:.2f}). This may take time."
                     )
-                    dup.scale(target_width, target_height)
+                print(
+                    f"Scaling composite from {current_width}x{current_height} "
+                    f"to {target_width}x{target_height}"
+                )
+                dup.scale(target_width, target_height)
 
             # Export PNG via existing PDB paths (no Pillow).
             # Prefer the merge/flatten return layer as drawable. Crop/scale may
