@@ -51,7 +51,7 @@ class DoctorReport:
     def envelope_data(self) -> dict[str, Any]:
         out = dict(self.data)
         out["checks"] = [c.as_dict() for c in self.checks]
-        out["batch_interpreter"] = False
+        out["batch_interpreter"] = True
         return out
 
 
@@ -81,7 +81,7 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
     first_required_message: str | None = None
 
     data: dict[str, Any] = {
-        "batch_interpreter": False,
+        "batch_interpreter": True,
         "strict": strict,
     }
 
@@ -377,7 +377,8 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
     pin_msg = (
         f"python {py_ver}; mcp={mcp_ver} fastmcp={fastmcp_ver}; "
         "mcp/fastmcp pins held (mcp>=1.10,<2, fastmcp>=2.10,<3); "
-        "batch_interpreter=false until track 0019"
+        "batch_interpreter=true (constrained job protocol; "
+        "--batch-interpreter plug-in-gimp-mcp-batch; not python-fu-eval)"
     )
     checks.append(
         CheckResult(

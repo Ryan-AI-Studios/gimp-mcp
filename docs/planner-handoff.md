@@ -108,16 +108,18 @@ minting. Track IDs are creation order, not execution order.
   → 0016 NDE — Completed
   → 0017 undo groups — Completed
   → 0018 install/doctor — Completed
-  → 0019 … through 0028 Final product polish (v1)
+  → 0019 batch procedures — implementing (feature branch)
+  → 0020 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0018 Completed.** Next: **0019** BatchProcedureRecipes
-(placeholder). Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**.
-Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010** → **28** with **0017**.
-Errors **0011** + honest `rollback_available` when open agent undo TX (**0017**).
-CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**. NDE **0016**.
-Undo groups **0017**. Install SoT **`uv run gimp-agent install`** (**0018**, EXPECTED **10**).
-Authoritative table: `conductor/conductor.md`.
+**28 tracks** (0001–0028). **0001–0018 Completed.** Active: **0019** BatchProcedureRecipes
+(implementation on `feature/0019-batch-procedure-recipes`). Orientation SoT is
+`orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
+Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
+`rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
+Pixel verify **0014**. Recipes **0015**. NDE **0016**. Undo groups **0017**. Install SoT
+**`uv run gimp-agent install`** (**0018**, EXPECTED **10**). Headless batch **0019**
+(in progress). Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -301,10 +303,18 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~5b9d50a post-0018) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0019-BatchProcedureRecipes** (placeholder); prior **0018 Completed** PR #27 / main@5b9d50a |
+| Active focus | **0019-BatchProcedureRecipes** (implementing on feature branch); prior **0018 Completed** PR #27 / main@5b9d50a |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade |
+
+### 0019 Implementing — BatchProcedureRecipes
+
+- **Branch:** `feature/0019-batch-procedure-recipes`. Ledger TX pending (orchestrator finalizes).
+- **Shipped in tree:** `gimp_agent/batch.py` (host, not EXPECTED); plugin `BatchProcedure.new` for `plug-in-gimp-mcp-batch` / label `gimp-mcp-recipe`; batch-mode init (`GIMP_MCP_BATCH_MODE=1` → no token rotate / no TCP); `run_recipe(..., backend=)`; CLI `--backend`; capability/doctor `batch_interpreter: true`; tests `tests/test_batch.py`.
+- **AI-review locks:** **B1** interpreter = procedure name only; **H1** batch mode no token rotate; **H2** result-file SoT; **H3** contiguous GIMP then HOST; **H4** `BatchProcedure.new`.
+- **Architecture:** job JSON v1; list argv `shell=False`; `--quit` + 120s → `CODE_TIMEOUT`; HOST_OPS on host after; EXPECTED stays **10**.
+- **OOS / residual:** live install + ping checklist; Windows process-tree kill escalation; `doctor --probe-batch`; python-fu-eval never product; GIMP CI → **0022**; skills → **0020**.
 
 ### 0018 Completed (PR #27 / main@5b9d50a)
 
@@ -484,7 +494,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Recipes:** `gimp_agent/recipes/*.json` — transparent-png, exif-normalize, web-export,
   compare-artifacts, exif-strip (5).
 - **MCP HL 22:** `list_recipes` + `apply_recipe`; `recipe_library: true`;
-  `batch_interpreter` remains **false** until **0019**.
+  `batch_interpreter` remains **false** until **0019** (plan Ready: constrained BatchProcedure).
 - **CLI:** `gimp-agent recipes` / `run` / `batch` (append inputs, continue-on-fail;
   bad params exit 2; partial exit 10).
 - **Locked:** whole-value `$name`; allowlist ≠ MCP advanced tags; `created_paths` rollback;

@@ -252,15 +252,24 @@ changed-pixel stats, alpha transparent counts, and optional **global** luminance
 SSIM (not ImageMagick windowed SSIM). Optional ImageMagick is detected by
 `doctor` (`magick` or legacy `compare`) but is never required.
 
-**Recipe library (track 0015):** versioned allowlisted JSON under
+**Recipe library (track 0015 + 0019 headless):** versioned allowlisted JSON under
 `gimp_agent/recipes/` (package data). MCP tools `list_recipes` + `apply_recipe`
 (HL catalog **28**). CLI: `recipes`, `run RECIPE_ID`, `batch RECIPE_ID`
-(multi-file continue-on-fail). Capability `recipe_library: true`;
-`batch_interpreter` stays **false** until track 0019. Recipe steps call plugin
-TCP / host modules **directly** (not filtered by `GIMP_MCP_ADVANCED_TOOLS`).
-Interpolation is whole-value `$name` only. Rollback unlinks only
-`created_paths` (never pre-existing `replace` targets). Shipped: `transparent-png`,
-`exif-normalize`, `web-export`, `compare-artifacts`, optional `exif-strip`.
+(multi-file continue-on-fail). Capability `recipe_library: true` and
+`batch_interpreter: true` (constrained BatchProcedure job protocol).
+
+**Headless path (track 0019):** `batch_safe` recipes with contiguous GIMP_OPS
+then HOST_OPS can run without a live MCP TCP session via
+`gimp-console --batch-interpreter plug-in-gimp-mcp-batch` (procedure name —
+**not** the pretty label `gimp-mcp-recipe`, **not** `python-fu-eval`). CLI:
+`gimp-agent run web-export --backend auto|session|headless` (default `auto`:
+session first, then headless). Host helpers live in `gimp_agent/batch.py` (not
+an EXPECTED plug-in ship file). Result file next to the job is source of truth
+(ignore GLib/GObject stderr noise). Recipe steps call plugin TCP / host modules
+**directly** (not filtered by `GIMP_MCP_ADVANCED_TOOLS`). Interpolation is
+whole-value `$name` only. Rollback unlinks only `created_paths` (never
+pre-existing `replace` targets). Shipped: `transparent-png`, `exif-normalize`,
+`web-export`, `compare-artifacts`, optional `exif-strip`.
 
 **Doctor non-strict vs `--strict`:** default `doctor` is diagnostics-only — required
 check failures still yield process exit **0** and envelope `exit_code: 0` with

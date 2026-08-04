@@ -595,7 +595,161 @@ def test_new_output_deleted_on_fail(workspace: Path) -> None:
     )
 
 
-def test_batch_safe_plugin_down_unsupported(workspace: Path) -> None:
+def test_batch_safe_plugin_down_headless_fallback(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """batch_safe + broken session + mock headless → ok backend headless."""
+    src = workspace / "in.png"
+    src.write_bytes(build_minimal_png(width=1, height=1, color_type=2))
+    out = workspace / "out.png"
+
+    def _send(_cmd: str, _params: dict[str, Any]) -> dict[str, Any]:
+        raise ConnectionError("plugin down")
+
+    from gimp_agent import batch as batch_mod
+
+    monkeypatch.setattr(
+        batch_mod,
+        "headless_runtime_available",
+        lambda: (True, "ok"),
+    )
+
+    def _fake_run(job: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        # Simulate export side-effect for HOST verify step
+        out.write_bytes(src.read_bytes())
+        return {
+            "ok": True,
+            "steps": [
+                {"op": "open_image", "ok": True, "result": {}},
+                {"op": "scale_image", "ok": True, "result": {"skipped": True}},
+                {
+                    "op": "export_image",
+                    "ok": True,
+                    "result": {"file_path": str(out)},
+                },
+            ],
+        }
+
+    monkeypatch.setattr(batch_mod, "run_headless_job", _fake_run)
+
+    log = recipes.run_recipe(
+        "web-export",
+        input_path=str(src),
+        output_path=str(out),
+        session_send=_send,
+        backend="auto",
+    )
+    assert log["ok"] is True
+    assert log["backend"] == "headless"
+    assert out.is_file()
+
+
+def test_batch_safe_explicit_headless(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    src = workspace / "in.png"
+    src.write_bytes(build_minimal_png(width=1, height=1, color_type=2))
+    out = workspace / "out.png"
+
+    from gimp_agent import batch as batch_mod
+
+    monkeypatch.setattr(batch_mod, "headless_runtime_available", lambda: (True, "ok"))
+
+    def _fake_run(job: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        out.write_bytes(src.read_bytes())
+        return {
+            "ok": True,
+            "steps": [
+                {
+                    "op": s["op"],
+                    "ok": True,
+                    "result": {"file_path": str(out)} if s["op"] == "export_image" else {},
+                }
+                for s in job["steps"]
+            ],
+        }
+
+    monkeypatch.setattr(batch_mod, "run_headless_job", _fake_run)
+    log = recipes.run_recipe(
+        "web-export",
+        input_path=str(src),
+        output_path=str(out),
+        backend="headless",
+    )
+    assert log["backend"] == "headless"
+    assert log["ok"] is True
+
+
+def test_interleaved_headless_unsupported(workspace: Path) -> None:
+    reg = recipes.RecipeRegistry()
+    reg.add(
+        {
+            "id": "interleaved",
+            "version": "1.0.0",
+            "title": "interleaved",
+            "batch_safe": True,
+            "requires_open_session": False,
+            "requires_gimp": True,
+            "parameters": {
+                "input_path": {"type": "path", "required": True},
+                "output_path": {"type": "path", "required": True},
+            },
+            "steps": [
+                {"op": "open_image", "with": {"file_path": "$input_path"}},
+                {
+                    "op": "verify_artifact",
+                    "with": {"path": "$input_path", "expected": {"format": "png"}},
+                },
+                {
+                    "op": "export_image",
+                    "with": {
+                        "file_path": "$output_path",
+                        "format": "png",
+                        "collision": "fail",
+                    },
+                },
+            ],
+        }
+    )
+    src = workspace / "in.png"
+    src.write_bytes(build_minimal_png(width=1, height=1, color_type=2))
+    with pytest.raises(sec.GimpMcpError) as ei:
+        recipes.run_recipe(
+            "interleaved",
+            input_path=str(src),
+            output_path=str(workspace / "out.png"),
+            backend="headless",
+            registry=reg,
+        )
+    assert ei.value.code == sec.CODE_UNSUPPORTED
+    assert "contiguous" in ei.value.message.lower()
+
+
+def test_not_batch_safe_no_tcp_connection_failed(workspace: Path) -> None:
+    reg = recipes.RecipeRegistry()
+    reg.add(
+        {
+            "id": "session-only",
+            "version": "1.0.0",
+            "title": "session only",
+            "batch_safe": False,
+            "requires_open_session": False,
+            "requires_gimp": True,
+            "parameters": {
+                "input_path": {"type": "path", "required": True},
+                "output_path": {"type": "path", "required": True},
+            },
+            "steps": [
+                {"op": "open_image", "with": {"file_path": "$input_path"}},
+                {
+                    "op": "export_image",
+                    "with": {
+                        "file_path": "$output_path",
+                        "format": "png",
+                        "collision": "fail",
+                    },
+                },
+            ],
+        }
+    )
     src = workspace / "in.png"
     src.write_bytes(build_minimal_png(width=1, height=1, color_type=2))
 
@@ -604,12 +758,39 @@ def test_batch_safe_plugin_down_unsupported(workspace: Path) -> None:
 
     with pytest.raises(sec.GimpMcpError) as ei:
         recipes.run_recipe(
-            "web-export",
+            "session-only",
             input_path=str(src),
             output_path=str(workspace / "out.png"),
             session_send=_send,
+            registry=reg,
+            backend="auto",
+        )
+    assert ei.value.code == sec.CODE_CONNECTION_FAILED
+
+
+def test_batch_safe_no_console_unsupported(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = workspace / "in.png"
+    src.write_bytes(build_minimal_png(width=1, height=1, color_type=2))
+
+    from gimp_agent import batch as batch_mod
+
+    monkeypatch.setattr(
+        batch_mod,
+        "headless_runtime_available",
+        lambda: (False, "gimp-console not found"),
+    )
+
+    with pytest.raises(sec.GimpMcpError) as ei:
+        recipes.run_recipe(
+            "web-export",
+            input_path=str(src),
+            output_path=str(workspace / "out.png"),
+            backend="headless",
         )
     assert ei.value.code == sec.CODE_UNSUPPORTED
+    assert "gimp-console" in ei.value.message or "unavailable" in ei.value.message
 
 
 # ---------------------------------------------------------------------------
@@ -665,7 +846,7 @@ def test_recipe_library_capability_true() -> None:
 
     caps = default_capabilities()
     assert caps["recipe_library"] is True
-    assert caps["batch_interpreter"] is False
+    assert caps["batch_interpreter"] is True
 
 
 def test_hl_catalog_exact_28() -> None:

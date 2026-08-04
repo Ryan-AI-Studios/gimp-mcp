@@ -795,6 +795,244 @@ def _default_session_send(command_type: str, params: dict[str, Any]) -> dict[str
     return probe_mod.send_authenticated_command(command_type, params)
 
 
+def _run_recipe_headless(
+    *,
+    recipe_id: str,
+    recipe: dict[str, Any],
+    steps: list[Any],
+    context: dict[str, Any],
+    delete_on_fail: bool,
+    current_handle: dict[str, Any] | None = None,
+    session_failure: BaseException | None = None,
+) -> dict[str, Any]:
+    """Execute batch_safe recipe via BatchProcedure job + host HOST_OPS (0019).
+
+    Path-based jobs only — ``current_handle`` is unused (no cross-process handles).
+    """
+    from gimp_agent import batch as batch_mod
+
+    _ = current_handle  # session handles do not cross into headless jobs
+    batch_safe = bool(recipe.get("batch_safe", False))
+    if not batch_safe:
+        detail = f": {session_failure}" if session_failure else ""
+        raise sec.GimpMcpError(
+            sec.CODE_CONNECTION_FAILED,
+            (f"recipe {recipe_id!r} is not batch_safe; headless unavailable{detail}"),
+            details={"recipe_id": recipe_id},
+        )
+
+    if not batch_mod.headless_eligible(recipe):
+        raise sec.GimpMcpError(
+            sec.CODE_UNSUPPORTED,
+            (
+                f"recipe {recipe_id!r} headless requires contiguous GIMP_OPS before "
+                f"HOST_OPS (interleaved steps need a live session backend)"
+            ),
+            details={"recipe_id": recipe_id, "backend": "headless"},
+        )
+
+    available, reason = batch_mod.headless_runtime_available()
+    if not available:
+        raise sec.GimpMcpError(
+            sec.CODE_UNSUPPORTED,
+            (f"recipe {recipe_id!r} is batch_safe but headless runtime unavailable ({reason})"),
+            details={"recipe_id": recipe_id, "reason": reason},
+        )
+
+    # Split contiguous GIMP then HOST (eligibility already checked).
+    # GIMP steps: interpolate now. HOST steps: keep raw templates; interpolate after job.
+    gimp_steps: list[dict[str, Any]] = []
+    host_step_templates: list[dict[str, Any]] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        op = str(step.get("op"))
+        with_raw = step.get("with") or {}
+        if not isinstance(with_raw, dict):
+            with_raw = {}
+        if op in GIMP_OPS:
+            interpolated = interpolate(with_raw, context)
+            if not isinstance(interpolated, dict):
+                raise sec.GimpMcpError(
+                    sec.CODE_INTERNAL,
+                    f"step with must interpolate to object for op {op}",
+                    details={"op": op},
+                )
+            step_params = _jail_paths_in_mapping(interpolated)
+            gimp_steps.append({"op": op, "with": step_params})
+        elif op in HOST_OPS:
+            host_step_templates.append({"op": op, "with": dict(with_raw)})
+        else:
+            raise sec.GimpMcpError(
+                sec.CODE_UNSUPPORTED,
+                f"op not allowlisted at runtime: {op}",
+                details={"op": op},
+            )
+
+    created_paths: list[str] = []
+    step_logs: list[dict[str, Any]] = []
+    artifacts: list[dict[str, Any]] = []
+    run_ok = True
+    fail_error: sec.GimpMcpError | None = None
+
+    # Snapshot existence for export targets before job runs.
+    existed_before: dict[str, bool] = {}
+    for gs in gimp_steps:
+        with_map = gs.get("with") or {}
+        if isinstance(with_map, dict):
+            for key in _PATH_KEYS:
+                p = with_map.get(key)
+                if isinstance(p, str) and p:
+                    existed_before[p] = Path(p).exists()
+
+    try:
+        job = batch_mod.build_job_from_recipe_steps(recipe_id, gimp_steps)
+        batch_result = batch_mod.run_headless_job(job)
+        # Merge GIMP step logs from result when present
+        remote_steps = batch_result.get("steps")
+        if isinstance(remote_steps, list) and remote_steps:
+            for item in remote_steps:
+                if isinstance(item, dict):
+                    step_logs.append(
+                        {
+                            "op": item.get("op"),
+                            "ok": bool(item.get("ok", True)),
+                            "result": item.get("result") or {},
+                        }
+                    )
+                    # Rebind output_path from export results
+                    res = item.get("result")
+                    if item.get("op") in ("export_image", "save_xcf") and isinstance(res, dict):
+                        result_path = res.get("file_path")
+                        if isinstance(result_path, str) and result_path:
+                            jailed_resolved = _jail_path(result_path, "output_path")
+                            assert jailed_resolved is not None
+                            context["output_path"] = jailed_resolved
+                            if (
+                                Path(jailed_resolved).exists()
+                                and not existed_before.get(jailed_resolved, False)
+                                and jailed_resolved not in created_paths
+                            ):
+                                created_paths.append(jailed_resolved)
+                                artifacts.append({"path": jailed_resolved, "role": "output"})
+        else:
+            for gs in gimp_steps:
+                step_logs.append({"op": gs["op"], "ok": True, "result": {}})
+                with_map = gs.get("with") or {}
+                if gs["op"] in ("export_image", "save_xcf") and isinstance(with_map, dict):
+                    fp = with_map.get("file_path")
+                    if isinstance(fp, str) and fp and Path(fp).exists():
+                        if not existed_before.get(fp, False) and fp not in created_paths:
+                            created_paths.append(fp)
+                            artifacts.append({"path": fp, "role": "output"})
+                        context["output_path"] = fp
+
+        # HOST_OPS on host after GIMP job (re-interpolate with export rebinds)
+        for hs in host_step_templates:
+            op = str(hs["op"])
+            with_raw = hs.get("with") or {}
+            interpolated = interpolate(with_raw, context)
+            if not isinstance(interpolated, dict):
+                raise sec.GimpMcpError(
+                    sec.CODE_INTERNAL,
+                    f"step with must interpolate to object for op {op}",
+                    details={"op": op},
+                )
+            step_params = _jail_paths_in_mapping(interpolated)
+            try:
+                result = _run_host_op(op, step_params)
+            except (sec.GimpMcpError, sec.SecurityError) as exc:
+                run_ok = False
+                if isinstance(exc, sec.SecurityError):
+                    fail_error = sec.GimpMcpError(exc.code, exc.message)
+                else:
+                    fail_error = exc
+                step_logs.append(
+                    {
+                        "op": op,
+                        "ok": False,
+                        "error": {
+                            "code": fail_error.code,
+                            "message": fail_error.message,
+                            "details": fail_error.details,
+                        },
+                    }
+                )
+                break
+            step_logs.append({"op": op, "ok": True, "result": result})
+            if op == "compare_images" and isinstance(result, dict):
+                diff_p = result.get("diff_path")
+                if isinstance(diff_p, str) and diff_p and Path(diff_p).exists():
+                    if diff_p not in created_paths:
+                        created_paths.append(diff_p)
+                        artifacts.append({"path": diff_p, "role": "diff"})
+    except (sec.GimpMcpError, sec.SecurityError) as exc:
+        run_ok = False
+        if isinstance(exc, sec.SecurityError):
+            fail_error = sec.GimpMcpError(exc.code, exc.message)
+        else:
+            fail_error = exc
+        step_logs.append(
+            {
+                "op": "headless_job",
+                "ok": False,
+                "error": {
+                    "code": fail_error.code,
+                    "message": fail_error.message,
+                    "details": fail_error.details,
+                },
+            }
+        )
+    except Exception as exc:
+        run_ok = False
+        fail_error = sec.GimpMcpError(
+            sec.CODE_INTERNAL,
+            f"headless recipe failed: {exc}",
+            details={"recipe_id": recipe_id},
+        )
+        step_logs.append(
+            {
+                "op": "headless_job",
+                "ok": False,
+                "error": {
+                    "code": fail_error.code,
+                    "message": fail_error.message,
+                },
+            }
+        )
+
+    if not run_ok and delete_on_fail:
+        for path in list(created_paths):
+            try:
+                p = Path(path)
+                if p.is_file():
+                    p.unlink()
+            except OSError as exc:
+                logger.warning("rollback unlink failed for %s: %s", path, exc)
+
+    log: dict[str, Any] = {
+        "ok": run_ok,
+        "recipe_id": recipe["id"],
+        "version": recipe["version"],
+        "backend": "headless",
+        "steps": step_logs,
+        "artifacts": artifacts,
+        "created_paths": created_paths,
+    }
+    if not run_ok and fail_error is not None:
+        log["error"] = {
+            "code": fail_error.code,
+            "message": fail_error.message,
+            "details": fail_error.details,
+        }
+        raise sec.GimpMcpError(
+            fail_error.code,
+            fail_error.message,
+            details={**(fail_error.details or {}), "mutation_log": log},
+        )
+    return log
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -810,11 +1048,15 @@ def run_recipe(
     handle: dict[str, Any] | None = None,
     session_send: SessionSend | None = None,
     registry: RecipeRegistry | None = None,
+    backend: str = "auto",
 ) -> dict[str, Any]:
     """Run a recipe; return mutation log.
 
     ``session_send`` is injectable for tests (``(command_type, params) -> result``).
     When omitted and the recipe ``requires_gimp``, uses authenticated TCP probe.
+
+    ``backend``: ``auto`` (session then headless), ``session``, or ``headless``.
+    Headless uses constrained BatchProcedure jobs for contiguous GIMP_OPS (0019).
 
     Reserved names ``input_path``, ``output_path``, and ``handle`` must be set only
     via the dedicated kwargs (or CLI/MCP flags) — not inside ``params``.
@@ -825,7 +1067,15 @@ def run_recipe(
     requires_gimp = bool(recipe.get("requires_gimp", True))
     requires_open = bool(recipe.get("requires_open_session", False))
     batch_safe = bool(recipe.get("batch_safe", False))
-    backend: str = "session" if requires_gimp else "host"
+    backend_pref = str(backend or "auto").strip().lower()
+    if backend_pref not in ("auto", "session", "headless"):
+        raise sec.GimpMcpError(
+            sec.CODE_POLICY_DENIED,
+            f"backend must be auto|session|headless, got {backend!r}",
+            details={"backend": backend},
+        )
+    # Resolved after path selection: session | headless | host
+    backend_used: str = "session" if requires_gimp else "host"
 
     # Reserved I/O binding names come only from dedicated kwargs / CLI flags.
     user_params: dict[str, Any] = dict(params or {})
@@ -917,7 +1167,7 @@ def run_recipe(
         )
 
     send: SessionSend | None = session_send
-    if requires_gimp and send is None:
+    if requires_gimp and send is None and backend_pref != "headless":
         send = _default_session_send
 
     rollback_cfg = recipe.get("rollback") or {}
@@ -935,6 +1185,18 @@ def run_recipe(
     fail_error: sec.GimpMcpError | None = None
 
     steps = recipe.get("steps") or []
+
+    # Explicit headless: run GIMP_OPS via BatchProcedure then HOST_OPS on host.
+    if requires_gimp and backend_pref == "headless":
+        return _run_recipe_headless(
+            recipe_id=recipe_id,
+            recipe=recipe,
+            steps=steps if isinstance(steps, list) else [],
+            context=context,
+            delete_on_fail=delete_on_fail,
+            current_handle=current_handle,
+        )
+
     for step in steps:
         if not isinstance(step, dict):
             continue
@@ -977,15 +1239,29 @@ def run_recipe(
                         current_handle=current_handle,
                     )
                 except (OSError, TimeoutError, ConnectionError, RuntimeError) as exc:
-                    # Plugin down: batch_safe → UNSUPPORTED (honest, not silent)
-                    if batch_safe:
+                    # auto: headless fallback for batch_safe contiguous recipes (0019)
+                    if backend_pref == "auto" and batch_safe:
+                        return _run_recipe_headless(
+                            recipe_id=recipe_id,
+                            recipe=recipe,
+                            steps=steps if isinstance(steps, list) else [],
+                            context=context,
+                            delete_on_fail=delete_on_fail,
+                            current_handle=handle if isinstance(handle, dict) else None,
+                            session_failure=exc,
+                        )
+                    if backend_pref == "session" and batch_safe:
                         raise sec.GimpMcpError(
-                            sec.CODE_UNSUPPORTED,
-                            (
-                                f"recipe {recipe_id!r} is batch_safe but requires live "
-                                f"GIMP plugin (batch_interpreter not available): {exc}"
-                            ),
-                            details={"recipe_id": recipe_id, "op": op},
+                            sec.CODE_CONNECTION_FAILED,
+                            f"plugin connection failed for op {op}: {exc}",
+                            details={"op": op, "backend": "session"},
+                        ) from exc
+                    if batch_safe:
+                        # session-only legacy path shouldn't hit, but honest fail
+                        raise sec.GimpMcpError(
+                            sec.CODE_CONNECTION_FAILED,
+                            f"plugin connection failed for op {op}: {exc}",
+                            details={"op": op},
                         ) from exc
                     raise sec.GimpMcpError(
                         sec.CODE_CONNECTION_FAILED,
@@ -1082,7 +1358,7 @@ def run_recipe(
         "ok": run_ok,
         "recipe_id": recipe["id"],
         "version": recipe["version"],
-        "backend": backend,
+        "backend": backend_used,
         "steps": step_logs,
         "artifacts": artifacts,
         "created_paths": created_paths,

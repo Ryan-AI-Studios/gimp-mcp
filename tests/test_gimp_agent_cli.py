@@ -216,7 +216,7 @@ def test_doctor_missing_security_strict_exit_3(
     assert "gimp_console" in names
     assert "plugin_files" in names
     assert "tool_pins" in names
-    assert report.envelope_data()["batch_interpreter"] is False
+    assert report.envelope_data()["batch_interpreter"] is True
 
 
 def _patch_doctor_incomplete_plugin(
@@ -414,13 +414,13 @@ def test_json_envelope_shape() -> None:
         exit_code=0,
         code=None,
         message="doctor ok",
-        data={"batch_interpreter": False},
+        data={"batch_interpreter": True},
     )
     assert set(env.keys()) == {"ok", "exit_code", "code", "message", "data"}
     assert env["ok"] is True
     assert env["exit_code"] == 0
     assert env["code"] is None
-    assert env["data"]["batch_interpreter"] is False
+    assert env["data"]["batch_interpreter"] is True
 
 
 def test_json_mode_flag_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
