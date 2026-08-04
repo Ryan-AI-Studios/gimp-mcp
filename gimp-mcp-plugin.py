@@ -379,6 +379,23 @@ class MCPPlugin(Gimp.PlugIn):
     # Track 0019 — constrained BatchProcedure (JSON jobs only; no eval)
     # =========================================================================
 
+    def _batch_forbidden_key(self, obj):
+        """Return first freeform/code key found anywhere in nested JSON, or None."""
+        forbidden = ("script", "python", "eval", "cmds", "code")
+        if isinstance(obj, dict):
+            for key, val in obj.items():
+                if key in forbidden:
+                    return str(key)
+                found = self._batch_forbidden_key(val)
+                if found is not None:
+                    return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = self._batch_forbidden_key(item)
+                if found is not None:
+                    return found
+        return None
+
     def _batch_result_path(self, job_path):
         """Sibling ``{stem}.result.json`` next to the job file."""
         p = Path(job_path)
@@ -457,13 +474,11 @@ class MCPPlugin(Gimp.PlugIn):
                 return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
             if not isinstance(cmd, dict):
                 return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
-            # Reject freeform code keys (defense in depth)
-            for bad in ("script", "python", "eval", "cmds", "code"):
-                if bad in cmd:
-                    print(f"[MCP] batch rejects freeform key {bad!r}", flush=True)
-                    return procedure.new_return_values(
-                        Gimp.PDBStatusType.CALLING_ERROR, GLib.Error()
-                    )
+            # Reject freeform code keys anywhere in command (defense in depth)
+            bad_cmd = self._batch_forbidden_key(cmd)
+            if bad_cmd is not None:
+                print(f"[MCP] batch rejects freeform key {bad_cmd!r}", flush=True)
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
             if cmd.get("v") != 1:
                 print(f"[MCP] batch unsupported version: {cmd.get('v')!r}", flush=True)
                 return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
@@ -523,19 +538,17 @@ class MCPPlugin(Gimp.PlugIn):
                     },
                 )
                 return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
-            for bad in ("script", "python", "eval", "cmds", "code"):
-                if bad in job:
-                    self._batch_write_result(
-                        result_path,
-                        {
-                            "ok": False,
-                            "code": "POLICY_DENIED",
-                            "error": f"job rejects freeform key {bad!r}",
-                        },
-                    )
-                    return procedure.new_return_values(
-                        Gimp.PDBStatusType.CALLING_ERROR, GLib.Error()
-                    )
+            bad_job = self._batch_forbidden_key(job)
+            if bad_job is not None:
+                self._batch_write_result(
+                    result_path,
+                    {
+                        "ok": False,
+                        "code": "POLICY_DENIED",
+                        "error": f"job rejects freeform key {bad_job!r}",
+                    },
+                )
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
 
             steps = job.get("steps") or []
             if not isinstance(steps, list) or len(steps) > 32:

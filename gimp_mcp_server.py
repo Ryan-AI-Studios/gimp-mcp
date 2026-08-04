@@ -2225,7 +2225,8 @@ def apply_recipe(
     - handle: Open image handle for ``requires_open_session`` recipes
 
     Returns mutation log: ``ok``, ``recipe_id``, ``version``, ``backend``
-    (``session``|``host``), ``steps``, ``artifacts``, ``created_paths``.
+    (``session``|``host``|``headless``; default auto tries session then
+    headless for batch_safe recipes), ``steps``, ``artifacts``, ``created_paths``.
 
     Errors: unknown id → UNSUPPORTED; bad params / both handle+input → structured
     policy error; verification fail → VERIFY_FAILED.

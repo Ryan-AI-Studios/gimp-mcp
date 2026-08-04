@@ -451,6 +451,30 @@ def test_cli_codes_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert sec.CODE_STALE_HANDLE in body["data"]["exit_to_codes"]["5"]
 
 
+def test_cli_run_and_batch_accept_backend() -> None:
+    """Track 0019: --backend auto|session|headless on run and batch."""
+    from gimp_agent.cli import build_parser
+
+    parser = build_parser()
+    ns_run = parser.parse_args(["run", "web-export", "--backend", "headless"])
+    assert ns_run.backend == "headless"
+    ns_batch = parser.parse_args(
+        [
+            "batch",
+            "web-export",
+            "--inputs",
+            "a.png",
+            "--output-dir",
+            "out",
+            "--backend",
+            "session",
+        ]
+    )
+    assert ns_batch.backend == "session"
+    ns_default = parser.parse_args(["run", "web-export"])
+    assert ns_default.backend == "auto"
+
+
 def test_cli_global_json_before_subcommand(capsys: pytest.CaptureFixture[str]) -> None:
     """P1-001: ``gimp-agent --json codes`` must emit parseable JSON (not human)."""
     code = main(["--json", "codes"])

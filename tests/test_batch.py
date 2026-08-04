@@ -191,6 +191,31 @@ def test_not_batch_safe_not_eligible() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_default_subprocess_run_uses_shell_false(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Host launcher must never invoke cmd.exe via shell=True (AI2 BS1)."""
+    seen: dict[str, Any] = {}
+
+    def _fake_run(*args: Any, **kwargs: Any) -> Any:
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        m = MagicMock()
+        m.returncode = 0
+        m.stdout = ""
+        m.stderr = ""
+        return m
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    batch_mod._default_subprocess_run(
+        [str(workspace / "fake-console"), "-b", "{}"],
+        env={"GIMP_WORKSPACE_ROOT": str(workspace)},
+        timeout=5.0,
+    )
+    assert seen["kwargs"].get("shell") is False
+    assert isinstance(seen["args"][0], list)
+
+
 def test_timeout_maps_to_code_timeout(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_console = workspace / "gimp-console.exe"
     fake_console.write_bytes(b"")
