@@ -1,5 +1,12 @@
 # Iterative Workflow with GIMP MCP
 
+> **Legacy note:** This guidance is retained for iterative drawing workflows but
+> is **not** the product front door. Prefer [README.md](../README.md),
+> [architecture.md](architecture.md), [skills/](../skills/README.md), and HL tools
+> (`session_probe` → `orient_workspace` → edit → `render_visible_composite`).
+> Examples that call `call_api` require `GIMP_MCP_ALLOW_EXEC=1` and are advanced
+> footguns — not the default agent interface.
+
 ## The Golden Rule
 
 **Check your work after every 3-5 operations. Don't continue blindly.**

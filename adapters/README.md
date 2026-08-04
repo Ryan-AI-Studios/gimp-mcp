@@ -1,5 +1,8 @@
 # Client adapters (Grok / Codex / Claude)
 
+Product front door: [README.md](../README.md). Operator start-order:
+[docs/operator-runbook.md](../docs/operator-runbook.md).
+
 Committed **examples only** — no secrets, no real machine paths. Copy into your
 local client config and substitute placeholders.
 

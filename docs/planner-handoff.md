@@ -70,7 +70,11 @@ publishing them:
 7. **`.agents/skills/onboarding/SKILL.md`** — session start + authority order.
 8. **`.agents/skills/implement/SKILL.md`** — track execution loop (TDD → review → full gate).
 9. **`C:\dev\GIMP\docs\CGPT.md` / `Google.md`** — full product architecture.
-10. **`README.md`**, **`GIMP_MCP_PROTOCOL.md`**, **`docs/best_practices.md`** — upstream-oriented runtime docs.
+10. **`README.md`** (public front door), then product docs in this order:  
+    `docs/architecture.md`, `docs/operator-runbook.md`, `SECURITY.md`,  
+    `docs/performance.md`, `docs/ci-and-testing.md`, **`GIMP_MCP_PROTOCOL.md`**,  
+    `adapters/`, `skills/`, `CHANGELOG.md`. Legacy (bannered):  
+    `docs/best_practices.md` / `iterative_workflow.md` — prefer skills + HL tools.
 
 ---
 
@@ -113,11 +117,14 @@ minting. Track IDs are creation order, not execution order.
   → 0021 Codex/Grok adapters — Completed
   → 0022 E2E/CI — Completed
   → 0023 Performance snapshot budget — Completed
-  → 0024 … through 0028 Final product polish (v1)
+  → 0024 Documentation product polish — Implemented (complete; orchestrator finalizes conductor)
+  → 0025 Evaluation corpus and benchmarks — next implement
+  → 0026 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0023 Completed.** Next implement: **0024**
-DocumentationProductPolish (**placeholder — full plan pass first**). Orientation SoT is
+**28 tracks** (0001–0028). **0001–0024 Completed** (0024 implemented on product docs;
+orchestrator owns conductor registry / review.md / ledger finalize). **Next implement:
+0025** EvaluationCorpusAndBenchmarks. Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
@@ -128,11 +135,18 @@ raise to design 250M). Recipes **0015**. NDE **0016**. Undo groups **0017**. Ins
 Client adapters + dual image delivery **0021**. Fixture corpus + offline E2E + CI policy
 **0022** (`tests/fixtures/`, `docs/ci-and-testing.md`; headless GIMP on GA is
 **document-only**; self-hosted Windows residual). Snapshot budget **0023**: default max
-edge **1024** (HL + advanced aliases; `get_state_snapshot` `max_size` default 1024), hard
-**4096**, region source **8192**, host TCP **60s** / `GIMP_MCP_COMMAND_TIMEOUT_S` (max
-600) with `TimeoutError` → `CODE_TIMEOUT` (connect+recv); `session_probe.snapshot_budget`;
-`docs/performance.md`; H2 soft encoded-byte ImageContent guard deferred. Mapping padding
-**0**. No mcp/fastmcp major bump. Authoritative table: `conductor/conductor.md`.
+edge **1024**, hard **4096**, region **8192**, host TCP **60s** / `CODE_TIMEOUT`;
+`docs/performance.md`; soft encoded-byte ImageContent guard deferred.
+
+**0024 DocumentationProductPolish (implemented):** Public docs front door —
+README for **Ryan-AI-Studios** fork; HL-first compact catalog; `docs/architecture.md`
+(user capabilities, **no conductor track IDs**) + `docs/operator-runbook.md`
+(`#start-order`); SECURITY refresh (**TIMEOUT** row; workspace `.gimp-mcp-tmp`
+snapshot path primary; stdio ≠ HTTP OAuth); **CHANGELOG** Keep a Changelog 1.1.0
+baseline under **`[Unreleased]`** (0026 tags/promotes `[0.1.0]`); pyproject
+**`GPL-3.0-only`**; CLAUDE.md HL-first; `run_tests.py` retained as optional live
+harness; in-repo demo media; `tests/test_docs_product.py`. Authoritative table:
+`conductor/conductor.md`.
 
 ---
 
