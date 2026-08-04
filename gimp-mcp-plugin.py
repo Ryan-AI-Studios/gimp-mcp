@@ -124,8 +124,27 @@ def exec_and_get_results(command, context):
 
 
 class MCPPlugin(Gimp.PlugIn):
+    # Constrained BatchProcedure (track 0019) — PDB name vs pretty label (AI1 B1).
+    BATCH_PROCEDURE_NAME = "plug-in-gimp-mcp-batch"
+    BATCH_LABEL = "gimp-mcp-recipe"
+    # Path-based GIMP ops allowed inside headless jobs (no freeform eval).
+    BATCH_GIMP_OPS = frozenset(
+        {
+            "open_image",
+            "scale_image",
+            "export_image",
+            "normalize_image_orientation",
+            "save_xcf",
+            "ensure_source_immutable",
+            "verify_alpha_channel",
+            "checkpoint_create",
+        }
+    )
+
     def __init__(self, host=None, port=None):
         super().__init__()
+        # Headless batch mode (0019 H1): no token rotate, no MCP TCP server.
+        self._batch_mode = os.environ.get("GIMP_MCP_BATCH_MODE") == "1"
         # Env plumbing (net-new): defaults are loopback-only AF_INET literals.
         raw_host = host if host is not None else os.environ.get(_sec.ENV_HOST, _sec.DEFAULT_HOST)
         try:
@@ -138,10 +157,11 @@ class MCPPlugin(Gimp.PlugIn):
         else:
             self.port = _sec.get_port()
 
-        # Rotate file-backed tokens on every plugin start (stale-token mitigation).
+        # Rotate file-backed tokens on GUI/plugin start (stale-token mitigation).
+        # Batch-mode must NOT rotate — concurrent GUI MCP would lose auth (H1).
         token, token_path, generated = _sec.resolve_expected_token(
-            generate_if_missing=True,
-            rotate_file_token=True,
+            generate_if_missing=not self._batch_mode,
+            rotate_file_token=not self._batch_mode,
         )
         self.expected_token = token
         self.token_path = token_path
@@ -179,45 +199,62 @@ class MCPPlugin(Gimp.PlugIn):
         self._agent_tx_recent: dict[int, _tx.RecentClosed] = {}
         self._agent_tx_timeout_s = _tx.parse_timeout_s(os.environ.get(_tx.ENV_TIMEOUT))
 
-        print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
-        if not _sec.is_loopback_host(self.host):
+        if self._batch_mode:
             print(
-                f"[MCP] WARNING: non-loopback bind host {self.host!r} "
-                f"( {_sec.ENV_ALLOW_NON_LOOPBACK}=1 ) — not recommended for agent use"
+                f"[MCP] Batch mode ({self.BATCH_PROCEDURE_NAME}): "
+                "no token rotate, no MCP TCP server"
             )
-        if token_path:
-            print(
-                f"[MCP] Session token file: {token_path}"
-                + (" (rotated/generated)" if generated else "")
-            )
-        elif os.environ.get(_sec.ENV_TOKEN):
-            print("[MCP] Session token: from GIMP_MCP_TOKEN env")
-        if self.workspace_root:
-            print(f"[MCP] Workspace root: {self.workspace_root}")
+            if self.workspace_root:
+                print(f"[MCP] Workspace root: {self.workspace_root}")
+            else:
+                print(
+                    f"[MCP] WARNING: {_sec.ENV_WORKSPACE} unset — "
+                    "filesystem tools fail closed (PATH_DENIED)"
+                )
         else:
-            print(
-                f"[MCP] WARNING: {_sec.ENV_WORKSPACE} unset — filesystem tools fail closed (PATH_DENIED)"
-            )
-        if _sec.exec_allowed():
-            print("[MCP] WARNING: GIMP_MCP_ALLOW_EXEC=1 — Class A exec ENABLED (mode: elevated)")
-            _sec.write_audit_event(
-                {
-                    "event": "exec_mode_enabled",
-                    "mode": "elevated",
-                    "host": self.host,
-                    "port": self.port,
-                },
-                self.audit_path,
-            )
-        if _sec.debug_enabled():
-            print("[MCP] DEBUG diagnostics on (policy flags unchanged)")
+            print(f"[MCP] Secure defaults: bind={self.host}:{self.port} AF_INET")
+            if not _sec.is_loopback_host(self.host):
+                print(
+                    f"[MCP] WARNING: non-loopback bind host {self.host!r} "
+                    f"( {_sec.ENV_ALLOW_NON_LOOPBACK}=1 ) — not recommended for agent use"
+                )
+            if token_path:
+                print(
+                    f"[MCP] Session token file: {token_path}"
+                    + (" (rotated/generated)" if generated else "")
+                )
+            elif os.environ.get(_sec.ENV_TOKEN):
+                print("[MCP] Session token: from GIMP_MCP_TOKEN env")
+            if self.workspace_root:
+                print(f"[MCP] Workspace root: {self.workspace_root}")
+            else:
+                print(
+                    f"[MCP] WARNING: {_sec.ENV_WORKSPACE} unset — "
+                    "filesystem tools fail closed (PATH_DENIED)"
+                )
+            if _sec.exec_allowed():
+                print(
+                    "[MCP] WARNING: GIMP_MCP_ALLOW_EXEC=1 — Class A exec ENABLED (mode: elevated)"
+                )
+                _sec.write_audit_event(
+                    {
+                        "event": "exec_mode_enabled",
+                        "mode": "elevated",
+                        "host": self.host,
+                        "port": self.port,
+                    },
+                    self.audit_path,
+                )
+            if _sec.debug_enabled():
+                print("[MCP] DEBUG diagnostics on (policy flags unchanged)")
 
         self.running = False
         self.socket = None
         self.server_thread = None
         self.context = {}
         # Bootstrap only — not agent-reachable Class A exec
-        exec("from gi.repository import Gimp", self.context)
+        if not self._batch_mode:
+            exec("from gi.repository import Gimp", self.context)
         self.auto_disconnect_client = True
 
     def do_set_i18n(self, procname):
@@ -227,10 +264,41 @@ class MCPPlugin(Gimp.PlugIn):
 
     def do_query_procedures(self):
         """Register the plugin procedures."""
-        return ["plug-in-mcp-server", "plug-in-mcp-check", "plug-in-mcp-restart"]
+        return [
+            "plug-in-mcp-server",
+            "plug-in-mcp-check",
+            "plug-in-mcp-restart",
+            self.BATCH_PROCEDURE_NAME,
+        ]
 
     def do_create_procedure(self, name):
         """Define the procedure properties."""
+        if name == self.BATCH_PROCEDURE_NAME:
+            # Must use BatchProcedure.new (not Procedure.new) — AI1 H4.
+            procedure = Gimp.BatchProcedure.new(
+                self,
+                name,
+                self.BATCH_LABEL,
+                Gimp.PDBProcType.PLUGIN,
+                self._batch_run,
+                None,
+            )
+            if hasattr(procedure, "set_interpreter_name"):
+                procedure.set_interpreter_name(self.BATCH_LABEL)
+            if hasattr(procedure, "set_documentation"):
+                procedure.set_documentation(
+                    _("Constrained gimp-mcp recipe batch interpreter"),
+                    _(
+                        "Runs path-based JSON jobs only "
+                        "(open/scale/export/normalize); never eval/exec"
+                    ),
+                    name,
+                )
+            if hasattr(procedure, "set_attribution"):
+                procedure.set_attribution("Viesar Lab", "Viesar Lab", "2026")
+            # No menu path — batch interpreter only.
+            return procedure
+
         if name == "plug-in-mcp-check":
             procedure = Gimp.Procedure.new(
                 self, name, Gimp.PDBProcType.PLUGIN, self._run_check, None
@@ -306,6 +374,322 @@ class MCPPlugin(Gimp.PlugIn):
         result = self._restart_server()
         print(f"[MCP] Restart result: {result}")
         return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+    # =========================================================================
+    # Track 0019 — constrained BatchProcedure (JSON jobs only; no eval)
+    # =========================================================================
+
+    def _batch_forbidden_key(self, obj):
+        """Return first freeform/code key found anywhere in nested JSON, or None."""
+        forbidden = ("script", "python", "eval", "cmds", "code")
+        if isinstance(obj, dict):
+            for key, val in obj.items():
+                if key in forbidden:
+                    return str(key)
+                found = self._batch_forbidden_key(val)
+                if found is not None:
+                    return found
+        elif isinstance(obj, list):
+            for item in obj:
+                found = self._batch_forbidden_key(item)
+                if found is not None:
+                    return found
+        return None
+
+    def _batch_result_path(self, job_path):
+        """Sibling ``{stem}.result.json`` next to the job file."""
+        p = Path(job_path)
+        return p.with_name(f"{p.stem}.result.json")
+
+    def _batch_write_result(self, result_path, payload):
+        """Write authoritative result file; optional flush print for debug."""
+        try:
+            text = json.dumps(payload, ensure_ascii=False)
+            Path(result_path).write_text(text, encoding="utf-8")
+        except Exception as e:
+            print(f"[MCP] batch result write failed: {e}", flush=True)
+            return False
+        try:
+            print(f"[MCP] batch result: {payload.get('ok')}", flush=True)
+        except Exception:
+            pass
+        return True
+
+    def _batch_dispatch_op(self, op, params, current_handle):
+        """Run one path-based GIMP op by reusing TCP tool handlers."""
+        params = dict(params or {})
+        if op != "open_image" and current_handle is not None:
+            if "handle" not in params and "image_index" not in params:
+                params["handle"] = current_handle
+            # scale_image historically ignores handle — ensure image_index 0
+            # after a single open in headless (only one image open).
+            if op == "scale_image" and "image_index" not in params:
+                params["image_index"] = 0
+        if op == "scale_image":
+            width = params.get("width")
+            height = params.get("height")
+            if width is None or height is None:
+                return {
+                    "status": "success",
+                    "results": {"skipped": True, "reason": "width/height not provided"},
+                }
+            params["width"] = int(width)
+            params["height"] = int(height)
+
+        handlers = {
+            "open_image": self._open_image,
+            "scale_image": self._scale_image,
+            "export_image": self._export_image,
+            "normalize_image_orientation": self._normalize_image_orientation,
+            "save_xcf": self._save_xcf,
+            "ensure_source_immutable": getattr(self, "_ensure_source_immutable", None),
+            "verify_alpha_channel": getattr(self, "_verify_alpha_channel", None),
+            "checkpoint_create": getattr(self, "_checkpoint_create", None),
+        }
+        handler = handlers.get(op)
+        if handler is None:
+            return {
+                "status": "error",
+                "code": "UNSUPPORTED",
+                "error": f"batch op not implemented: {op}",
+            }
+        return handler(params)
+
+    def _batch_run(self, procedure, run_mode, command, config, run_data):
+        """GimpBatchFunc: parse constrained JSON command; never eval/exec.
+
+        Authoritative success path is the sibling result file next to the job
+        (host does not parse gimp-console stdout).
+        """
+        result_path = None
+        try:
+            raw = command if isinstance(command, str) else (command or "")
+            raw = raw.strip()
+            if not raw:
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+            try:
+                cmd = json.loads(raw)
+            except json.JSONDecodeError as e:
+                print(f"[MCP] batch command JSON invalid: {e}", flush=True)
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+            if not isinstance(cmd, dict):
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+            # Reject freeform code keys anywhere in command (defense in depth)
+            bad_cmd = self._batch_forbidden_key(cmd)
+            if bad_cmd is not None:
+                print(f"[MCP] batch rejects freeform key {bad_cmd!r}", flush=True)
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+            if cmd.get("v") != 1:
+                print(f"[MCP] batch unsupported version: {cmd.get('v')!r}", flush=True)
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+            op = cmd.get("op")
+            if op == "ping":
+                payload = {
+                    "ok": True,
+                    "procedure": self.BATCH_PROCEDURE_NAME,
+                    "label": self.BATCH_LABEL,
+                }
+                # Ping may not have a job path; print only (host rarely uses ping file)
+                print(json.dumps(payload), flush=True)
+                return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+            if op != "run_job":
+                print(f"[MCP] batch unknown op: {op!r}", flush=True)
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+
+            job_path_raw = cmd.get("job")
+            if not job_path_raw or not isinstance(job_path_raw, str):
+                print("[MCP] batch run_job missing job path", flush=True)
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+            safe_job, jail_err = self._jail_path(job_path_raw)
+            if jail_err is not None:
+                print(f"[MCP] batch job path denied: {jail_err}", flush=True)
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+            job_path = Path(str(safe_job))
+            result_path = self._batch_result_path(job_path)
+            if not job_path.is_file():
+                self._batch_write_result(
+                    result_path,
+                    {
+                        "ok": False,
+                        "code": "INTERNAL",
+                        "error": f"job file not found: {job_path}",
+                    },
+                )
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+            try:
+                job = json.loads(job_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                self._batch_write_result(
+                    result_path,
+                    {
+                        "ok": False,
+                        "code": "INTERNAL",
+                        "error": f"cannot read job: {e}",
+                    },
+                )
+                return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
+            if not isinstance(job, dict) or job.get("v") != 1:
+                self._batch_write_result(
+                    result_path,
+                    {
+                        "ok": False,
+                        "code": "UNSUPPORTED",
+                        "error": "job v must be 1",
+                    },
+                )
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+            bad_job = self._batch_forbidden_key(job)
+            if bad_job is not None:
+                self._batch_write_result(
+                    result_path,
+                    {
+                        "ok": False,
+                        "code": "POLICY_DENIED",
+                        "error": f"job rejects freeform key {bad_job!r}",
+                    },
+                )
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+
+            steps = job.get("steps") or []
+            if not isinstance(steps, list) or len(steps) > 32:
+                self._batch_write_result(
+                    result_path,
+                    {
+                        "ok": False,
+                        "code": "POLICY_DENIED",
+                        "error": "invalid steps list",
+                    },
+                )
+                return procedure.new_return_values(Gimp.PDBStatusType.CALLING_ERROR, GLib.Error())
+
+            current_handle = None
+            step_logs = []
+            for i, step in enumerate(steps):
+                if not isinstance(step, dict):
+                    self._batch_write_result(
+                        result_path,
+                        {
+                            "ok": False,
+                            "code": "POLICY_DENIED",
+                            "error": f"step {i} not an object",
+                        },
+                    )
+                    return procedure.new_return_values(
+                        Gimp.PDBStatusType.CALLING_ERROR, GLib.Error()
+                    )
+                step_op = step.get("op")
+                if step_op not in self.BATCH_GIMP_OPS:
+                    self._batch_write_result(
+                        result_path,
+                        {
+                            "ok": False,
+                            "code": "POLICY_DENIED",
+                            "error": f"step op not allowlisted: {step_op!r}",
+                            "step": i,
+                        },
+                    )
+                    return procedure.new_return_values(
+                        Gimp.PDBStatusType.CALLING_ERROR, GLib.Error()
+                    )
+                with_map = step.get("with") or {}
+                if not isinstance(with_map, dict):
+                    with_map = {}
+                # Path jail for known path keys
+                jailed_params = dict(with_map)
+                for key in (
+                    "file_path",
+                    "path",
+                    "path_a",
+                    "path_b",
+                    "write_diff_path",
+                    "diff_out",
+                    "input_path",
+                    "output_path",
+                ):
+                    if key in jailed_params and jailed_params[key] is not None:
+                        safe_p, err = self._jail_path(jailed_params[key])
+                        if err is not None:
+                            self._batch_write_result(
+                                result_path,
+                                {
+                                    "ok": False,
+                                    "code": err.get("code") or "PATH_DENIED",
+                                    "error": err.get("error") or f"path denied: {key}",
+                                    "step": i,
+                                    "op": step_op,
+                                },
+                            )
+                            return procedure.new_return_values(
+                                Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error()
+                            )
+                        jailed_params[key] = str(safe_p)
+
+                response = self._batch_dispatch_op(step_op, jailed_params, current_handle)
+                if not isinstance(response, dict):
+                    self._batch_write_result(
+                        result_path,
+                        {
+                            "ok": False,
+                            "code": "INTERNAL",
+                            "error": f"step {step_op} returned non-object",
+                            "step": i,
+                        },
+                    )
+                    return procedure.new_return_values(
+                        Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error()
+                    )
+                if response.get("status") != "success":
+                    self._batch_write_result(
+                        result_path,
+                        {
+                            "ok": False,
+                            "code": response.get("code") or "INTERNAL",
+                            "error": response.get("error") or f"step {step_op} failed",
+                            "step": i,
+                            "op": step_op,
+                            "detail": {
+                                k: v
+                                for k, v in response.items()
+                                if k not in ("status", "traceback")
+                            },
+                        },
+                    )
+                    return procedure.new_return_values(
+                        Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error()
+                    )
+                results = response.get("results")
+                if not isinstance(results, dict):
+                    results = {}
+                if step_op == "open_image" and isinstance(results.get("handle"), dict):
+                    current_handle = results["handle"]
+                step_logs.append({"op": step_op, "ok": True, "result": results})
+
+            self._batch_write_result(
+                result_path,
+                {
+                    "ok": True,
+                    "procedure": self.BATCH_PROCEDURE_NAME,
+                    "label": self.BATCH_LABEL,
+                    "recipe_id": job.get("recipe_id"),
+                    "steps": step_logs,
+                },
+            )
+            return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+        except Exception as e:
+            print(f"[MCP] batch run failed: {e}", flush=True)
+            if result_path is not None:
+                try:
+                    self._batch_write_result(
+                        result_path,
+                        {
+                            "ok": False,
+                            "code": "INTERNAL",
+                            "error": str(e),
+                        },
+                    )
+                except Exception:
+                    pass
+            return procedure.new_return_values(Gimp.PDBStatusType.EXECUTION_ERROR, GLib.Error())
 
     def shutdown_server(self, signum=None, frame=None):
         """Gracefully shutdown the server."""

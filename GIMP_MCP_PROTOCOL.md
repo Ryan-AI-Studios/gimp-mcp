@@ -260,7 +260,7 @@ Versioned allowlisted multi-step pipelines so agents run few-decision workflows.
 | CLI | `gimp-agent recipes` / `run` / `batch` |
 | Module | `gimp_mcp_recipes.py` (host pure; not EXPECTED plug-in ship) |
 | Package data | `gimp_agent/recipes/*.json` via `importlib.resources` |
-| Capability | `recipe_library: true` (extension); `batch_interpreter` **false** until **0019** |
+| Capability | `recipe_library: true` (extension); `batch_interpreter: true` (**0019** constrained BatchProcedure) |
 
 ### Non-destructive DrawableFilter tools (track 0016)
 
@@ -310,14 +310,30 @@ loops.
 |---|---|
 | `requires_gimp` | Needs live plugin TCP for ≥1 step |
 | `requires_open_session` | Needs caller `handle` (no `open_image` of input) |
-| `batch_safe` | Recipe property: no unsaved GUI-only state; still needs plugin in 0015 if `requires_gimp` |
+| `batch_safe` | Recipe property: no unsaved GUI-only state; eligible for headless BatchProcedure when GIMP_OPS are contiguous before HOST_OPS |
 
 | Condition | Path |
 |---|---|
 | `requires_gimp: false` | Host runner only (no TCP) |
 | `requires_open_session: true` | Session + required `handle` |
-| `requires_gimp: true`, open session false | Session + `open_image` from `$input_path` |
-| `batch_safe: true` + plugin down | **UNSUPPORTED** (12) until **0019** |
+| `requires_gimp: true`, open session false | Session + `open_image` from `$input_path` (backend `auto`/`session`) |
+| `batch_safe: true` + plugin down + contiguous ops | **Headless** via `plug-in-gimp-mcp-batch` (**0019**) |
+| `batch_safe: true` + interleaved GIMP/HOST | **UNSUPPORTED** (12) for headless — use session |
+| not `batch_safe` + plugin down | **CONNECTION_FAILED** (4) — no silent headless |
+
+### Headless BatchProcedure (track 0019)
+
+| Item | Value |
+|---|---|
+| PDB procedure / `--batch-interpreter` | **`plug-in-gimp-mcp-batch`** (never pretty label alone) |
+| Pretty label | `gimp-mcp-recipe` (display only) |
+| Host module | `gimp_agent/batch.py` (not EXPECTED ship) |
+| Job protocol | JSON v1 path-based GIMP_OPS only; reject `script`/`python`/`eval`/`cmds`/`code` |
+| Launcher | `gimp-console -i -d -f -c --batch-interpreter plug-in-gimp-mcp-batch -b <json> --quit` |
+| Result SoT | Sibling `{job_stem}.result.json` (not gimp-console stdout) |
+| Env | `GIMP_MCP_BATCH_MODE=1`, `GIMP_WORKSPACE_ROOT`; strip `GIMP_MCP_ALLOW_EXEC` / `GIMP_MCP_TOKEN` |
+| Timeout | default 120s → `TIMEOUT` exit **9** |
+| Product non-path | **not** `python-fu-eval` |
 
 **Interpolation:** whole-value `$name` only (`^\$([A-Za-z_][A-Za-z0-9_]*)$`); single pass;
 undefined → error. Path jail every path at step use site.
@@ -329,8 +345,9 @@ with advanced unset).
 **Shipped recipes:** `transparent-png`, `exif-normalize`, `web-export`,
 `compare-artifacts`, optional `exif-strip` (ExifTool; missing binary → UNSUPPORTED).
 
-**Mutation log:** `{ok, recipe_id, version, backend: "session"|"host", steps, artifacts, created_paths}`.
+**Mutation log:** `{ok, recipe_id, version, backend: "session"|"host"|"headless", steps, artifacts, created_paths}`.
 Rollback deletes only `created_paths` (never pre-existing `replace` targets).
+CLI: `run`/`batch` accept `--backend {auto,session,headless}` (default `auto`).
 
 **CLI batch:** `--inputs` append and/or `--input-glob` (pathlib; `\` → `/` on Windows);
 continue-on-fail; aggregate report; non-zero if any failed; default collision `version`.

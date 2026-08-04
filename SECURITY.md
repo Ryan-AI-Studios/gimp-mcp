@@ -43,6 +43,8 @@ References:
 | `GIMP_MCP_DEBUG` | Tracebacks + verbose diagnostics only (never a policy bypass) | **off** |
 | `GIMP_MCP_AUDIT_LOG` | Audit directory **or** `.jsonl` file path (sibling `audit-server` / `audit-plugin` names) | platform default dir |
 | `GIMP_MCP_ADVANCED_TOOLS` | Full ~90-tool MCP surface (`1`/`true`/`yes`/`on`) | **off** → **28** high-level tools |
+| `GIMP_MCP_BATCH_MODE` | Set by host for headless `gimp-console` child only | **off** (GUI plugin start) |
+| `GIMP_MCP_BATCH_TIMEOUT_S` | Host wall-clock kill for headless jobs (clamp 15…3600) | `120` |
 
 Token file default:
 
@@ -92,6 +94,20 @@ client** — clients cache `list_tools` and will keep the old list until re-hand
 - **Class B:** MCP `call_api` (PDB-mediated `pyGObject-console` / eval)
 
 It does **not** disable GIMP’s built-in PDB procedures globally. Startup audit event: `exec_mode_enabled`; exec audits tagged `mode: elevated`.
+
+## Headless batch (track 0019)
+
+Product headless path is a **constrained** `Gimp.BatchProcedure` (`plug-in-gimp-mcp-batch`,
+pretty label `gimp-mcp-recipe`) — **not** stock `python-fu-eval` and not arbitrary `-b` Python.
+
+| Control | Behavior |
+|---|---|
+| Job protocol | Host writes allowlisted JSON job (GIMP_OPS only); rejects freeform keys (`script`/`python`/`eval`/`cmds`/`code`) |
+| `--batch-interpreter` | Procedure name only: `plug-in-gimp-mcp-batch` |
+| Child env | Host sets `GIMP_MCP_BATCH_MODE=1` + `GIMP_WORKSPACE_ROOT`; **strips** `GIMP_MCP_ALLOW_EXEC` and `GIMP_MCP_TOKEN` |
+| Batch-mode plugin init | No token file rotation (avoids invalidating concurrent GUI MCP auth); no MCP TCP server start |
+| Result SoT | Sibling `{job}.result.json` — host does **not** parse noisy gimp-console stdout for success |
+| Timeout | Host wall-clock kill → structured `TIMEOUT` / exit 9 |
 
 ## Residuals (accepted)
 

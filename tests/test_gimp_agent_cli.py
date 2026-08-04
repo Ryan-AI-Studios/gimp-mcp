@@ -216,7 +216,7 @@ def test_doctor_missing_security_strict_exit_3(
     assert "gimp_console" in names
     assert "plugin_files" in names
     assert "tool_pins" in names
-    assert report.envelope_data()["batch_interpreter"] is False
+    assert report.envelope_data()["batch_interpreter"] is True
 
 
 def _patch_doctor_incomplete_plugin(
@@ -414,13 +414,13 @@ def test_json_envelope_shape() -> None:
         exit_code=0,
         code=None,
         message="doctor ok",
-        data={"batch_interpreter": False},
+        data={"batch_interpreter": True},
     )
     assert set(env.keys()) == {"ok", "exit_code", "code", "message", "data"}
     assert env["ok"] is True
     assert env["exit_code"] == 0
     assert env["code"] is None
-    assert env["data"]["batch_interpreter"] is False
+    assert env["data"]["batch_interpreter"] is True
 
 
 def test_json_mode_flag_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -449,6 +449,30 @@ def test_cli_codes_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert "exit_to_codes" in body["data"]
     # JSON object keys are strings
     assert sec.CODE_STALE_HANDLE in body["data"]["exit_to_codes"]["5"]
+
+
+def test_cli_run_and_batch_accept_backend() -> None:
+    """Track 0019: --backend auto|session|headless on run and batch."""
+    from gimp_agent.cli import build_parser
+
+    parser = build_parser()
+    ns_run = parser.parse_args(["run", "web-export", "--backend", "headless"])
+    assert ns_run.backend == "headless"
+    ns_batch = parser.parse_args(
+        [
+            "batch",
+            "web-export",
+            "--inputs",
+            "a.png",
+            "--output-dir",
+            "out",
+            "--backend",
+            "session",
+        ]
+    )
+    assert ns_batch.backend == "session"
+    ns_default = parser.parse_args(["run", "web-export"])
+    assert ns_default.backend == "auto"
 
 
 def test_cli_global_json_before_subcommand(capsys: pytest.CaptureFixture[str]) -> None:

@@ -649,6 +649,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             output_path=str(output_path) if output_path else None,
             handle=handle,
             session_send=_session_send,
+            backend=str(getattr(args, "backend", "auto") or "auto"),
         )
     except sec.GimpMcpError as exc:
         # Bad params / policy → exit 2 for CLI usage-ish policy on missing params
@@ -845,6 +846,7 @@ def _cmd_batch(args: argparse.Namespace) -> int:
                 input_path=str(src),
                 output_path=out_path,
                 session_send=_session_send,
+                backend=str(getattr(args, "backend", "auto") or "auto"),
             )
             entry["ok"] = True
             entry["log"] = log
@@ -1205,7 +1207,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run = sub.add_parser(
         "run",
-        help="Run one recipe by id (host-only or live plugin depending on recipe)",
+        help=(
+            "Run one recipe by id (host-only, live MCP session, or headless "
+            "batch_safe via BatchProcedure)"
+        ),
     )
     p_run.add_argument("recipe_id", help="Recipe id (e.g. compare-artifacts, web-export)")
     p_run.add_argument(
@@ -1246,6 +1251,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Plugin TCP timeout seconds for GIMP recipes (default 30)",
+    )
+    p_run.add_argument(
+        "--backend",
+        choices=("auto", "session", "headless"),
+        default="auto",
+        help=(
+            "Recipe backend: auto (session then headless for batch_safe), "
+            "session (MCP TCP only), headless (BatchProcedure / gimp-console; "
+            "batch_safe contiguous GIMP_OPS then HOST_OPS; no MCP server required)"
+        ),
     )
     _add_json_arg(p_run)
     p_run.set_defaults(func=_cmd_run)
@@ -1296,6 +1311,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30.0,
         help="Plugin TCP timeout seconds for GIMP recipes (default 30)",
+    )
+    p_batch.add_argument(
+        "--backend",
+        choices=("auto", "session", "headless"),
+        default="auto",
+        help=(
+            "Recipe backend: auto (session then headless for batch_safe), "
+            "session, or headless (BatchProcedure; no MCP server required)"
+        ),
     )
     _add_json_arg(p_batch)
     p_batch.set_defaults(func=_cmd_batch)

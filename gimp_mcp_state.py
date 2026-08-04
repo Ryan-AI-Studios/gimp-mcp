@@ -202,7 +202,7 @@ def default_capabilities() -> dict[str, bool]:
         # Extensions
         "mcp_image_visible_to_model": True,
         "filesystem_image_attachment": True,
-        "batch_interpreter": False,  # 0019
+        "batch_interpreter": True,  # 0019 constrained BatchProcedure
         "alpha_preserving_export": True,  # 0005
         "state_manifest_orientation": True,  # 0006
         "stable_handle_registry": True,  # 0007
