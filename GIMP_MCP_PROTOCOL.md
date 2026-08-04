@@ -52,7 +52,7 @@ Objective before/after and artifact checks so silent no-ops fail closed.
 
 | Surface | Tools / verbs |
 |---|---|
-| MCP HL (catalog **22**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe` |
+| MCP HL (catalog **25**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe`, NDE filter tools |
 | CLI (host-only) | `gimp-agent compare`, `gimp-agent verify` |
 | Capability | `pixel_verification: true` (extension; not `_CAPABILITY_REQUIRED`) |
 | **Not** flipped | `alpha_snapshot` stays **false** (live GIMP `render_alpha` unfinished) |
@@ -92,11 +92,12 @@ PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `f
 
 ## Available MCP Tools
 
-> **Default surface (0010 + 0014):** hosts list **20** high-level tools unless
+> **Default surface (0010 + 0014 + 0015 + 0016):** hosts list **25** high-level tools unless
 > `GIMP_MCP_ADVANCED_TOOLS=1`. Prefer design names: `session_probe`,
 > `render_visible_composite` (alias of the composite path below), `create_selection`,
-> `orient_workspace`. Legacy names such as `get_image_bitmap` / `check_server` remain
-> available in **advanced** mode only.
+> `orient_workspace`, `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter`.
+> Legacy names such as `get_image_bitmap` / `check_server` remain available in
+> **advanced** mode only.
 
 ### 1. Image Export Tools
 
@@ -250,11 +251,53 @@ Versioned allowlisted multi-step pipelines so agents run few-decision workflows.
 
 | Surface | API |
 |---|---|
-| MCP HL (catalog **22**) | `list_recipes`, `apply_recipe` |
+| MCP HL (catalog **25**) | `list_recipes`, `apply_recipe` (+ NDE filter tools) |
 | CLI | `gimp-agent recipes` / `run` / `batch` |
 | Module | `gimp_mcp_recipes.py` (host pure; not EXPECTED plug-in ship) |
 | Package data | `gimp_agent/recipes/*.json` via `importlib.resources` |
 | Capability | `recipe_library: true` (extension); `batch_interpreter` **false** until **0019** |
+
+### Non-destructive DrawableFilter tools (track 0016)
+
+Agents append / edit / remove GEGL/GIMP filter nodes on layers without merge-baking
+pixels by default. Config is **not** live until `DrawableFilter.update()` — product
+tools always call `update()` + `displays_flush()` before return.
+
+| Surface | API |
+|---|---|
+| MCP HL (catalog **25**) | `apply_nde_filter`, `edit_filter_config`, `remove_nde_filter` |
+| MCP advanced | `list_drawable_filters` (read-only), `merge_nde_filters` (destructive bake) |
+| Module | `gimp_mcp_filters.py` (**9th** EXPECTED plug-in ship file + host py-module) |
+| Capability | `nde_filters: true` (extension; not `_CAPABILITY_REQUIRED`) |
+| CLI | **none** (session/MCP-first) |
+
+**Apply sequence (locked):** `DrawableFilter.new` → `set_blend_mode(REPLACE default)` →
+`set_opacity` → `get_config` + `set_property*` (pspec coerce) → **`update()`** →
+`append_filter` → `displays_flush`.
+
+**Edit:** resolve filter on layer → optional `set_visible` → blend/opacity/config →
+`_sync_filter` (`update` + flush). **Remove:** `filter.delete()` + flush.
+**Merge (advanced):** requires `confirm_destructive=true`; `filter_id` omitted → merge
+all; result includes `merged_count`, `merged_filter_ids`, and a note that merged ids
+are no longer addressable (re-orient required).
+
+**v1 allowlist (13):** `gegl:gaussian-blur`, `unsharp-mask`, `noise-reduction`,
+`pixelize`, `emboss`, `vignette`, `brightness-contrast`, `hue-chroma`, `color-balance`,
+`exposure`, `shadows-highlights`; `gimp:levels`, `gimp:curves` (runtime-probed in
+plugin). **Not** drop-shadow (manual advanced path remains).
+
+**Soft props:** unknown config keys are never rejected; results report
+`applied_props` / `ignored_props` (never silent pass). GObject coerce via pspec
+(TYPE_DOUBLE→float, INT→int, BOOLEAN→bool).
+
+**Filter identity:** session-live `filter_id` + layer membership. Invalid after
+delete / merge / undo of apply / XCF reopen → `HANDLE_NOT_FOUND`. **No** layer
+generation bump on filter ops. Orient fills `layer.filters[]` topmost-first
+(defensive: groups / errors → `[]`).
+
+**Agent verify loop:** composite before → apply/edit → tools already sync →
+composite after → optional `compare_images` (AE≈0 ⇒ silent failure). Max 3 refine
+loops.
 
 **Routing flags (orthogonal):**
 

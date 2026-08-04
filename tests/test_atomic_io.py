@@ -193,7 +193,7 @@ def test_reverse_map_exit_8_includes_verify_failed() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_expected_plugin_files_includes_atomic_len_8() -> None:
+def test_expected_plugin_files_includes_atomic_len_9() -> None:
     expected = {
         "gimp-mcp-plugin.py",
         "gimp_mcp_security.py",
@@ -203,9 +203,10 @@ def test_expected_plugin_files_includes_atomic_len_8() -> None:
         "gimp_mcp_coords.py",
         "gimp_mcp_policy.py",
         "gimp_mcp_atomic.py",
+        "gimp_mcp_filters.py",
     }
     assert set(pathmod.EXPECTED_PLUGIN_FILES) == expected
-    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 8
+    assert len(pathmod.EXPECTED_PLUGIN_FILES) == 9
     assert "gimp_mcp_state.py" not in pathmod.EXPECTED_PLUGIN_FILES
 
 

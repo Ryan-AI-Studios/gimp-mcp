@@ -20,6 +20,7 @@ EXPECTED_PLUGIN_FILES: tuple[str, ...] = (
     "gimp_mcp_coords.py",
     "gimp_mcp_policy.py",
     "gimp_mcp_atomic.py",
+    "gimp_mcp_filters.py",
 )
 
 CONSOLE_CANDIDATES: tuple[str, ...] = (

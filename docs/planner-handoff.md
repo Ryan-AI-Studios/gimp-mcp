@@ -108,11 +108,11 @@ minting. Track IDs are creation order, not execution order.
   → 0016 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0015 Completed.** Next Ready/placeholder: **0016** NdeFilterTools.
-Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**.
-EXIF **0008**. Policy **0009**. HL surface **0010** → **22** with **0015**. Errors **0011**.
-CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes **0015**.
-Authoritative table: `conductor/conductor.md`.
+**28 tracks** (0001–0028). **0001–0015 Completed.** Next Ready: **0016** NdeFilterTools (full plan;
+not started). Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**. Composite
+**0004**. EXIF **0008**. Policy **0009**. HL surface **0010** → **22** with **0015** (→ **25** when
+**0016** lands). Errors **0011**. CLI **0012**. Atomic **0013**. Pixel verify **0014**. Recipes
+**0015**. Authoritative table: `conductor/conductor.md`.
 
 ---
 
@@ -227,6 +227,9 @@ Hard rules for product work:
 - **Structured errors (0011):** product failures → FastMCP `ToolError` **single-line** text (`CODE: msg (request_id=…) | {json}`); never return error dicts as success. Split audit `audit-server.jsonl` / `audit-plugin.jsonl`. `rollback_available` false until **0017**. Parse helper: `parse_tool_error_text`.
 - **Agent CLI (0012 Completed):** `uv run gimp-agent doctor|probe|version|codes` with JSON + exit codes from `CODE_*` (0–12). Probe always JSON-auth; doctor connect-only TCP; `--strict` for CI. Non-strict doctor may exit 0 with `ok:false` — check envelope or use `--strict`. Headless recipes not in 0012.
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.
+  **0016 Ready plan:** when implemented, use `apply_nde_filter` / `edit_filter_config`
+  (always `DrawableFilter.update()` before snapshot); orient `filters[]`; do not use
+  merge-bake GEGL helpers as the default agent path.
 - **Secure default posture (0003):** typed tools only; Class A `cmds`/eval and Class B
   `call_api` off unless `GIMP_MCP_ALLOW_EXEC=1`; per-message token auth; bind
   `127.0.0.1`/`AF_INET` only; confine all param file I/O to `GIMP_WORKSPACE_ROOT`;
@@ -291,11 +294,22 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-03 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~ca3953c post-0015) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest; ledgerful verify |
-| Active focus | **0016-NdeFilterTools** — Proposed (placeholder); prior **0015 Completed** PR #22 / main@51adaeb |
+| Active focus | **0016-NdeFilterTools** — **implementing** (feature branch); prior **0015 Completed** PR #22 / main@51adaeb |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
+
+### 0016 implementation notes (in progress — not Completed)
+
+- **Shipped:** `gimp_mcp_filters.py` (9th EXPECTED; pure allowlist/soft validate/normalize/coerce); packaging triad; `nde_filters: true`; HL **25** + advanced `list_drawable_filters` / `merge_nde_filters`.
+- **Plugin:** `_sync_filter` = update+flush; apply order update-before-append; pspec coerce + applied/ignored; Source_Immutable via `_resolve_mutable_layer`; orient `filters[]` via defensive `_emit_filter_summaries` (topmost-first); REPLACE on `_blend_mode_from_string`; no exec / no gen bump on NDE paths; merge requires confirm + invalidation note.
+- **API lock (official):** `DrawableFilter.new` → config props → **`filter.update()`** → `drawable.append_filter`; list via `get_filters()`; remove via `delete()`. Config is **not** live until `update()`.
+- **Not in 0016:** CLI NDE verbs; NDE recipe ops / `$filter_id` rebind; drop-shadow allowlist; gen bump on filter ops.
+- **Install note:** copy **9** plug-in files to APPDATA (full install automation stays **0018**).
+- **Neighbor walls:** undo tools **0017**; install **0018**; headless **0019**; NDE recipes later.
+- **Pins:** hold mcp/fastmcp majors (re-checked PyPI 2.0.0 / 3.4.5).
+- **Do not mark Completed** until review + ledger + operator matrix / waiver.
 
 ### 0005 completion notes (planners)
 

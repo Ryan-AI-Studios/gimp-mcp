@@ -82,6 +82,13 @@ except ImportError as _atomic_imp_err:  # pragma: no cover - fail closed at runt
         "gimp_mcp_atomic.py must sit next to gimp-mcp-plugin.py "
         f"(looked in {_plugin_dir}): {_atomic_imp_err}"
     ) from _atomic_imp_err
+try:
+    import gimp_mcp_filters as _filters
+except ImportError as _filters_imp_err:  # pragma: no cover - fail closed at runtime
+    raise ImportError(
+        "gimp_mcp_filters.py must sit next to gimp-mcp-plugin.py "
+        f"(looked in {_plugin_dir}): {_filters_imp_err}"
+    ) from _filters_imp_err
 
 # Constants for configuration and thresholds
 LARGE_SCALING_THRESHOLD = 4.0  # Warn if scaling ratio exceeds this value
@@ -720,6 +727,16 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._apply_vignette(j.get("params", {}))
             elif "type" in j and j["type"] == "apply_noise":
                 return self._apply_noise(j.get("params", {}))
+            elif "type" in j and j["type"] == "apply_nde_filter":
+                return self._apply_nde_filter(j.get("params", {}))
+            elif "type" in j and j["type"] == "edit_filter_config":
+                return self._edit_filter_config(j.get("params", {}))
+            elif "type" in j and j["type"] == "remove_nde_filter":
+                return self._remove_nde_filter(j.get("params", {}))
+            elif "type" in j and j["type"] == "list_drawable_filters":
+                return self._list_drawable_filters(j.get("params", {}))
+            elif "type" in j and j["type"] == "merge_nde_filters":
+                return self._merge_nde_filters(j.get("params", {}))
             # ── Category 9: Export Pipelines ──────────────────────────────────
             elif "type" in j and j["type"] == "export_icon_sizes":
                 return self._export_icon_sizes(j.get("params", {}))
@@ -1631,7 +1648,7 @@ class MCPPlugin(Gimp.PlugIn):
             "size": {"width": lw, "height": lh},
             "has_alpha": has_alpha,
             "mask": mask_info,
-            "filters": [],
+            "filters": self._emit_filter_summaries(layer, include_config=True),
             "children": children,
             "protected": bool(protected_flag),
         }
@@ -4153,7 +4170,11 @@ class MCPPlugin(Gimp.PlugIn):
                     pass
 
     def _apply_gegl_filter(self, image, drawable, op_name, props):
-        """Apply a GEGL operation to a drawable via gimp-drawable-filter-new."""
+        """Apply a GEGL operation via merge-bake (destructive).
+
+        Prefer :meth:`_apply_nde_filter` / MCP ``apply_nde_filter`` for
+        non-destructive DrawableFilter stacks that stay re-editable.
+        """
         pdb = Gimp.get_pdb()
         # Try the GEGL filter approach via PDB
         filter_proc = pdb.lookup_procedure("gimp-drawable-filter-new")
@@ -5368,6 +5389,7 @@ class MCPPlugin(Gimp.PlugIn):
     def _blend_mode_from_string(self, mode_str):
         """Map blend mode name string to Gimp.LayerMode."""
         MODE_MAP = {
+            "REPLACE": Gimp.LayerMode.REPLACE,
             "NORMAL": Gimp.LayerMode.NORMAL,
             "MULTIPLY": Gimp.LayerMode.MULTIPLY,
             "SCREEN": Gimp.LayerMode.SCREEN,
@@ -5385,7 +5407,7 @@ class MCPPlugin(Gimp.PlugIn):
             "LUMINOSITY": Gimp.LayerMode.HSV_VALUE,
             "DISSOLVE": Gimp.LayerMode.DISSOLVE,
         }
-        return MODE_MAP.get(mode_str.upper(), Gimp.LayerMode.NORMAL)
+        return MODE_MAP.get(str(mode_str).upper(), Gimp.LayerMode.NORMAL)
 
     def _create_layer(self, params):
         """Create and insert a new layer."""
@@ -7278,6 +7300,677 @@ class MCPPlugin(Gimp.PlugIn):
     # =========================================================================
     # CATEGORY 8 — Filters & Effects
     # =========================================================================
+
+    # ── NDE DrawableFilter helpers (track 0016) ──────────────────────────────
+
+    def _sync_filter(self, filtr):
+        """Mandatory sync: ``DrawableFilter.update()`` then ``displays_flush``.
+
+        Config / blend / opacity changes are not live until ``update()``.
+        """
+        filtr.update()
+        Gimp.displays_flush()
+
+    def _blend_mode_to_string(self, mode):
+        """Best-effort reverse map of LayerMode → product blend string."""
+        try:
+            if mode == Gimp.LayerMode.REPLACE:
+                return "REPLACE"
+            if mode == Gimp.LayerMode.NORMAL:
+                return "NORMAL"
+            if mode == Gimp.LayerMode.MULTIPLY:
+                return "MULTIPLY"
+            if mode == Gimp.LayerMode.SCREEN:
+                return "SCREEN"
+            if mode == Gimp.LayerMode.OVERLAY:
+                return "OVERLAY"
+            if mode == Gimp.LayerMode.DARKEN_ONLY:
+                return "DARKEN"
+            if mode == Gimp.LayerMode.LIGHTEN_ONLY:
+                return "LIGHTEN"
+            if mode == Gimp.LayerMode.DODGE:
+                return "DODGE"
+            if mode == Gimp.LayerMode.BURN:
+                return "BURN"
+            if mode == Gimp.LayerMode.HARDLIGHT:
+                return "HARD_LIGHT"
+            if mode == Gimp.LayerMode.SOFTLIGHT:
+                return "SOFT_LIGHT"
+            if mode == Gimp.LayerMode.DIFFERENCE:
+                return "DIFFERENCE"
+            if mode == Gimp.LayerMode.DISSOLVE:
+                return "DISSOLVE"
+        except Exception:
+            pass
+        try:
+            name = str(mode)
+            if "." in name:
+                name = name.rsplit(".", 1)[-1]
+            return name.upper()
+        except Exception:
+            return "UNKNOWN"
+
+    def _pspec_type_name(self, pspec):
+        """Map a GObject pspec to a loose type label for pure coerce helper."""
+        if pspec is None:
+            return None
+        try:
+            vtype = pspec.value_type
+        except Exception:
+            return None
+        try:
+            # GObject.TYPE_* nick / name
+            if hasattr(vtype, "name"):
+                return str(vtype.name)
+            return str(vtype)
+        except Exception:
+            return None
+
+    def _set_filter_config_props(self, cfg, config):
+        """Set config properties with pspec coerce; never silent-pass.
+
+        Returns ``(applied_props, ignored_props)`` where ignored entries are
+        ``{"key": str, "error": str}``.
+        """
+        applied = []
+        ignored = []
+        if not config:
+            return applied, ignored
+        if not isinstance(config, dict):
+            ignored.append({"key": "*", "error": "config must be an object"})
+            return applied, ignored
+        for key, raw_val in config.items():
+            k = str(key)
+            try:
+                pspec = None
+                try:
+                    if hasattr(cfg, "find_property"):
+                        pspec = cfg.find_property(k)
+                except Exception:
+                    pspec = None
+                type_name = self._pspec_type_name(pspec)
+                try:
+                    coerced = _filters.coerce_config_value(raw_val, type_name)
+                except (TypeError, ValueError) as ce:
+                    ignored.append({"key": k, "error": f"coerce failed: {ce}"})
+                    continue
+                cfg.set_property(k, coerced)
+                applied.append(k)
+            except Exception as e:
+                ignored.append({"key": k, "error": str(e)})
+        return applied, ignored
+
+    def _filter_config_dict(self, filtr):
+        """Best-effort readable config dump (skip huge/binary blobs)."""
+        out = {}
+        try:
+            cfg = filtr.get_config()
+            if cfg is None:
+                return out
+            props = []
+            try:
+                props = list(cfg.list_properties() or [])
+            except Exception:
+                props = []
+            for pspec in props:
+                try:
+                    name = pspec.name
+                except Exception:
+                    continue
+                if not name or name.startswith("GObject.") or name in ("parent-instance",):
+                    continue
+                try:
+                    val = cfg.get_property(name)
+                except Exception:
+                    continue
+                if isinstance(val, (bool, int, float, str)) or val is None:
+                    out[name] = val
+                else:
+                    try:
+                        # Avoid dumping large binary / GObject graphs
+                        s = str(val)
+                        if len(s) > 256:
+                            continue
+                        out[name] = s
+                    except Exception:
+                        continue
+        except Exception:
+            return out
+        return out
+
+    def _filter_to_summary(self, filtr, include_config=True):
+        """Build a raw filter summary dict from a live DrawableFilter."""
+        raw = {}
+        try:
+            raw["filter_id"] = int(filtr.get_id())
+        except Exception:
+            raw["filter_id"] = None
+        try:
+            raw["name"] = str(filtr.get_name() or "")
+        except Exception:
+            raw["name"] = ""
+        try:
+            if hasattr(filtr, "get_operation_name"):
+                raw["operation_name"] = str(filtr.get_operation_name() or "")
+            elif hasattr(filtr, "get_operation"):
+                raw["operation_name"] = str(filtr.get_operation() or "")
+            else:
+                raw["operation_name"] = ""
+        except Exception:
+            raw["operation_name"] = ""
+        try:
+            raw["visible"] = bool(filtr.get_visible()) if hasattr(filtr, "get_visible") else True
+        except Exception:
+            raw["visible"] = True
+        try:
+            raw["opacity"] = float(filtr.get_opacity()) if hasattr(filtr, "get_opacity") else 1.0
+        except Exception:
+            raw["opacity"] = 1.0
+        try:
+            mode = filtr.get_blend_mode() if hasattr(filtr, "get_blend_mode") else None
+            raw["blend_mode"] = self._blend_mode_to_string(mode) if mode is not None else "REPLACE"
+        except Exception:
+            raw["blend_mode"] = "REPLACE"
+        if include_config:
+            raw["config"] = self._filter_config_dict(filtr)
+        return _filters.normalize_filter_summary(raw, include_config=include_config)
+
+    def _emit_filter_summaries(self, drawable, include_config=True):
+        """Defensive filter inventory (topmost-first). Groups / errors → []."""
+        try:
+            if drawable is None:
+                return []
+            if not hasattr(drawable, "get_filters"):
+                return []
+            try:
+                filtrs = list(drawable.get_filters() or [])
+            except Exception:
+                return []
+            out = []
+            for filtr in filtrs:
+                try:
+                    out.append(self._filter_to_summary(filtr, include_config=include_config))
+                except Exception as ex:
+                    print(f"[MCP] filter summary failed: {ex}")
+                    continue
+            return out
+        except Exception as ex:
+            print(f"[MCP] emit_filter_summaries failed: {ex}")
+            return []
+
+    def _resolve_filter_on_layer(self, drawable, filter_id):
+        """Return filter on *drawable* with *filter_id*, else raise SecurityError."""
+        try:
+            fid = int(filter_id)
+        except (TypeError, ValueError) as e:
+            raise _sec.SecurityError(
+                _sec.CODE_HANDLE_NOT_FOUND,
+                f"filter_id must be an int (got {filter_id!r})",
+            ) from e
+        if not hasattr(drawable, "get_filters"):
+            raise _sec.SecurityError(
+                _sec.CODE_HANDLE_NOT_FOUND,
+                f"drawable does not support get_filters; filter_id {fid} not found",
+            )
+        try:
+            filtrs = list(drawable.get_filters() or [])
+        except Exception as e:
+            raise _sec.SecurityError(
+                _sec.CODE_HANDLE_NOT_FOUND,
+                f"could not list filters for membership check: {e}",
+            ) from e
+        for filtr in filtrs:
+            try:
+                if int(filtr.get_id()) == fid:
+                    return filtr
+            except Exception:
+                continue
+        raise _sec.SecurityError(
+            _sec.CODE_HANDLE_NOT_FOUND,
+            f"filter_id {fid} is not on this drawable (deleted, merged, or wrong layer)",
+        )
+
+    def _resolve_mutable_layer_for_nde(self, params):
+        """Resolve image+mutable layer for NDE tools (layer_handle preferred).
+
+        Returns ``(image, drawable, layer_handle_dict)``.
+        """
+        params = params or {}
+        layer_handle = params.get("layer_handle")
+        if layer_handle is not None:
+            validated = self._validate_request_handle(layer_handle, kind="item")
+            item_id = int(validated["item_id"])
+            image_id = int(validated["image_id"])
+            image = self._get_image_by_id(image_id)
+            drawable = self._resolve_mutable_layer(
+                image,
+                None,
+                None,
+                layer_id=item_id,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
+            return image, drawable, self._emit_item_handle(drawable, image_id)
+
+        # Image handle or index + layer_id / layer_name
+        handle = params.get("handle")
+        if handle is not None:
+            image, image_id = self._resolve_image_from_params(params)
+        else:
+            image_index = int(params.get("image_index", 0))
+            image = self._get_image(image_index)
+            image_id = int(image.get_id())
+        layer_name = params.get("layer_name", None)
+        layer_index = params.get("layer_index", None)
+        if layer_index is not None:
+            layer_index = int(layer_index)
+        drawable = self._resolve_mutable_layer(
+            image,
+            layer_name,
+            layer_index,
+            layer_id=self._layer_id_from_params(params),
+            allow_source_mutation=self._allow_source_mutation_from_params(params),
+        )
+        return image, drawable, self._emit_item_handle(drawable, image_id)
+
+    def _operation_available_runtime(self, op_name):
+        """Probe live GIMP for op availability (gimp:* path). None if API missing."""
+        try:
+            if hasattr(Gimp, "DrawableFilter") and hasattr(
+                Gimp.DrawableFilter, "operation_get_available"
+            ):
+                available = Gimp.DrawableFilter.operation_get_available()
+                if available is None:
+                    return None
+                # May be list/tuple of strings
+                names = {str(x) for x in list(available)}
+                return op_name in names
+        except Exception as ex:
+            print(f"[MCP] operation_get_available probe failed: {ex}")
+            return None
+        return None
+
+    def _apply_nde_filter(self, params):
+        """Append an allowlisted GEGL/GIMP op as a non-destructive DrawableFilter.
+
+        Locked sequence: new → blend/opacity → config (coerce) → update → append → flush.
+        No generation bump (layer tree topology unchanged). No exec.
+        """
+        try:
+            params = params or {}
+            op_raw = params.get("operation")
+            v = _filters.validate_operation(op_raw if isinstance(op_raw, str) else "")
+            if not v.get("ok"):
+                return _sec.make_error(
+                    _sec.CODE_UNSUPPORTED,
+                    v.get("message", "operation not allowlisted"),
+                    details=v.get("details"),
+                )
+            operation = v["operation"]
+
+            # Runtime probe for gimp:* (host cannot introspect live GIMP)
+            if _filters.requires_runtime_probe(operation):
+                avail = self._operation_available_runtime(operation)
+                if avail is False:
+                    return _sec.make_error(
+                        _sec.CODE_UNSUPPORTED,
+                        f"operation {operation!r} is not available in this GIMP build",
+                        details={"operation": operation, "reason": "operation_get_available"},
+                    )
+                # avail is None → API missing; still try new() and surface failure
+
+            name = params.get("name")
+            if not isinstance(name, str) or not name.strip():
+                name = operation
+            else:
+                name = name.strip()
+
+            blend_raw = params.get("blend_mode", _filters.DEFAULT_BLEND_MODE)
+            bv = _filters.validate_blend_mode(blend_raw if blend_raw is not None else None)
+            if not bv.get("ok"):
+                return _sec.make_error(_sec.CODE_UNSUPPORTED, bv.get("message", "bad blend_mode"))
+            blend_mode = bv["blend_mode"]
+
+            opacity = params.get("opacity", _filters.DEFAULT_OPACITY)
+            if opacity is None:
+                opacity = _filters.DEFAULT_OPACITY
+            opacity = float(opacity)
+            if opacity < 0.0:
+                opacity = 0.0
+            elif opacity > 1.0:
+                # Accept 0-100 layer-style by mistake → clamp if >1 and <=100 as /100? No —
+                # contract is 0.0-1.0; clamp to 1.0
+                opacity = 1.0
+
+            visible = params.get("visible", True)
+            if visible is None:
+                visible = True
+            visible = (
+                bool(visible)
+                if not isinstance(visible, str)
+                else str(visible).lower()
+                in (
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                )
+            )
+
+            config = params.get("config") or {}
+            if config is not None and not isinstance(config, dict):
+                return _sec.make_error(
+                    _sec.CODE_UNSUPPORTED,
+                    "config must be an object when provided",
+                )
+
+            image, drawable, layer_handle = self._resolve_mutable_layer_for_nde(params)
+
+            image.undo_group_start()
+            try:
+                filtr = Gimp.DrawableFilter.new(drawable, operation, name)
+                if filtr is None:
+                    raise RuntimeError(f"DrawableFilter.new returned None for {operation!r}")
+                filtr.set_blend_mode(self._blend_mode_from_string(blend_mode))
+                filtr.set_opacity(opacity)
+                if hasattr(filtr, "set_visible"):
+                    filtr.set_visible(visible)
+                cfg = filtr.get_config()
+                applied_props, ignored_props = self._set_filter_config_props(cfg, config)
+                # Required: update BEFORE append (official tutorial + AI2 H3)
+                filtr.update()
+                drawable.append_filter(filtr)
+                Gimp.displays_flush()
+            finally:
+                image.undo_group_end()
+
+            summary = self._filter_to_summary(filtr, include_config=True)
+            results = {
+                "filter": summary,
+                "layer_handle": layer_handle,
+                "updated": True,
+                "applied_props": applied_props,
+                "ignored_props": ignored_props,
+            }
+            note = _filters.expand_class_note(operation)
+            if note:
+                results["notes"] = note
+            return {"status": "success", "results": results}
+        except _handles.HandleError as e:
+            return self._handle_error_response(e)
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("HANDLE_NOT_FOUND"):
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+            return _sec.make_error(_sec.CODE_INTERNAL, msg)
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "code": _sec.CODE_INTERNAL,
+                "traceback": traceback.format_exc(),
+            }
+
+    def _edit_filter_config(self, params):
+        """Edit config/opacity/blend/visible on an existing NDE filter; always sync."""
+        try:
+            params = params or {}
+            if "filter_id" not in params or params.get("filter_id") is None:
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, "filter_id is required")
+            filter_id = params.get("filter_id")
+
+            image, drawable, layer_handle = self._resolve_mutable_layer_for_nde(params)
+            filtr = self._resolve_filter_on_layer(drawable, filter_id)
+
+            config = params.get("config")
+            if config is not None and not isinstance(config, dict):
+                return _sec.make_error(
+                    _sec.CODE_UNSUPPORTED,
+                    "config must be an object when provided",
+                )
+
+            need_sync = False  # True when blend/opacity/config changed
+            applied_props, ignored_props = [], []
+
+            image.undo_group_start()
+            try:
+                # visible is independent of update() API (AI2 M6)
+                if "visible" in params and params.get("visible") is not None:
+                    vis = params.get("visible")
+                    if isinstance(vis, str):
+                        vis = vis.strip().lower() in ("1", "true", "yes", "on")
+                    if hasattr(filtr, "set_visible"):
+                        filtr.set_visible(bool(vis))
+                    Gimp.displays_flush()
+
+                if "blend_mode" in params and params.get("blend_mode") is not None:
+                    bv = _filters.validate_blend_mode(params.get("blend_mode"))
+                    if not bv.get("ok"):
+                        return _sec.make_error(
+                            _sec.CODE_UNSUPPORTED, bv.get("message", "bad blend_mode")
+                        )
+                    filtr.set_blend_mode(self._blend_mode_from_string(bv["blend_mode"]))
+                    need_sync = True
+
+                if "opacity" in params and params.get("opacity") is not None:
+                    opacity = float(params.get("opacity"))
+                    if opacity < 0.0:
+                        opacity = 0.0
+                    elif opacity > 1.0:
+                        opacity = 1.0
+                    filtr.set_opacity(opacity)
+                    need_sync = True
+
+                if config:
+                    cfg = filtr.get_config()
+                    applied_props, ignored_props = self._set_filter_config_props(cfg, config)
+                    need_sync = True
+
+                if need_sync:
+                    self._sync_filter(filtr)
+                else:
+                    # visible-only or no-op still flush
+                    Gimp.displays_flush()
+            finally:
+                image.undo_group_end()
+
+            summary = self._filter_to_summary(filtr, include_config=True)
+            return {
+                "status": "success",
+                "results": {
+                    "filter": summary,
+                    "layer_handle": layer_handle,
+                    "updated": True,
+                    "applied_props": applied_props,
+                    "ignored_props": ignored_props,
+                },
+            }
+        except _handles.HandleError as e:
+            return self._handle_error_response(e)
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("HANDLE_NOT_FOUND"):
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+            return _sec.make_error(_sec.CODE_INTERNAL, msg)
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "code": _sec.CODE_INTERNAL,
+                "traceback": traceback.format_exc(),
+            }
+
+    def _remove_nde_filter(self, params):
+        """Delete a DrawableFilter node by filter_id on a layer."""
+        try:
+            params = params or {}
+            if "filter_id" not in params or params.get("filter_id") is None:
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, "filter_id is required")
+            filter_id = params.get("filter_id")
+            image, drawable, layer_handle = self._resolve_mutable_layer_for_nde(params)
+            filtr = self._resolve_filter_on_layer(drawable, filter_id)
+            removed_id = int(filtr.get_id())
+            image.undo_group_start()
+            try:
+                filtr.delete()
+            finally:
+                image.undo_group_end()
+            Gimp.displays_flush()
+            return {
+                "status": "success",
+                "results": {
+                    "removed_filter_id": removed_id,
+                    "layer_handle": layer_handle,
+                    "updated": True,
+                },
+            }
+        except _handles.HandleError as e:
+            return self._handle_error_response(e)
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("HANDLE_NOT_FOUND"):
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+            return _sec.make_error(_sec.CODE_INTERNAL, msg)
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "code": _sec.CODE_INTERNAL,
+                "traceback": traceback.format_exc(),
+            }
+
+    def _list_drawable_filters(self, params):
+        """List NDE filters on a layer (advanced; topmost-first)."""
+        try:
+            params = params or {}
+            include_config = params.get("include_config", True)
+            if isinstance(include_config, str):
+                include_config = include_config.strip().lower() in ("1", "true", "yes", "on")
+            else:
+                include_config = bool(include_config)
+            # list is read-only but still resolve layer (allow protected for inventory)
+            layer_handle = params.get("layer_handle")
+            if layer_handle is not None:
+                validated = self._validate_request_handle(layer_handle, kind="item")
+                item_id = int(validated["item_id"])
+                image_id = int(validated["image_id"])
+                image = self._get_image_by_id(image_id)
+                drawable = self._resolve_layer(image, None, None, layer_id=item_id)
+                lh = self._emit_item_handle(drawable, image_id)
+            else:
+                image, image_id = self._resolve_image_from_params(params)
+                drawable = self._resolve_layer(
+                    image,
+                    params.get("layer_name", None),
+                    None,
+                    layer_id=self._layer_id_from_params(params),
+                )
+                lh = self._emit_item_handle(drawable, image_id)
+            summaries = self._emit_filter_summaries(drawable, include_config=include_config)
+            return {
+                "status": "success",
+                "results": {
+                    "filters": summaries,
+                    "count": len(summaries),
+                    "layer_handle": lh,
+                },
+            }
+        except _handles.HandleError as e:
+            return self._handle_error_response(e)
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("HANDLE_NOT_FOUND"):
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+            return _sec.make_error(_sec.CODE_INTERNAL, msg)
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "code": _sec.CODE_INTERNAL,
+                "traceback": traceback.format_exc(),
+            }
+
+    def _merge_nde_filters(self, params):
+        """Destructively bake one or all NDE filters into the layer pixels.
+
+        Requires ``confirm_destructive=true``. filter_id omitted → merge all.
+        Merged filter ids are no longer addressable — agent must re-orient.
+        """
+        try:
+            params = params or {}
+            self._require_confirm_destructive(params, "merge_nde_filters")
+            image, drawable, layer_handle = self._resolve_mutable_layer_for_nde(params)
+
+            filter_id = params.get("filter_id", None)
+            merged_ids = []
+            image.undo_group_start()
+            try:
+                if filter_id is None:
+                    # Merge ALL filters currently on the drawable
+                    try:
+                        filtrs = list(drawable.get_filters() or [])
+                    except Exception:
+                        filtrs = []
+                    for filtr in filtrs:
+                        try:
+                            merged_ids.append(int(filtr.get_id()))
+                        except Exception:
+                            pass
+                    if hasattr(drawable, "merge_filters"):
+                        # Prefer passing the list when API accepts it
+                        try:
+                            drawable.merge_filters(filtrs)
+                        except TypeError:
+                            drawable.merge_filters()
+                    else:
+                        # Fallback: merge one by one
+                        for filtr in list(filtrs):
+                            drawable.merge_filter(filtr)
+                    merged_count = len(merged_ids)
+                else:
+                    filtr = self._resolve_filter_on_layer(drawable, filter_id)
+                    merged_ids = [int(filtr.get_id())]
+                    drawable.merge_filter(filtr)
+                    merged_count = 1
+            finally:
+                image.undo_group_end()
+            Gimp.displays_flush()
+            return {
+                "status": "success",
+                "results": {
+                    "merged_count": merged_count,
+                    "merged_filter_ids": merged_ids,
+                    "layer_handle": layer_handle,
+                    "note": (
+                        "Merged filter ids are no longer addressable "
+                        "(merge invalidates filter objects). "
+                        "Call orient_workspace (or list_drawable_filters) before further edits."
+                    ),
+                },
+            }
+        except _handles.HandleError as e:
+            return self._handle_error_response(e)
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except RuntimeError as e:
+            msg = str(e)
+            if msg.startswith("HANDLE_NOT_FOUND"):
+                return _sec.make_error(_sec.CODE_HANDLE_NOT_FOUND, msg)
+            return _sec.make_error(_sec.CODE_INTERNAL, msg)
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "code": _sec.CODE_INTERNAL,
+                "traceback": traceback.format_exc(),
+            }
 
     def _apply_drop_shadow(self, params):
         """Apply drop shadow via manual layer compositing (GIMP 3.2 compatible).

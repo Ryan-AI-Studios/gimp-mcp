@@ -26,23 +26,31 @@ from gimp_mcp_surface import (
 # ---------------------------------------------------------------------------
 
 
-def test_hl_catalog_exact_22() -> None:
+def test_hl_catalog_exact_25() -> None:
     names = get_hl_catalog_names()
-    assert len(names) == 22
+    assert len(names) == 25
     assert set(names) == HL_TOOL_NAMES
     assert names == sorted(names)
     assert "compare_images" in HL_TOOL_NAMES
     assert "verify_artifact" in HL_TOOL_NAMES
     assert "list_recipes" in HL_TOOL_NAMES
     assert "apply_recipe" in HL_TOOL_NAMES
+    assert "apply_nde_filter" in HL_TOOL_NAMES
+    assert "edit_filter_config" in HL_TOOL_NAMES
+    assert "remove_nde_filter" in HL_TOOL_NAMES
     assert "batch_run" not in HL_TOOL_NAMES
+    assert "list_drawable_filters" not in HL_TOOL_NAMES
+    assert "merge_nde_filters" not in HL_TOOL_NAMES
 
 
 def test_is_hl_tool() -> None:
     assert is_hl_tool("session_probe")
     assert is_hl_tool("create_selection")
+    assert is_hl_tool("apply_nde_filter")
     assert not is_hl_tool("get_image_bitmap")
     assert not is_hl_tool("blur")
+    assert not is_hl_tool("list_drawable_filters")
+    assert not is_hl_tool("merge_nde_filters")
 
 
 def test_advanced_tools_enabled_truthy() -> None:
