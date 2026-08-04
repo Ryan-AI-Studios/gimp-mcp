@@ -525,12 +525,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
             data=exc.details or {},
         )
 
-    # Merge --collision into params when provided
-    collision = getattr(args, "collision", None)
-    if collision is not None:
-        param_pairs = dict(param_pairs)
-        param_pairs["collision"] = str(collision)
-
     def _session_send(command_type: str, params: dict[str, Any]) -> dict[str, Any]:
         timeout = float(getattr(args, "timeout", 30.0))
         return probe_mod.send_authenticated_command(command_type, params, timeout=timeout)
@@ -538,7 +532,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     try:
         # Resolve recipe first for better unknown-id vs usage errors
         try:
-            recipes.get_recipe(recipe_id, version)
+            recipe = recipes.get_recipe(recipe_id, version)
         except sec.GimpMcpError as exc:
             if exc.code == sec.CODE_UNSUPPORTED:
                 return _emit_host_error(
@@ -548,6 +542,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     data=exc.details or {},
                 )
             raise
+
+        # Merge --collision only when the recipe declares a collision parameter
+        collision = getattr(args, "collision", None)
+        if collision is not None:
+            schema = recipe.get("parameters") or {}
+            if isinstance(schema, dict) and "collision" in schema:
+                param_pairs = dict(param_pairs)
+                param_pairs["collision"] = str(collision)
+            else:
+                return _emit_host_error(
+                    code=ec.CLI_USAGE,
+                    message=(
+                        f"recipe {recipe_id!r} does not declare a collision parameter; "
+                        "omit --collision"
+                    ),
+                    as_json=as_json,
+                    data={"recipe_id": recipe_id, "param": "collision"},
+                )
 
         log = recipes.run_recipe(
             recipe_id,
@@ -589,6 +601,47 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return ec.EXIT_SUCCESS
 
 
+def _expand_batch_input_glob(glob_pat: str) -> list[str]:
+    """Expand ``--input-glob`` under the workspace root without absolute Path.glob.
+
+    Globs are workspace-relative preferred. Absolute patterns are normalized to a
+    path relative to the workspace (Windows pathlib forbids absolute glob patterns
+    and raises ``NotImplementedError``). Patterns that resolve outside the
+    workspace are denied.
+    """
+    import os
+
+    raw = str(glob_pat).replace("\\", "/")
+    ws = sec.workspace_root()
+    base = Path(ws) if ws else Path.cwd()
+    try:
+        base_res = base.resolve()
+    except OSError:
+        base_res = base
+
+    path_obj = Path(raw)
+    # Drive-qualified / POSIX absolute / UNC → make relative under workspace.
+    if path_obj.is_absolute():
+        try:
+            rel = os.path.relpath(str(path_obj), start=str(base_res))
+        except ValueError as exc:
+            # Different drives on Windows (e.g. D:\ vs C:\ workspace).
+            raise sec.SecurityError(
+                sec.CODE_PATH_DENIED,
+                f"input-glob outside workspace: {glob_pat}",
+            ) from exc
+        rel_norm = rel.replace("\\", "/")
+        if rel_norm == ".." or rel_norm.startswith("../"):
+            raise sec.SecurityError(
+                sec.CODE_PATH_DENIED,
+                f"input-glob outside workspace: {glob_pat}",
+            )
+        raw = rel_norm
+
+    matched = sorted(base_res.glob(raw))
+    return [str(m) for m in matched if m.is_file()]
+
+
 def _cmd_batch(args: argparse.Namespace) -> int:
     """Multi-file recipe loop (continue-on-fail); not BatchProcedure (0019)."""
     import gimp_mcp_recipes as recipes
@@ -615,13 +668,10 @@ def _cmd_batch(args: argparse.Namespace) -> int:
         inputs.append(str(p))
     glob_pat = getattr(args, "input_glob", None)
     if glob_pat:
-        # Normalize backslashes → forward slashes on Windows before pathlib glob
-        pat = str(glob_pat).replace("\\", "/")
-        ws = sec.workspace_root()
-        base = Path(ws) if ws else Path.cwd()
-        # If pattern is absolute under workspace, glob from root; else relative to workspace
-        matched = sorted(base.glob(pat))
-        inputs.extend(str(m) for m in matched if m.is_file())
+        try:
+            inputs.extend(_expand_batch_input_glob(str(glob_pat)))
+        except sec.SecurityError as exc:
+            return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
 
     if not inputs:
         return _emit_host_error(
@@ -640,12 +690,8 @@ def _cmd_batch(args: argparse.Namespace) -> int:
             data=exc.details or {},
         )
 
-    collision = getattr(args, "collision", None) or "version"
-    param_pairs = dict(param_pairs)
-    param_pairs["collision"] = str(collision)
-
     try:
-        recipes.get_recipe(recipe_id, version)
+        recipe = recipes.get_recipe(recipe_id, version)
     except sec.GimpMcpError as exc:
         if exc.code == sec.CODE_UNSUPPORTED:
             return _emit_host_error(
@@ -656,6 +702,44 @@ def _cmd_batch(args: argparse.Namespace) -> int:
             )
         return _emit_host_error(
             code=exc.code,
+            message=exc.message,
+            as_json=as_json,
+            data=exc.details or {},
+        )
+
+    # Inject collision only when the recipe declares it (default version for exports).
+    # Host-only recipes (compare-artifacts, exif-strip) must not receive undeclared keys.
+    param_pairs = dict(param_pairs)
+    schema = recipe.get("parameters") or {}
+    if isinstance(schema, dict) and "collision" in schema:
+        collision = getattr(args, "collision", None) or "version"
+        param_pairs["collision"] = str(collision)
+
+    # Reserved I/O names are CLI flags / kwargs only — never --param.
+    for key in param_pairs:
+        if key in recipes.RESERVED_PARAM_NAMES:
+            return _emit_host_error(
+                code=ec.CLI_USAGE,
+                message=(
+                    f"reserved parameter {key!r} must be set via dedicated argument "
+                    f"(--input/--output/--handle), not --param"
+                ),
+                as_json=as_json,
+                data={"param": key, "recipe_id": recipe_id},
+            )
+
+    # Pre-validate shared params before the per-input loop so semantic errors
+    # (unknown key, bad type, missing required shared flag) exit 2 (CLI_USAGE),
+    # not 10 (PARTIAL) from continue-on-fail aggregation.
+    preflight = dict(param_pairs)
+    # Batch supplies these per file via dedicated kwargs.
+    preflight.setdefault("input_path", "__batch_preflight_input__")
+    preflight.setdefault("output_path", "__batch_preflight_output__")
+    try:
+        recipes.apply_defaults_and_check_params(recipe, preflight)
+    except sec.GimpMcpError as exc:
+        return _emit_host_error(
+            code=ec.CLI_USAGE,
             message=exc.message,
             as_json=as_json,
             data=exc.details or {},
@@ -1053,7 +1137,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument(
         "--input-glob",
         default=None,
-        help="pathlib glob under workspace (use / separators; \\ normalized on Windows)",
+        help=(
+            "pathlib glob under workspace (preferred relative; absolute patterns "
+            "normalized under workspace; use / separators; \\ normalized on Windows)"
+        ),
     )
     p_batch.add_argument(
         "--param",

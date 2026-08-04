@@ -226,9 +226,14 @@ def _validate_param_schema(name: str, spec: Any, path: str) -> None:
             raise ValueError(f"{path}: parameter {name!r} enum must be a non-empty list")
         if not all(isinstance(x, str) for x in enum):
             raise ValueError(f"{path}: parameter {name!r} enum values must be strings")
-    if "default" in spec and "enum" in spec:
-        if spec["default"] not in spec["enum"]:
-            raise ValueError(f"{path}: parameter {name!r} default not in enum")
+    if "default" in spec:
+        # Fail-closed: defaults must type-check (and satisfy enum) same as runtime.
+        try:
+            _coerce_and_check(name, spec["default"], spec)
+        except sec.GimpMcpError as exc:
+            raise ValueError(
+                f"{path}: parameter {name!r} default is invalid for type {ptype!r}: {exc.message}"
+            ) from exc
 
 
 def validate_recipe(recipe: Any, *, source: str = "<recipe>") -> dict[str, Any]:
@@ -810,6 +815,9 @@ def run_recipe(
 
     ``session_send`` is injectable for tests (``(command_type, params) -> result``).
     When omitted and the recipe ``requires_gimp``, uses authenticated TCP probe.
+
+    Reserved names ``input_path``, ``output_path``, and ``handle`` must be set only
+    via the dedicated kwargs (or CLI/MCP flags) — not inside ``params``.
     """
     reg = registry if registry is not None else load_package_recipes()
     recipe = reg.get(recipe_id, version)
@@ -819,7 +827,20 @@ def run_recipe(
     batch_safe = bool(recipe.get("batch_safe", False))
     backend: str = "session" if requires_gimp else "host"
 
-    # handle XOR input_path (v1: error if both)
+    # Reserved I/O binding names come only from dedicated kwargs / CLI flags.
+    user_params: dict[str, Any] = dict(params or {})
+    for key in user_params:
+        if key in RESERVED_PARAM_NAMES:
+            raise sec.GimpMcpError(
+                sec.CODE_POLICY_DENIED,
+                (
+                    f"reserved parameter {key!r} must be set via dedicated argument "
+                    f"(input_path/output_path/handle), not params"
+                ),
+                details={"param": key, "recipe_id": recipe_id},
+            )
+
+    # handle XOR input_path (v1: error if both) — kwargs only; params cannot reintroduce
     if handle is not None and input_path is not None:
         raise sec.GimpMcpError(
             sec.CODE_POLICY_DENIED,
@@ -839,14 +860,24 @@ def run_recipe(
             details={"recipe_id": recipe_id},
         )
 
-    # Merge reserved + user params
-    merged_raw: dict[str, Any] = dict(params or {})
+    # Merge reserved kwargs + user params (reserved never from params)
+    merged_raw: dict[str, Any] = dict(user_params)
     if input_path is not None:
         merged_raw["input_path"] = input_path
     if output_path is not None:
         merged_raw["output_path"] = output_path
     if handle is not None:
         merged_raw["handle"] = handle
+
+    # Defense in depth: effective binding after merge must still satisfy XOR
+    effective_handle = merged_raw.get("handle")
+    effective_input = merged_raw.get("input_path")
+    if effective_handle is not None and effective_input is not None:
+        raise sec.GimpMcpError(
+            sec.CODE_POLICY_DENIED,
+            "provide handle or input_path, not both",
+            details={"recipe_id": recipe_id},
+        )
 
     checked = apply_defaults_and_check_params(recipe, merged_raw)
 

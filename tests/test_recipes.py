@@ -853,3 +853,238 @@ def test_cli_run_bad_param_exit_2(workspace: Path, capsys: pytest.CaptureFixture
         ]
     )
     assert code == ec.EXIT_CLI_USAGE
+
+
+# ---------------------------------------------------------------------------
+# Codex P1/P2 fixes (batch collision, CLI_USAGE, XOR, defaults, glob)
+# ---------------------------------------------------------------------------
+
+
+def test_params_reserved_input_path_rejected(workspace: Path) -> None:
+    """Reserved input_path/handle/output_path must not come from params (XOR safe)."""
+    with pytest.raises(sec.GimpMcpError, match="reserved parameter") as ei:
+        recipes.run_recipe(
+            "transparent-png",
+            handle={"image_id": 1, "generation": 1, "session_epoch": 1},
+            params={"input_path": str(workspace / "sneak.png")},
+            output_path=str(workspace / "out.png"),
+            session_send=lambda *_a, **_k: {"status": "success", "results": {}},
+        )
+    assert ei.value.code == sec.CODE_POLICY_DENIED
+
+
+def test_params_both_handle_and_input_via_params_rejected(workspace: Path) -> None:
+    """Both handle and input_path via params alone must error (reserved rejection)."""
+    with pytest.raises(sec.GimpMcpError, match="reserved parameter") as ei:
+        recipes.run_recipe(
+            "web-export",
+            params={
+                "handle": {"image_id": 1, "generation": 1, "session_epoch": 1},
+                "input_path": str(workspace / "in.png"),
+                "output_path": str(workspace / "out.png"),
+            },
+            session_send=lambda *_a, **_k: {"status": "success", "results": {}},
+        )
+    assert ei.value.code == sec.CODE_POLICY_DENIED
+
+
+def test_load_rejects_wrong_typed_param_default(tmp_path: Path) -> None:
+    """Load-time fail-closed: default must type-check against declared type."""
+    bad = {
+        "id": "bad-default",
+        "version": "1.0.0",
+        "title": "bad default",
+        "parameters": {
+            "max_mae": {"type": "float", "required": False, "default": "not-a-float"},
+        },
+        "steps": [{"op": "compare_images", "with": {}}],
+    }
+    (tmp_path / "bad-default.json").write_text(json.dumps(bad), encoding="utf-8")
+    with pytest.raises(sec.GimpMcpError, match=r"fail-closed|load failed") as ei:
+        recipes.load_recipes_from_dir(tmp_path)
+    assert ei.value.code == sec.CODE_INTERNAL
+    errs = (ei.value.details or {}).get("errors") or []
+    assert any("default" in str(e).lower() or "float" in str(e).lower() for e in errs)
+
+
+def test_load_rejects_default_outside_enum(tmp_path: Path) -> None:
+    bad = {
+        "id": "bad-enum-default",
+        "version": "1.0.0",
+        "title": "bad enum default",
+        "parameters": {
+            "collision": {
+                "type": "string",
+                "enum": ["fail", "version", "replace"],
+                "default": "overwrite",
+            },
+        },
+        "steps": [{"op": "compare_images", "with": {}}],
+    }
+    (tmp_path / "bad-enum.json").write_text(json.dumps(bad), encoding="utf-8")
+    with pytest.raises(sec.GimpMcpError, match=r"fail-closed|load failed") as ei:
+        recipes.load_recipes_from_dir(tmp_path)
+    assert ei.value.code == sec.CODE_INTERNAL
+
+
+def test_cli_batch_host_compare_no_collision_injection(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """P1-1: host-only compare-artifacts batch must not fail on undeclared collision."""
+    png = build_minimal_png(width=2, height=2, color_type=2)
+    ref = workspace / "ref.png"
+    a = workspace / "a.png"
+    b = workspace / "b.png"
+    ref.write_bytes(png)
+    a.write_bytes(png)
+    b.write_bytes(png)
+    out_dir = workspace / "batch_out"
+    out_dir.mkdir()
+    code = main(
+        [
+            "batch",
+            "compare-artifacts",
+            "--output-dir",
+            str(out_dir),
+            "--inputs",
+            str(a),
+            "--inputs",
+            str(b),
+            "--param",
+            f"path_a={ref}",
+            "--param",
+            f"path_b={ref}",
+            "--json",
+        ]
+    )
+    assert code == ec.EXIT_SUCCESS
+    env = json.loads(capsys.readouterr().out)
+    assert env["ok"] is True
+    assert env["data"]["total"] == 2
+    assert env["data"]["failed"] == 0
+    assert all(r.get("ok") for r in env["data"]["results"])
+
+
+def test_cli_batch_unknown_param_exit_2(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """P1-2: bad shared params → CLI_USAGE exit 2 (not PARTIAL 10)."""
+    png = build_minimal_png(width=1, height=1, color_type=2)
+    a = workspace / "a.png"
+    a.write_bytes(png)
+    out_dir = workspace / "batch_out"
+    out_dir.mkdir()
+    code = main(
+        [
+            "batch",
+            "compare-artifacts",
+            "--output-dir",
+            str(out_dir),
+            "--inputs",
+            str(a),
+            "--param",
+            "not_a_real_param=1",
+            "--json",
+        ]
+    )
+    assert code == ec.EXIT_CLI_USAGE
+    assert code == 2
+    env = json.loads(capsys.readouterr().out)
+    assert env["exit_code"] == 2
+    assert env["ok"] is False
+
+
+def test_cli_batch_one_runtime_fail_exit_10(
+    workspace: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """P1-2: per-input runtime failure aggregates to PARTIAL exit 10."""
+    png = build_minimal_png(width=2, height=2, color_type=2)
+    good = workspace / "good.png"
+    bad = workspace / "bad.png"
+    good.write_bytes(png)
+    bad.write_bytes(b"not-a-png")
+    out_dir = workspace / "batch_out"
+    out_dir.mkdir()
+    # compare-artifacts: path_a fixed good, path_b = each batch input via --param path_b
+    # but batch sets the same shared params for every input — so use a mock for
+    # second-input runtime failure while first succeeds (real first call).
+    calls = {"n": 0}
+    real_run = recipes.run_recipe
+
+    def _wrap(*a: Any, **k: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise sec.GimpMcpError(sec.CODE_VERIFY_FAILED, "forced runtime fail")
+        return real_run(*a, **k)
+
+    with patch.object(recipes, "run_recipe", side_effect=_wrap):
+        code = main(
+            [
+                "batch",
+                "compare-artifacts",
+                "--output-dir",
+                str(out_dir),
+                "--inputs",
+                str(good),
+                "--inputs",
+                str(bad),
+                "--param",
+                f"path_a={good}",
+                "--param",
+                f"path_b={good}",
+                "--json",
+            ]
+        )
+    assert code == ec.EXIT_PARTIAL
+    assert code == 10
+    env = json.loads(capsys.readouterr().out)
+    assert env["code"] == sec.CODE_PARTIAL_MUTATION
+    assert env["data"]["total"] == 2
+    assert env["data"]["failed"] == 1
+    assert env["data"]["results"][0]["ok"] is True
+    assert env["data"]["results"][1]["ok"] is False
+
+
+def test_cli_batch_absolute_input_glob(workspace: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """P2-2: absolute --input-glob under workspace must not crash (Windows-safe)."""
+    png = build_minimal_png(width=1, height=1, color_type=2)
+    sub = workspace / "globdir"
+    sub.mkdir()
+    f1 = sub / "one.png"
+    f1.write_bytes(png)
+    ref = workspace / "ref.png"
+    ref.write_bytes(png)
+    out_dir = workspace / "batch_out"
+    out_dir.mkdir()
+    # Absolute pattern pointing under workspace (would NotImplementedError on bare Path.glob)
+    abs_glob = str(sub / "*.png")
+    code = main(
+        [
+            "batch",
+            "compare-artifacts",
+            "--output-dir",
+            str(out_dir),
+            "--input-glob",
+            abs_glob,
+            "--param",
+            f"path_a={ref}",
+            "--param",
+            f"path_b={ref}",
+            "--json",
+        ]
+    )
+    assert code == ec.EXIT_SUCCESS
+    env = json.loads(capsys.readouterr().out)
+    assert env["data"]["total"] >= 1
+    assert env["ok"] is True
+
+
+def test_expand_batch_input_glob_relative(workspace: Path) -> None:
+    from gimp_agent.cli import _expand_batch_input_glob
+
+    sub = workspace / "g"
+    sub.mkdir()
+    (sub / "x.png").write_bytes(build_minimal_png(width=1, height=1, color_type=2))
+    found = _expand_batch_input_glob("g/*.png")
+    assert len(found) == 1
+    assert Path(found[0]).name == "x.png"
