@@ -186,16 +186,16 @@ consumer (M8), `E-LIVE-GOLDEN` informational residual. Offline **E-OFFLINE-GOLDE
 stays release gate. Claude PASS WITH DEFERRED P3 (Codex rate-limited). Live operator
 matrix residual if plugin not started.
 
-**0028 FinalProductPolish (Completed — merge SHA pending PR):** Capstone for the
+**0028 FinalProductPolish (Completed — PR #43 / main@8189904):** Capstone for the
 28-track sequence. **Not** SemVer 1.0.0. Declares **product mission complete at
 0.2.x**: public `docs/known-residuals.md` (all 7 sections; human-readable labels) +
 README keep-3-bullets + docs-table row + readiness note; SECURITY + release links;
 `docs/release.md` baseline **0.2.x** + remote `v0.2.0` honesty; additive CHANGELOG
 `[0.2.0]` structure test (keep `[0.1.0]`); deferred non-struck rows absorbed/declined
 into inventory. Did **not** implement soft ImageContent guard, prune-backups, tattoo
-handles, B904/E501, or mcp/fastmcp majors. Did **not** re-tag `v0.2.0`. Maintainers
-after sequence: **`docs/known-residuals.md`**, **`docs/golden-path.md`**,
-**`docs/release.md`**.
+handles, B904/E501, or mcp/fastmcp majors. Did **not** re-tag `v0.2.0`. Claude final
+PASS CLEAN (Codex rate-limited). Maintainers after sequence:
+**`docs/known-residuals.md`**, **`docs/golden-path.md`**, **`docs/release.md`**.
 
 ---
 
