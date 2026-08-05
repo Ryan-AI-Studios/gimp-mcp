@@ -348,7 +348,7 @@ If indexes are empty: `ledgerful index --incremental`.
 - **Cross-model:** Claude Sonnet **PASS** final gate (Codex rate-limited 2026-08-04); internal R1 GFM anchor + protocol fixes before final gate.
 - **Residuals:** CHANGELOG `[0.1.0]` promote + classifiers → **0026**; Codex re-run optional.
 - **Neighbor walls:** eval corpus **0025**; release packaging **0026**; golden path **0027** deep-links runbook `#start-order`.
-- **PR/SHA:** (filled after merge)
+- **PR/SHA:** PR #39 / main@7ff6abc
 
 ### 0022 Completed — IntegrationE2EAndCi
 
