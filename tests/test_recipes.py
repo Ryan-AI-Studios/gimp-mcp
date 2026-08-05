@@ -849,16 +849,18 @@ def test_recipe_library_capability_true() -> None:
     assert caps["batch_interpreter"] is True
 
 
-def test_hl_catalog_exact_28() -> None:
+def test_hl_catalog_exact_30() -> None:
     from gimp_mcp_surface import HL_TOOL_NAMES, get_hl_catalog_names
 
     names = get_hl_catalog_names()
-    assert len(names) == 28
+    assert len(names) == 30
     assert set(names) == HL_TOOL_NAMES
     assert "list_recipes" in HL_TOOL_NAMES
     assert "apply_recipe" in HL_TOOL_NAMES
     assert "apply_nde_filter" in HL_TOOL_NAMES
     assert "undo_group_begin" in HL_TOOL_NAMES
+    assert "get_selection_bounds" in HL_TOOL_NAMES
+    assert "clear_selection_to_transparent" in HL_TOOL_NAMES
     assert "batch_run" not in HL_TOOL_NAMES
 
 

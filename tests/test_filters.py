@@ -482,13 +482,13 @@ def test_pyproject_registers_filters() -> None:
 
 
 # ---------------------------------------------------------------------------
-# HL catalog 28 + advanced not HL (NDE tools remain HL)
+# HL catalog 30 + advanced not HL (NDE tools remain HL)
 # ---------------------------------------------------------------------------
 
 
-def test_hl_catalog_exact_28_includes_nde() -> None:
+def test_hl_catalog_exact_30_includes_nde() -> None:
     names = get_hl_catalog_names()
-    assert len(names) == 28
+    assert len(names) == 30
     assert set(names) == HL_TOOL_NAMES
     assert "apply_nde_filter" in HL_TOOL_NAMES
     assert "edit_filter_config" in HL_TOOL_NAMES
@@ -496,6 +496,8 @@ def test_hl_catalog_exact_28_includes_nde() -> None:
     assert is_hl_tool("apply_nde_filter")
     assert is_hl_tool("edit_filter_config")
     assert is_hl_tool("remove_nde_filter")
+    assert is_hl_tool("get_selection_bounds")
+    assert is_hl_tool("clear_selection_to_transparent")
     # Advanced tools must NOT be HL
     assert not is_hl_tool("list_drawable_filters")
     assert not is_hl_tool("merge_nde_filters")
@@ -621,8 +623,8 @@ def test_surface_and_state_wiring() -> None:
     assert "apply_nde_filter" in surface_text
     assert "edit_filter_config" in surface_text
     assert "remove_nde_filter" in surface_text
-    # comments say 28 (post-0017)
-    assert "28" in surface_text
+    # comments say 30 (post-0030 cutout helpers)
+    assert "30" in surface_text
 
     state_text = Path("gimp_mcp_state.py").read_text(encoding="utf-8")
     assert "nde_filters" in state_text

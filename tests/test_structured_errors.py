@@ -54,6 +54,15 @@ def test_partial_mutation_and_connection_defaults() -> None:
     assert alpha["state_may_have_changed"] is True
 
 
+def test_selection_empty_code_defaults() -> None:
+    """0030: SELECTION_EMPTY is non-retryable and does not claim state change."""
+    assert sec.CODE_SELECTION_EMPTY == "SELECTION_EMPTY"
+    se = sec.CODE_DEFAULTS[sec.CODE_SELECTION_EMPTY]
+    assert se["retryable"] is False
+    assert se["state_may_have_changed"] is False
+    assert se["approval_required"] is False
+
+
 # ---------------------------------------------------------------------------
 # request_id
 # ---------------------------------------------------------------------------
