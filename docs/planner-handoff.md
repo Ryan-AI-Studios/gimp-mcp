@@ -207,7 +207,7 @@ the original 0001–0028 fence; full plan pass before implement. Suggested order
 |---|---|---|
 | **0029** DualEnvWorkspaceLaunch | **Completed** (PR #44 / main@aa375e1) | Dual-env docs; `gimp-agent launch-gui` + scripts; session_probe plugin/host roots; doctor **message only**; dual-server adapters; Claude PASS CLEAN |
 | **0030** HlCutoutSelectionHelpers | **Completed** (PR #45 / main@6c38194) | HL **30**: `clear_selection_to_transparent` + `get_selection_bounds`; empty → `SELECTION_EMPTY`; skill protocol; Claude PASS WITH DEFERRED P3 |
-| **0031** PngExportDrawableHardening | Placeholder | Live `EXPORT_FAILED` / `file-png-export` drawable property failures |
+| **0031** PngExportDrawableHardening | **Completed** (PR #46 / main@5b62925) | GIMP 3 export-procedure: drawable optional; snapshot ungated `proc.run`; IR1-04 rewrite; Claude PASS |
 | **0032** SubjectIsolationPipeline | Placeholder | Optional host rembg/subject path + typed fuzzy select; **not** required dep / Class A |
 
 **OOS (Grok Build host):** mid-flight MCP env respawn, leftover `uv` process hygiene,
@@ -227,7 +227,15 @@ host+plugin) + `clear_selection_to_transparent` (HL; `SELECTION_EMPTY` via prefe
 transparent `fill_selection` empty path; catalog **30**; skill cutout protocol.
 **Declined:** unrestricted fill/invert/modify; color-remove recipe; `max_coverage_fraction`
 params; dual-tag tools. Claude PASS WITH DEFERRED P3 (Codex rate-limited). Pins hold.
-OOS: **0031** export, **0032** rembg. **Next:** full plan then **0031** (or operator demand).
+
+**0031 Completed (2026-08-05; PR #46 / main@5b62925):** Live preserve_alpha PNG export hit
+false `EXPORT_FAILED` when `file-png-export` rejected `drawable` config props. Root cause:
+GIMP 3.2 export-procedure model (image+file+format; drawables via internal `list_layers`).
+**Shipped:** soft-try `run-mode` + drawable (print-only, never `property_errors`); remove
+IR1-04 hard-require; always `proc.run` after image+file (export + snapshot); keep merge +
+RGBA8 + IHDR + degraded last resort; residuals absorb; CHANGELOG Unreleased. Claude final
+PASS (Codex R1 FAIL on weak tests → fixed; Codex then usage-limited). Pins hold; EXPECTED
+10; no HL/SemVer change. **Next:** full plan **0032** when operator demands (placeholder).
 
 ---
 
@@ -414,10 +422,10 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-05 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0029 dual-env @ 0.2.x; PR #44 / main@aa375e1) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0031 export harden @ 0.2.x; PR #46 / main@5b62925) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest (fixtures + offline E2E + docs structure); ledgerful verify |
-| Active focus | **0001–0029 complete** @ **0.2.x**; **next** full plan **0030** (placeholder); 0031–0032 placeholders; residual fence `docs/known-residuals.md` |
-| Track count | 0001–0029 **complete**; 0030–0032 **placeholder** (see conductor.md) |
+| Active focus | **0001–0031 complete** @ **0.2.x**; **next** full plan **0032** (placeholder); residual fence `docs/known-residuals.md` |
+| Track count | 0001–0031 **complete**; 0032 **placeholder** (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.6 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
 | Runtime skills | Committed repo `skills/` (router `gimp` + 5 focused); `uv run gimp-agent skills list\|validate\|install` |
@@ -670,6 +678,8 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Date | Change |
 |---|---|
+| 2026-08-05 | **0031 Completed:** PNG export drawable optional (GIMP 3 export-procedure); snapshot ungated run; PR #46 / main@5b62925; Claude PASS (Codex rate-limited after R1 FAIL fix); next=0032 placeholder |
+| 2026-08-05 | **0030 Completed:** HL cutout clear+bounds (28→30); SELECTION_EMPTY; PR #45 / main@6c38194; Claude PASS WITH DEFERRED P3; next=0031 |
 | 2026-08-04 | **0015 Completed:** recipe library, HL 22, CLI recipes/run/batch; PR #22 / main@51adaeb; Codex PASS WITH DEFERRED P3; next=0016 |
 | 2026-08-04 | **0015 in progress:** recipe registry/runner, HL 22, CLI recipes/run/batch, package-data JSON on feature branch |
 | 2026-08-04 | Folded AI-review into **0015**: whole-value `$name`; package-data recipes; created_paths; allowlist≠surface; batch continue-on-fail |
