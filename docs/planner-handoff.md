@@ -119,12 +119,13 @@ minting. Track IDs are creation order, not execution order.
   → 0023 Performance snapshot budget — Completed
   → 0024 Documentation product polish — Completed
   → 0025 Evaluation corpus and benchmarks — Completed
-  → 0026 Release packaging — next (placeholder; full plan pass first)
-  → 0027 … through 0028 Final product polish (v1)
+  → 0026 Release packaging — Completed
+  → 0027 Golden path demo and smoke — next (placeholder; full plan pass first)
+  → 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0025 Completed.** **Next implement: 0026**
-ReleasePackaging (**placeholder — full plan pass first**). Orientation SoT is
+**28 tracks** (0001–0028). **0001–0026 Completed.** **Next implement: 0027**
+GoldenPathDemoAndSmoke (**placeholder — full plan pass first**). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
@@ -143,10 +144,9 @@ README for **Ryan-AI-Studios** fork; HL-first compact catalog; `docs/architectur
 (user capabilities, **no conductor track IDs**) + `docs/operator-runbook.md`
 (`#start-order` GFM-safe); SECURITY refresh (**TIMEOUT** row; workspace `.gimp-mcp-tmp`
 snapshot path primary; stdio ≠ HTTP OAuth); **CHANGELOG** Keep a Changelog 1.1.0
-baseline under **`[Unreleased]`** (0026 tags/promotes `[0.1.0]`); pyproject
-**`GPL-3.0-only`**; CLAUDE.md HL-first; `run_tests.py` retained as optional live
-harness; in-repo demo media; `tests/test_docs_product.py`. Authoritative table:
-`conductor/conductor.md`.
+baseline (promoted to **`[0.1.0]`** in **0026**); pyproject **`GPL-3.0-only`**;
+CLAUDE.md HL-first; `run_tests.py` retained as optional live harness; in-repo demo
+media; `tests/test_docs_product.py`. Authoritative table: `conductor/conductor.md`.
 
 **0025 EvaluationCorpusAndBenchmarks (Completed — PR #40 / main@48ff3ed):**
 Product evaluation corpus (tool-correctness, not LLM beauty). `tests/evals/cases.json`
@@ -155,9 +155,17 @@ catalogs CGPT 30-row suite + Google critical with honest modes
 `score(cases, passed_nodeids) → RubricReport` → `output/eval-report.json` via
 `scripts/run_eval_report.py`. **H1:** `E-BATCH-SMALL` = structure (`validate_job` only).
 **H2:** scorer never imports pytest. **H3:** non-status assert integrity. Release gates
-documented in **`docs/evaluation.md`** (`#release-gates` for 0027). Synthetic
-`tests/fixtures/eval/` 16×16. **0026** should parse `release_gates` programmatically.
-Pin hold: mcp/fastmcp majors. See `conductor/conductor.md`.
+documented in **`docs/evaluation.md`** (`#release-gates`). Synthetic
+`tests/fixtures/eval/` 16×16. Pin hold: mcp/fastmcp majors. See `conductor/conductor.md`.
+
+**0026 ReleasePackaging (Completed — PR #41 / main@a5db2b3; local tag v0.1.0):**
+First product baseline release machinery. CHANGELOG **`[0.1.0] - 2026-08-04`** + empty
+`[Unreleased]`; pyproject classifiers + `project.urls` (no License trove);
+version triple-sync tests (exact `plugin_version` regex); eval report **fail-closed
+default** kept (**H1**) with `--require-pass` alias + `--inspect`; `docs/release.md`
+(wheel ≠ APPDATA); `scripts/pack_plugin_shipset.py` EXPECTED-10 zip + MANIFEST/sha256;
+`@slow` `uv build` verify (not default CI); `MANIFEST.in` for sdist plugin. **Do not**
+push remote tag without approval (`git push origin v0.1.0`). Live golden path → **0027**.
 
 ---
 
