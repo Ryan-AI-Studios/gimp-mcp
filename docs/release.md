@@ -1,8 +1,10 @@
 # Release checklist
 
-Operator checklist for a reproducible **0.1.x** release of gimp-mcp.
-Primary distribution remains **clone + `uv sync` + `gimp-agent install`**.
+Operator checklist for a reproducible **0.2.x** release of gimp-mcp
+(current product baseline **0.2.0**; remote annotated tag **`v0.2.0`** already
+exists). Primary distribution remains **clone + `uv sync` + `gimp-agent install`**.
 Optional PyPI publish is documented last and is **not** required.
+Accepted post-release debt: [known-residuals.md](known-residuals.md).
 
 ## Honesty: wheel ≠ plug-in install
 
@@ -133,18 +135,24 @@ A sidecar `.sha256` covers the zip archive itself. Prefer
 
 ## Tag procedure
 
+**Current product release tag:** remote annotated **`v0.2.0`** already exists
+(do **not** re-create, move, or re-push that tag). The example below is a
+**historical / future-tag pattern only** — substitute the next version when
+cutting a new release.
+
 After offline gates are green **and** the release commit is on **main**:
 
 ```bash
-git tag -a v0.2.0 -m "Release 0.2.0 — golden-path demo and smoke"
+# Example pattern for a *future* tag only (v0.2.0 is already remote)
+git tag -a v0.Y.Z -m "Release 0.Y.Z — <summary>"
 ```
 
 - Create the annotated tag on the **main merge commit**, not a long-lived
   feature branch tip, unless that tip is what merges as the release.
-- **Do not** `git push origin v0.2.0` (or `--tags`) without explicit operator
-  approval.
-- CHANGELOG footer links to compare/tag URLs may **404 until** the tag exists
-  on the remote — that is expected before the first push.
+- **Do not** `git push origin <tag>` (or `--tags`) without explicit operator
+  approval for **future** tags.
+- CHANGELOG footer links to compare/tag URLs may **404 until** a new tag exists
+  on the remote — that is expected before the first push of that tag.
 
 ## Optional: PyPI
 
@@ -181,5 +189,6 @@ and [evaluation.md](evaluation.md) live residual section). Offline release gates
 - [ci-and-testing.md](ci-and-testing.md) — offline CI SoT and markers
 - [operator-runbook.md](operator-runbook.md) — start order and install
 - [architecture.md](architecture.md) — hybrid MCP + CLI design
+- [known-residuals.md](known-residuals.md) — public residual inventory after 0.2.x
 - [CHANGELOG.md](../CHANGELOG.md) — Keep a Changelog notes
 - [README.md](../README.md) — public front door

@@ -121,23 +121,28 @@ minting. Track IDs are creation order, not execution order.
   → 0025 Evaluation corpus and benchmarks — Completed
   → 0026 Release packaging — Completed
   → 0027 Golden path demo and smoke — **Completed**
-  → 0028 Final product polish (v1) — next (placeholder; full plan pass first)
+  → 0028 Final product polish — **Completed**
 ```
 
-**28 tracks** (0001–0028). **0001–0027 Completed.** **Next implement: 0028**
-FinalProductPolish (**placeholder — full plan pass first**). Orientation SoT is
-`orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
-Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
-`rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
-Pixel verify **0014** (decoded budget **50M** trusted / **25M** untrusted — do not
-raise to design 250M). Recipes **0015**. NDE **0016**. Undo groups **0017**. Install SoT
-**`uv run gimp-agent install`** (**0018**, EXPECTED **10**). Headless batch **0019**
-(constrained BatchProcedure). Runtime Agent Skills package **`skills/`** (**0020**).
-Client adapters + dual image delivery **0021**. Fixture corpus + offline E2E + CI policy
-**0022** (`tests/fixtures/`, `docs/ci-and-testing.md`; headless GIMP on GA is
-**document-only**; self-hosted Windows residual). Snapshot budget **0023**: default max
-edge **1024**, hard **4096**, region **8192**, host TCP **60s** / `CODE_TIMEOUT`;
-`docs/performance.md`; soft encoded-byte ImageContent guard deferred.
+**28 tracks** (0001–0028). **Sequence 0001–0028 complete.** No further conductor
+product tracks in this set unless the operator mints new ones. **Release baseline:**
+remote annotated tag **`v0.2.0`** @ `65783d1` (version triple + CHANGELOG + uv.lock).
+**Product mission complete at 0.2.x** (not SemVer 1.0.0). Maintainers: public residual
+fence **`docs/known-residuals.md`**; golden path **`docs/golden-path.md`**; release
+checklist **`docs/release.md`**. Local-only `v0.1.0` may exist on disk; remote product
+tag SoT is **v0.2.0**. Orientation SoT is `orient_workspace`. Handles **0007**. Alpha
+**0005**. Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010** →
+**28** with **0017**. Errors **0011** + honest `rollback_available` when open agent
+undo TX (**0017**). CLI **0012**. Atomic **0013**. Pixel verify **0014** (decoded budget
+**50M** trusted / **25M** untrusted — do not raise to design 250M). Recipes **0015**.
+NDE **0016**. Undo groups **0017**. Install SoT **`uv run gimp-agent install`**
+(**0018**, EXPECTED **10**). Headless batch **0019** (constrained BatchProcedure).
+Runtime Agent Skills package **`skills/`** (**0020**). Client adapters + dual image
+delivery **0021**. Fixture corpus + offline E2E + CI policy **0022** (`tests/fixtures/`,
+`docs/ci-and-testing.md`; headless GIMP on GA is **document-only**; self-hosted Windows
+residual). Snapshot budget **0023**: default max edge **1024**, hard **4096**, region
+**8192**, host TCP **60s** / `CODE_TIMEOUT`; `docs/performance.md`; soft encoded-byte
+ImageContent guard → known-residuals inventory.
 
 **0024 DocumentationProductPolish (Completed):** Public docs front door —
 README for **Ryan-AI-Studios** fork; HL-first compact catalog; `docs/architecture.md`
@@ -179,7 +184,18 @@ non-status asserts (**H3**). Shipped: **`docs/golden-path.md#golden-path`**,
 evidence schema v1, README demote (M7), **ci-and-testing.md** first-integration
 consumer (M8), `E-LIVE-GOLDEN` informational residual. Offline **E-OFFLINE-GOLDEN**
 stays release gate. Claude PASS WITH DEFERRED P3 (Codex rate-limited). Live operator
-matrix residual if plugin not started. Next: **0028**.
+matrix residual if plugin not started.
+
+**0028 FinalProductPolish (Completed — merge SHA pending PR):** Capstone for the
+28-track sequence. **Not** SemVer 1.0.0. Declares **product mission complete at
+0.2.x**: public `docs/known-residuals.md` (all 7 sections; human-readable labels) +
+README keep-3-bullets + docs-table row + readiness note; SECURITY + release links;
+`docs/release.md` baseline **0.2.x** + remote `v0.2.0` honesty; additive CHANGELOG
+`[0.2.0]` structure test (keep `[0.1.0]`); deferred non-struck rows absorbed/declined
+into inventory. Did **not** implement soft ImageContent guard, prune-backups, tattoo
+handles, B904/E501, or mcp/fastmcp majors. Did **not** re-tag `v0.2.0`. Maintainers
+after sequence: **`docs/known-residuals.md`**, **`docs/golden-path.md`**,
+**`docs/release.md`**.
 
 ---
 
@@ -364,12 +380,12 @@ If indexes are empty: `ledgerful index --incremental`.
 
 | Item | Value |
 |---|---|
-| Date | 2026-08-04 |
+| Date | 2026-08-05 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0024 docs polish) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0028 product readiness @ 0.2.x) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest (fixtures + offline E2E + docs structure); ledgerful verify |
-| Active focus | **0024 Completed** (docs front door); next **0025-EvaluationCorpusAndBenchmarks** (plan first); prior **0023** snapshot budgets |
-| Track count | 0001–0028 (see conductor.md) |
+| Active focus | **0001–0028 sequence complete**; product readiness at **0.2.x**; residual fence `docs/known-residuals.md` |
+| Track count | 0001–0028 **complete** (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
 | Runtime skills | Committed repo `skills/` (router `gimp` + 5 focused); `uv run gimp-agent skills list\|validate\|install` |

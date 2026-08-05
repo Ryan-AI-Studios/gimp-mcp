@@ -27,6 +27,13 @@ document, run **allowlisted recipes**, and **verify pixels** — under loopback 
 workspace path jail, and a curated **28-tool** default surface (optional advanced
 ~90 tools).
 
+### Product readiness
+
+**Product mission complete at 0.2.x** — the planned hybrid MCP + CLI sequence is
+delivered and offline-tested (release baseline **`v0.2.0`**). This is **not** a
+SemVer **1.0.0** public API freeze. Accepted debt and declined work live in
+[docs/known-residuals.md](docs/known-residuals.md).
+
 ---
 
 ## Documentation index
@@ -40,6 +47,7 @@ workspace path jail, and a curated **28-tool** default surface (optional advance
 | [docs/ci-and-testing.md](docs/ci-and-testing.md) | Offline CI SoT, markers, branch protection |
 | [docs/release.md](docs/release.md) | Release checklist, version triple, build and tag |
 | [docs/evaluation.md](docs/evaluation.md) | Scored eval corpus, release gates, rubric report |
+| [docs/known-residuals.md](docs/known-residuals.md) | Public residual inventory (accepted / ops / declined) |
 | [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md) | Wire protocol and tool detail |
 | [adapters/](adapters/README.md) | Grok / Codex / Claude client examples |
 | [skills/](skills/README.md) | Portable Agent Skills package |
@@ -425,6 +433,9 @@ GIMP_MCP_DEBUG=1 uv run --directory /path/to/gimp-mcp gimp_mcp_server.py
 - Soft encoded-byte ImageContent size guard not yet shipped (prefer region-first + dual-delivery path)
 - Headless GIMP on GitHub Actions is **document-only** (Noble apt is GIMP 2.10.x)
 - Plugin backup prune CLI (`--prune-backups`) not yet shipped — delete `*.bak.*` manually
+
+Full inventory (security, live/ops, vision, packaging, protocol, tooling, declined):
+[docs/known-residuals.md](docs/known-residuals.md).
 
 ---
 
