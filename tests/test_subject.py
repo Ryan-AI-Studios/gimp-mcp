@@ -221,6 +221,65 @@ def test_subject_in_host_ops() -> None:
     assert "subject_isolate" in recipes.HOST_OPS
 
 
+def test_host_op_subject_isolate_dispatches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HOST_OPS subject_isolate reaches isolate_subject (soft recipe path)."""
+    import gimp_mcp_recipes as recipes
+
+    monkeypatch.setenv(sec.ENV_WORKSPACE, str(tmp_path))
+    src = tmp_path / "in.png"
+    src.write_bytes(_FAKE_PNG)
+    out = tmp_path / "out.png"
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def _fake_isolate(
+        input_path: str,
+        output_path: str,
+        *,
+        model: str = "u2net",
+        alpha_matting: bool = False,
+        session: object | None = None,
+        workspace_root: object | None = None,
+    ) -> dict[str, object]:
+        calls.append(
+            (
+                (input_path, output_path),
+                {"model": model, "alpha_matting": alpha_matting},
+            )
+        )
+        return {
+            "status": "success",
+            "input_path": input_path,
+            "output_path": output_path,
+            "model": model,
+            "format": "png",
+            "bytes_written": 8,
+        }
+
+    monkeypatch.setattr(subject, "isolate_subject", _fake_isolate)
+    # recipes imports gimp_mcp_subject inside the op — patch after import path
+    monkeypatch.setattr(
+        "gimp_mcp_subject.isolate_subject",
+        _fake_isolate,
+        raising=False,
+    )
+    result = recipes._run_host_op(
+        "subject_isolate",
+        {
+            "input_path": str(src),
+            "output_path": str(out),
+            "model": "u2net",
+            "alpha_matting": False,
+        },
+    )
+    assert result["status"] == "success"
+    assert len(calls) == 1
+    assert calls[0][0] == (str(src), str(out))
+    assert calls[0][1]["model"] == "u2net"
+    assert calls[0][1]["alpha_matting"] is False
+
+
 @pytest.mark.slow
 def test_live_rembg_optional_skip_if_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

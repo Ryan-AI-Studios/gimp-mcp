@@ -219,7 +219,8 @@ def validate_create_selection_params(params: dict[str, Any]) -> dict[str, Any]:
         if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
             raise ValueError("create_selection threshold must be a number")
         out["threshold"] = int(threshold)
-        # feather not applicable — omit from plugin payload for contiguous
+        # feather not applicable — omit from normalized payload for contiguous
+        out.pop("feather", None)
 
     # all / none: no geometry
 

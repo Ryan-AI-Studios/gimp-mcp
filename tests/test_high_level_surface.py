@@ -889,7 +889,7 @@ def test_validate_create_selection_contiguous_success() -> None:
     assert out["operation"] == "add"
     assert out["x"] == 10 and out["y"] == 20
     assert out["threshold"] == 15  # default
-    # feather may be in shared out but is not required / not plugin-relevant
+    assert "feather" not in out  # omitted from normalized contiguous payload
 
 
 def test_validate_create_selection_contiguous_threshold() -> None:
@@ -916,10 +916,11 @@ def test_validate_create_selection_contiguous_rejects_non_numeric() -> None:
 
 
 def test_validate_create_selection_contiguous_feather_not_required() -> None:
-    # Works without feather key
+    # Works without feather key; feather omitted from normalized out
     out = validate_create_selection_params({"type": "contiguous", "x": 5, "y": 6})
     assert out["x"] == 5 and out["y"] == 6
     assert out["threshold"] == 15
+    assert "feather" not in out
 
 
 def test_create_selection_contiguous_maps_to_plugin(

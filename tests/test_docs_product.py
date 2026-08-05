@@ -210,6 +210,18 @@ def test_known_residuals_exists_with_seven_sections() -> None:
     )
 
 
+def test_subject_isolation_doc_exists() -> None:
+    """docs/subject-isolation.md must exist with two-path + rembg install guidance (0032)."""
+    text = _read("docs/subject-isolation.md")
+    assert text.strip(), "docs/subject-isolation.md must be non-empty"
+    lower = text.lower()
+    assert "contiguous" in lower
+    assert "subject-isolate" in lower or "subject isolate" in lower
+    assert "u2net" in lower
+    assert "u2net_home" in lower
+    assert "rembg" in lower
+
+
 def test_readme_links_known_residuals() -> None:
     text = _read("README.md")
     assert "known-residuals" in text.lower(), (
