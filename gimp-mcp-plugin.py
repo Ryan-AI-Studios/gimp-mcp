@@ -1187,6 +1187,8 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._close_image(j.get("params", {}))
             elif "type" in j and j["type"] == "get_selection_bounds":
                 return self._get_selection_bounds(j.get("params", {}))
+            elif "type" in j and j["type"] == "clear_selection_to_transparent":
+                return self._clear_selection_to_transparent(j.get("params", {}))
             elif "type" in j and j["type"] == "get_pixel_color":
                 return self._get_pixel_color(j.get("params", {}))
             elif "type" in j and j["type"] == "get_histogram":
@@ -7082,6 +7084,42 @@ class MCPPlugin(Gimp.PlugIn):
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
+    def _require_nonempty_selection(self, image):
+        """Fail-closed when selection is empty (0030 cutout safety).
+
+        Prefer ``Gimp.Selection.is_empty``; fall back to ``Selection.bounds``
+        non_empty flag. Returns bounds payload ``{has_selection, x, y, width,
+        height}`` when non-empty so callers can include it in results.
+        """
+        # Prefer is_empty when available (GIMP 3.x).
+        try:
+            is_empty_fn = getattr(Gimp.Selection, "is_empty", None)
+            if callable(is_empty_fn) and bool(is_empty_fn(image)):
+                raise _sec.SecurityError(
+                    _sec.CODE_SELECTION_EMPTY,
+                    "No non-empty selection; refuse clear/transparent fill "
+                    "(empty selection would affect the entire drawable)",
+                )
+        except _sec.SecurityError:
+            raise
+        except Exception:
+            pass  # fall through to bounds check
+
+        _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
+        if not non_empty:
+            raise _sec.SecurityError(
+                _sec.CODE_SELECTION_EMPTY,
+                "No non-empty selection; refuse clear/transparent fill "
+                "(empty selection would affect the entire drawable)",
+            )
+        return {
+            "has_selection": True,
+            "x": int(x1),
+            "y": int(y1),
+            "width": int(x2 - x1),
+            "height": int(y2 - y1),
+        }
+
     def _fill_selection(self, params):
         """Fill current selection with color or transparency."""
         try:
@@ -7098,6 +7136,9 @@ class MCPPlugin(Gimp.PlugIn):
                 None,
                 allow_source_mutation=self._allow_source_mutation_from_params(params),
             )
+            # Fail-closed on empty selection for transparent path only (DoD-5 / 0030)
+            if fill_type == "transparent":
+                self._require_nonempty_selection(image)
             image.undo_group_start()
             Gimp.context_push()
             try:
@@ -9792,9 +9833,12 @@ class MCPPlugin(Gimp.PlugIn):
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 
     def _get_selection_bounds(self, params):
-        """Get selection bounding rectangle."""
+        """Get selection bounding rectangle (handle-aware via _resolve_image_from_params)."""
         try:
-            image = self._get_image(int(params.get("image_index", 0)))
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
             _ok, non_empty, x1, y1, x2, y2 = Gimp.Selection.bounds(image)
             return {
                 "status": "success",
@@ -9806,6 +9850,70 @@ class MCPPlugin(Gimp.PlugIn):
                     "height": y2 - y1,
                 },
             }
+        except _sec.SecurityError as e:
+            return e.as_error()
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _clear_selection_to_transparent(self, params):
+        """Clear current selection to transparent (HL cutout; empty fail-closed).
+
+        Fail-closed on empty selection (SELECTION_EMPTY). Source_Immutable-aware
+        via ``_resolve_mutable_layer``. Always ``add_alpha`` before ``edit_clear``.
+        """
+        try:
+            params = params or {}
+            try:
+                image, image_id = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+
+            bounds = self._require_nonempty_selection(image)
+
+            layer_handle = params.get("layer_handle")
+            layer_name = params.get("layer_name", None)
+            layer_id = None
+            if layer_handle is not None:
+                try:
+                    validated = self._validate_request_handle(layer_handle, kind="item")
+                except _handles.HandleError as e:
+                    return self._handle_error_response(e)
+                layer_id = int(validated["item_id"])
+            else:
+                layer_id = self._layer_id_from_params(params)
+
+            drawable = self._resolve_mutable_layer(
+                image,
+                layer_name if layer_id is None else None,
+                None,
+                layer_id=layer_id,
+                allow_source_mutation=self._allow_source_mutation_from_params(params),
+            )
+
+            image.undo_group_start()
+            try:
+                if not drawable.has_alpha():
+                    drawable.add_alpha()
+                Gimp.Drawable.edit_clear(drawable)
+            finally:
+                image.undo_group_end()
+            Gimp.displays_flush()
+
+            return {
+                "status": "success",
+                "results": {
+                    "has_selection": bounds["has_selection"],
+                    "x": bounds["x"],
+                    "y": bounds["y"],
+                    "width": bounds["width"],
+                    "height": bounds["height"],
+                    "layer_id": int(drawable.get_id()),
+                    "layer_name": drawable.get_name(),
+                    "layer_handle": self._emit_item_handle(drawable, image_id),
+                },
+            }
+        except _sec.SecurityError as e:
+            return e.as_error()
         except Exception as e:
             return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
 

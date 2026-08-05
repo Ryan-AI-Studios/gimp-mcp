@@ -76,6 +76,8 @@ CODE_VERIFY_FAILED = "VERIFY_FAILED"
 CODE_TX_MISMATCH = "TX_MISMATCH"
 CODE_TX_NOT_FOUND = "TX_NOT_FOUND"
 CODE_TX_DEPTH = "TX_DEPTH"
+# HL cutout / selection helpers (track 0030)
+CODE_SELECTION_EMPTY = "SELECTION_EMPTY"
 
 
 class SecurityError(Exception):
@@ -141,6 +143,8 @@ CODE_DEFAULTS: dict[str, ErrorSpec] = {
     CODE_TX_MISMATCH: _spec(retryable=False, state_may_have_changed=False),
     CODE_TX_NOT_FOUND: _spec(retryable=False, state_may_have_changed=False),
     CODE_TX_DEPTH: _spec(retryable=False, state_may_have_changed=False),
+    # 0030: empty selection refuse clear / transparent fill — non-retryable; no mutation
+    CODE_SELECTION_EMPTY: _spec(retryable=False, state_may_have_changed=False),
 }
 
 
