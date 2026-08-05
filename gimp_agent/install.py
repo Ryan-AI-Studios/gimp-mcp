@@ -31,6 +31,7 @@ HOST_ONLY_MODULE_NAMES: frozenset[str] = frozenset(
         "gimp_mcp_surface.py",
         "gimp_mcp_verify.py",
         "gimp_mcp_recipes.py",
+        "gimp_mcp_subject.py",
     }
 )
 

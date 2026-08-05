@@ -79,7 +79,7 @@ threats), [docs/performance.md](performance.md), [docs/release.md](release.md),
 | **Host vs plugin env (dual-env)** — `GIMP_WORKSPACE_ROOT` on host MCP alone does not jail plugin checkpoints | `accepted` (absorbed) | Use `uv run gimp-agent launch-gui` or `scripts/launch-gimp.*`; verify with `session_probe.plugin_workspace_root` |
 | **HL cutout gap** — default surface selects but cannot fill/clear to transparent | `accepted` (absorbed **0030**) | Use HL `get_selection_bounds` + `clear_selection_to_transparent` (empty → `SELECTION_EMPTY`); hard subject isolation → **0032** |
 | **PNG export drawable failures** — live `EXPORT_FAILED` / `file-png-export` property errors | `accepted` (absorbed **0031**) | Use `export_image` with `preserve_alpha` (drawable config property not required on GIMP 3 export procedures) |
-| **Subject isolation quality** — color-select poor on soft ghosts; rembg worked out-of-band | `future` | Host rembg pipeline optional; placeholder **0032** (not a required product dep) |
+| **Subject isolation quality** — color-select poor on soft ghosts; rembg was out-of-band | `accepted` (absorbed **0032**) | Classic: `create_selection type=contiguous` (+ multi-seed `operation=add`) → `clear_selection_to_transparent` → `export_image` preserve_alpha. ML: `uv sync --extra subject` then `gimp-agent subject-isolate`. See `docs/subject-isolation.md`. Not a required product dep. |
 
 ---
 

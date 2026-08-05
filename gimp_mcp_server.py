@@ -3150,25 +3150,30 @@ def create_selection(
     threshold: int = 15,
     layer_handle: dict | None = None,
 ) -> dict:
-    """Unified selection tool (rectangle, ellipse, by_color, all, none).
+    """Unified selection tool (rectangle, ellipse, by_color, contiguous, all, none).
 
     Prefer this over advanced ``select_rectangle`` / ``select_ellipse`` /
-    ``select_by_color`` / ``select_all`` / ``select_none``. Does **not** wrap
-    invert/modify (use advanced tools for those).
+    ``select_by_color`` / ``select_contiguous`` / ``select_all`` / ``select_none``.
+    Does **not** wrap invert/modify (use advanced tools for those).
 
     Parameters:
-    - type: ``rectangle`` | ``ellipse`` | ``by_color`` | ``all`` | ``none``
+    - type: ``rectangle`` | ``ellipse`` | ``by_color`` | ``contiguous`` | ``all`` | ``none``
     - handle: Preferred image handle; image_index used when handle omitted
     - image_index: Legacy open-image index (default 0 when both omitted)
     - operation: replace/add/subtract/intersect (default replace)
-    - feather: pixels for rectangle/ellipse only (default 0)
-    - x, y, width, height: required for rectangle/ellipse
+    - feather: pixels for rectangle/ellipse only (default 0; not applied for
+      by_color / contiguous — use advanced ``modify_selection`` for feather)
+    - x, y, width, height: required for rectangle/ellipse; x/y required for contiguous
     - color: required for by_color (CSS/hex string)
-    - threshold: by_color similarity (default 15)
-    - layer_handle: optional item handle for by_color sample layer. When
-      provided, plugin resolves by ``item_id`` and **fails closed** on invalid
+    - threshold: by_color / contiguous similarity (default 15)
+    - layer_handle: optional item handle for by_color / contiguous sample layer.
+      When provided, plugin resolves by ``item_id`` and **fails closed** on invalid
       id/membership (no silent active-layer fallback). When omitted, samples
       the **active layer**.
+
+    Contiguous seeds are **drawable-relative** (layer pixel origin) because the
+    product path locks ``sample_merged=False``. When the layer has non-zero
+    offsets, subtract ``offset_x`` / ``offset_y`` from canvas-space seeds.
 
     Host validates params before any TCP call.
     """
@@ -3205,6 +3210,7 @@ def create_selection(
         "rectangle": "select_rectangle",
         "ellipse": "select_ellipse",
         "by_color": "select_by_color",
+        "contiguous": "select_contiguous",
         "all": "select_all",
         "none": "select_none",
     }
@@ -3231,6 +3237,14 @@ def create_selection(
         params["color"] = norm["color"]
         params["threshold"] = norm["threshold"]
         # Prefer layer id from handle when present; plugin may use layer_name.
+        lh = norm.get("layer_handle")
+        if isinstance(lh, dict) and "item_id" in lh:
+            params["layer_id"] = int(lh["item_id"])
+    elif sel_type == "contiguous":
+        params["x"] = norm["x"]
+        params["y"] = norm["y"]
+        params["threshold"] = norm["threshold"]
+        # feather not applied for contiguous (omit from plugin payload)
         lh = norm.get("layer_handle")
         if isinstance(lh, dict) and "item_id" in lh:
             params["layer_id"] = int(lh["item_id"])
@@ -3372,6 +3386,56 @@ def select_by_color(
             "select_by_color",
             {
                 "color": color,
+                "threshold": threshold,
+                "operation": operation,
+                "image_index": image_index,
+                "layer_name": layer_name,
+            },
+        )
+        if result["status"] == "success":
+            return result["results"]
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
+
+
+@mcp.tool(tags={surface.ADVANCED_TAG})
+@with_structured_error()
+def select_contiguous(
+    ctx: Context,
+    x: int,
+    y: int,
+    threshold: int = 15,
+    operation: str = "replace",
+    image_index: int = 0,
+    layer_name: str | None = None,
+) -> dict:
+    """Contiguous (magic-wand / fuzzy) select from a seed point.
+
+    Prefer high-level ``create_selection`` with ``type=contiguous`` when possible.
+    Seeds are **drawable-relative** (layer pixel origin) because the product path
+    locks ``sample_merged=False``. Multi-seed: call again with ``operation=add``.
+
+    Parameters:
+    - x, y: Seed coordinates in drawable-relative space
+    - threshold: Color similarity tolerance 0-255 (default 15)
+    - operation: "replace" (default), "add", "subtract", "intersect"
+    - image_index: Target image index (default 0)
+    - layer_name: Layer to sample from; defaults to active layer
+
+    Returns status dict.
+    """
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command(
+            "select_contiguous",
+            {
+                "x": x,
+                "y": y,
                 "threshold": threshold,
                 "operation": operation,
                 "image_index": image_index,

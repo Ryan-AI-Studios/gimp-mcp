@@ -16,6 +16,7 @@ Package, CLI, and plug-in versions share the same semver string. See
 
 ### Added
 
+- Subject isolation pipeline: HL `create_selection type=contiguous` (drawable-relative seeds, multi-seed `operation=add`) + advanced `select_contiguous`; host-only `gimp_mcp_subject` + `gimp-agent subject-isolate` with optional `uv sync --extra subject` (`rembg[cpu]`); docs at `docs/subject-isolation.md`. (0032).
 - Added `clear_selection_to_transparent` and promoted `get_selection_bounds` to HL (catalog 28 → 30); advanced `fill_selection` transparent path fail-closed on empty (`SELECTION_EMPTY`). (0030).
 - Dual-env workspace launch: `gimp-agent launch-gui` plus `scripts/launch-gimp.ps1`
   / `scripts/launch-gimp.sh` so `GIMP_WORKSPACE_ROOT` is set on the **GIMP process**

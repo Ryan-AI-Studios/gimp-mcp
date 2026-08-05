@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Remove background from an image using contiguous (fuzzy) select.
 
+LEGACY DEMO ONLY — not the product path.
+Product: create_selection type=contiguous → clear_selection_to_transparent
+  → export_image preserve_alpha; or host rembg via:
+  uv sync --extra subject && gimp-agent subject-isolate
+See docs/subject-isolation.md. Do not re-enable Class A cmds for this.
+
 Usage:
     python bg_remove.py --input path/to/image.png --output path/to/output.png
 """

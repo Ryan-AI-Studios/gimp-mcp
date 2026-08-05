@@ -61,6 +61,7 @@ HOST_OPS: frozenset[str] = frozenset(
         "verify_artifact",
         "compare_images",
         "exiftool_strip",
+        "subject_isolate",
     }
 )
 
@@ -732,6 +733,26 @@ def _run_host_op(op: str, params: dict[str, Any]) -> dict[str, Any]:
                 details={},
             )
         return run_exiftool_strip(str(path))
+
+    if op == "subject_isolate":
+        import gimp_mcp_subject as subject
+
+        input_path = params.get("input_path")
+        output_path = params.get("output_path")
+        if not input_path or not output_path:
+            raise sec.GimpMcpError(
+                sec.CODE_POLICY_DENIED,
+                "subject_isolate requires input_path and output_path",
+                details={},
+            )
+        model = params.get("model") or "u2net"
+        alpha_matting = bool(params.get("alpha_matting", False))
+        return subject.isolate_subject(
+            str(input_path),
+            str(output_path),
+            model=str(model),
+            alpha_matting=alpha_matting,
+        )
 
     raise sec.GimpMcpError(
         sec.CODE_UNSUPPORTED,
