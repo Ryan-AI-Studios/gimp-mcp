@@ -5,11 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Package version in `pyproject.toml` remains `0.1.0` until the first tagged
-release. Release notes for the product baseline stay under **`[Unreleased]`**
-until packaging promotes them to a dated version section.
+Package, CLI, and plug-in versions share the same semver string. See
+[docs/release.md](docs/release.md) for the operator release checklist.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-08-04
 
 ### Added
 
@@ -51,7 +52,12 @@ until packaging promotes them to a dated version section.
 - Snapshot performance budgets: default max edge **1024**, hard max **4096**,
   host TCP command timeout defaults, and operator performance docs.
 - Product documentation set: architecture, operator runbook, security model,
-  performance, CI/testing, protocol reference, and this changelog.
+  performance, CI/testing, evaluation corpus, release checklist, protocol
+  reference, and this changelog.
+- Offline scored evaluation catalog (`tests/evals/`) with pure scorer and
+  fail-closed `scripts/run_eval_report.py` release-gate report.
+- Packaging metadata (classifiers, project URLs), optional plugin ship-set zip
+  (`scripts/pack_plugin_shipset.py`), and `uv build` verification path.
 
 ### Changed
 
@@ -74,3 +80,6 @@ until packaging promotes them to a dated version section.
   vs `CONNECTION_FAILED`); split host/plugin audit JSONL.
 - Stdio MCP does not implement HTTP OAuth; credentials come from environment
   (MCP Authorization 2025-06-18 local posture).
+
+[Unreleased]: https://github.com/Ryan-AI-Studios/gimp-mcp/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Ryan-AI-Studios/gimp-mcp/releases/tag/v0.1.0

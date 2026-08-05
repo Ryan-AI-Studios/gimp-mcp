@@ -36,10 +36,15 @@ uv run pytest -m "not integration and not slow"
 ```
 
 Scored rubric report (subprocesses the offline/structure nodeids from the
-catalog, writes JSON):
+catalog, writes JSON). **Default exit is fail-closed** (`overall` PASS → 0,
+else 1). Use `--require-pass` as an explicit alias; `--inspect` /
+`--no-require-pass` write the report and always exit 0 (operator inspection
+only). Release operators should follow [release.md](release.md).
 
 ```bash
 uv run python scripts/run_eval_report.py --offline
+# alias: ... --require-pass
+# inspect only: ... --inspect
 ```
 
 Optional micro-bench (`@slow`, not required for merge):
@@ -112,6 +117,7 @@ Performance methodology and snapshot edge defaults:
 
 ## Related docs
 
+- [release.md](release.md) — operator release checklist (version triple, fail-closed gates, build/tag)
 - [ci-and-testing.md](ci-and-testing.md) — offline CI SoT, markers, branch protection
 - [performance.md](performance.md) — snapshot budgets and timeouts
 - [architecture.md](architecture.md) — hybrid MCP + CLI design

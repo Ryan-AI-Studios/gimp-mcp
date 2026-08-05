@@ -26,8 +26,23 @@ def _has_md_header(text: str) -> bool:
 def test_changelog_exists_with_unreleased() -> None:
     text = _read("CHANGELOG.md")
     assert "[Unreleased]" in text
-    # Baseline stays under Unreleased until 0026 tags; no dated 0.1.0 yet.
-    assert not re.search(r"(?m)^##\s+\[0\.1\.0\]", text)
+    # First tagged baseline notes live under dated [0.1.0].
+    assert re.search(r"(?m)^##\s+\[0\.1\.0\]\s+-\s+\d{4}-\d{2}-\d{2}\s*$", text), (
+        "CHANGELOG must have ## [0.1.0] - YYYY-MM-DD section"
+    )
+    # Stale packaging-hold preamble must be gone after promote.
+    stale_phrases = (
+        "until packaging promotes",
+        "remains 0.1.0 until first tagged",
+        "remains `0.1.0` until the first tagged",
+        "stay under **`[Unreleased]`**",
+        "stay under `[Unreleased]`",
+    )
+    lower = text.lower()
+    for phrase in stale_phrases:
+        assert phrase.lower() not in lower, (
+            f"stale CHANGELOG preamble phrase still present: {phrase}"
+        )
 
 
 def test_architecture_and_runbook_exist_with_headers() -> None:

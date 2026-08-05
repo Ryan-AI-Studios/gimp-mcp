@@ -14,6 +14,25 @@ dependencies = [
     "mcp>=1.10,<2",
     "fastmcp>=2.10,<3",
 ]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX",
+    "Topic :: Multimedia :: Graphics",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ryan-AI-Studios/gimp-mcp"
+Source = "https://github.com/Ryan-AI-Studios/gimp-mcp"
+Changelog = "https://github.com/Ryan-AI-Studios/gimp-mcp/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/Ryan-AI-Studios/gimp-mcp/blob/main/README.md"
+Issues = "https://github.com/Ryan-AI-Studios/gimp-mcp/issues"
 
 [project.scripts]
 gimp-mcp-server = "gimp_mcp_server:main"

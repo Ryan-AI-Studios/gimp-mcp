@@ -38,6 +38,7 @@ workspace path jail, and a curated **28-tool** default surface (optional advance
 | [SECURITY.md](SECURITY.md) | Threat model, env, error codes, residuals |
 | [docs/performance.md](docs/performance.md) | Snapshot budgets and command timeouts |
 | [docs/ci-and-testing.md](docs/ci-and-testing.md) | Offline CI SoT, markers, branch protection |
+| [docs/release.md](docs/release.md) | Release checklist, version triple, build and tag |
 | [docs/evaluation.md](docs/evaluation.md) | Scored eval corpus, release gates, rubric report |
 | [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md) | Wire protocol and tool detail |
 | [adapters/](adapters/README.md) | Grok / Codex / Claude client examples |
@@ -145,6 +146,11 @@ uv sync --group dev
 ```
 
 ### 2. Install the GIMP plugin
+
+Host wheel/sdist (`uv build` / `pip install`) is the CLI + MCP **host package only** —
+it does **not** register the plug-in with GIMP. Always run `gimp-agent install` (or
+unpack the ship-set zip) for the APPDATA ship set. See
+[docs/release.md](docs/release.md).
 
 Deploy the full **EXPECTED ship set (10 files)** into the newest GIMP `3.*` user
 plug-ins directory:

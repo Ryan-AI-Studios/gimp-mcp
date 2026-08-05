@@ -114,6 +114,7 @@ relaunch GIMP, then **Tools → MCP → Start MCP Server**.
 | [SECURITY.md](../SECURITY.md) | Threat model, env, error codes, residuals |
 | [performance.md](performance.md) | Snapshot budgets and command timeouts |
 | [ci-and-testing.md](ci-and-testing.md) | Offline CI SoT, markers, branch protection |
+| [release.md](release.md) | Release checklist, version triple, build and tag |
 | [evaluation.md](evaluation.md) | Scored offline eval corpus and release gates |
 | [GIMP_MCP_PROTOCOL.md](../GIMP_MCP_PROTOCOL.md) | Wire protocol and tool detail |
 | [README.md](../README.md) | Public front door and quick start |

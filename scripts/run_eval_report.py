@@ -3,6 +3,12 @@
 
 Usage:
     uv run python scripts/run_eval_report.py --offline
+    uv run python scripts/run_eval_report.py --offline --require-pass   # alias of default
+    uv run python scripts/run_eval_report.py --offline --inspect        # write report, exit 0
+
+Default exit is **fail-closed**: overall PASS → 0, else 1.
+``--inspect`` / ``--no-require-pass`` always exit 0 after writing the report
+(operator inspection only — do not use as a release gate).
 
 Only this script subprocesses pytest for the rubric report. Unit tests of the
 pure scorer use synthetic passed_nodeids maps only.
@@ -23,6 +29,37 @@ if str(ROOT) not in sys.path:
 
 from tests.evals.loader import load_cases, offline_structure_cases  # noqa: E402
 from tests.evals.scorer import parse_junit_xml, score  # noqa: E402
+
+
+def resolve_exit_code(overall: str, *, require_pass: bool) -> int:
+    """Map rubric overall to process exit code.
+
+    When ``require_pass`` is True (default / release gate), FAIL → 1.
+    When False (``--inspect`` / ``--no-require-pass``), always 0 after write.
+    """
+    if not require_pass:
+        return 0
+    return 0 if overall == "PASS" else 1
+
+
+def resolve_require_pass(
+    *,
+    require_pass: bool,
+    inspect: bool,
+    no_require_pass: bool,
+) -> bool:
+    """Derive fail-closed mode from CLI flags.
+
+    Default (no flags): True.
+    ``--require-pass``: True (explicit alias).
+    ``--inspect`` or ``--no-require-pass``: False.
+    Explicit ``--require-pass`` wins if combined with inspect flags.
+    """
+    if require_pass:
+        return True
+    if inspect or no_require_pass:
+        return False
+    return True
 
 
 def _collect_offline_nodeids() -> list[str]:
@@ -68,7 +105,31 @@ def main(argv: list[str] | None = None) -> int:
         default=ROOT / "output" / "eval-report.json",
         help="Report JSON path (default: output/eval-report.json)",
     )
+    parser.add_argument(
+        "--require-pass",
+        action="store_true",
+        default=False,
+        help="Fail-closed exit (default behavior): overall PASS → 0, else 1",
+    )
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        default=False,
+        help="Write report and always exit 0 (operator inspection; not a release gate)",
+    )
+    parser.add_argument(
+        "--no-require-pass",
+        action="store_true",
+        default=False,
+        help="Same as --inspect: write report and always exit 0",
+    )
     args = parser.parse_args(argv)
+
+    require_pass = resolve_require_pass(
+        require_pass=bool(args.require_pass),
+        inspect=bool(args.inspect),
+        no_require_pass=bool(args.no_require_pass),
+    )
 
     cases = load_cases()
     nodeids = _collect_offline_nodeids()
@@ -145,8 +206,9 @@ def main(argv: list[str] | None = None) -> int:
         if len(report.residuals) > 12:
             print(f"  … +{len(report.residuals) - 12} more")
     print(f"wrote {out_path}")
+    print(f"require_pass:       {require_pass}")
 
-    return 0 if report.overall == "PASS" else 1
+    return resolve_exit_code(report.overall, require_pass=require_pass)
 
 
 if __name__ == "__main__":
