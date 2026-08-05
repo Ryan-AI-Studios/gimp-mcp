@@ -38,6 +38,7 @@ workspace path jail, and a curated **28-tool** default surface (optional advance
 | [SECURITY.md](SECURITY.md) | Threat model, env, error codes, residuals |
 | [docs/performance.md](docs/performance.md) | Snapshot budgets and command timeouts |
 | [docs/ci-and-testing.md](docs/ci-and-testing.md) | Offline CI SoT, markers, branch protection |
+| [docs/evaluation.md](docs/evaluation.md) | Scored eval corpus, release gates, rubric report |
 | [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md) | Wire protocol and tool detail |
 | [adapters/](adapters/README.md) | Grok / Codex / Claude client examples |
 | [skills/](skills/README.md) | Portable Agent Skills package |
@@ -314,6 +315,9 @@ uv run basedpyright
 
 Policy, markers, fixtures, and branch protection:
 **[docs/ci-and-testing.md](docs/ci-and-testing.md)**.
+
+Scored evaluation corpus and release gates:
+**[docs/evaluation.md](docs/evaluation.md)** (`uv run python scripts/run_eval_report.py --offline`).
 
 **Optional live harness:** [`run_tests.py`](run_tests.py) exercises tools against a
 running GIMP + MCP plugin. It is **not** the offline product quality gate.

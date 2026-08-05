@@ -63,6 +63,9 @@ Committed min corpus under `tests/fixtures/`:
 | `rgba_2x2_alpha.png` | RGBA with non-full alpha |
 | `rgb_2x2_delta.png` | Same size, different pixels (nonzero MAE vs opaque) |
 
+Eval corpus (synthetic 16×16) under `tests/fixtures/eval/` — see
+[evaluation.md](evaluation.md) and `tests/fixtures/README.md`.
+
 - Path helpers: `tests/fixture_paths.py` (`fixture_path`, `copy_fixture_to_workspace`).
 - Workspace jail: path-jailed APIs need **`GIMP_WORKSPACE_ROOT`**. Prefer the
   shared `tmp_workspace` fixture in `tests/conftest.py` (sets the env from
@@ -70,8 +73,8 @@ Committed min corpus under `tests/fixtures/`:
 - **Always copy** fixtures into the temp workspace; **never mutate** committed
   binaries in place.
 - Root `.gitattributes` marks `tests/fixtures/**` as `binary` / `-text`.
-- Regenerator: `uv run python scripts/generate_test_fixtures.py`
-- **0025 owns corpus growth; 0022 ships the min-set only.**
+- Regenerators: `uv run python scripts/generate_test_fixtures.py` and
+  `uv run python scripts/generate_eval_fixtures.py`.
 
 Shared PNG builder (not fixtures): `tests/_png_builder.py`
 (`build_minimal_png`).
@@ -150,6 +153,8 @@ uv run ruff format --check .
 uv run basedpyright
 uv run pytest -m "not integration and not slow"
 uv run pytest tests/test_offline_e2e.py tests/test_fixtures.py -q
+uv run pytest tests/evals -m "not integration and not slow"
+uv run python scripts/run_eval_report.py --offline
 uv run gimp-agent doctor --strict --json
 ```
 
@@ -158,4 +163,5 @@ uv run gimp-agent doctor --strict --json
 - [architecture.md](architecture.md) — hybrid design and capability overview
 - [operator-runbook.md](operator-runbook.md) — start-order and live ops checklist
 - [performance.md](performance.md) — snapshot budgets (not measured in CI)
+- [evaluation.md](evaluation.md) — scored eval corpus, release gates, rubric report
 - [README.md](../README.md) — public front door
