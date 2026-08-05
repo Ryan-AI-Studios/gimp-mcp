@@ -199,8 +199,6 @@ def _require_success(result: dict[str, Any], step: str) -> dict[str, Any]:
 def _handle_params(handle: Any | None) -> dict[str, Any]:
     if handle is None:
         return {}
-    if isinstance(handle, dict):
-        return {"handle": handle}
     return {"handle": handle}
 
 
@@ -396,10 +394,9 @@ def run_live(
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        # Host-side workspace for local path ops only. Plugin jail is fixed at MCP
-        # server start in the GIMP process — operators must set GIMP_WORKSPACE_ROOT
-        # before start-order (this env write does not update a running plugin).
-        os.environ[sec.ENV_WORKSPACE] = str(workspace)
+        # Host workspace env is set in main(); plugin jail is fixed at MCP server
+        # start in the GIMP process — operators must set GIMP_WORKSPACE_ROOT before
+        # start-order (host env write does not update a running plugin).
 
         fixture = _fixture_path()
         if not fixture.is_file() or fixture.stat().st_size <= 0:
