@@ -118,12 +118,13 @@ minting. Track IDs are creation order, not execution order.
   → 0022 E2E/CI — Completed
   → 0023 Performance snapshot budget — Completed
   → 0024 Documentation product polish — Completed
-  → 0025 Evaluation corpus and benchmarks — next (placeholder; full plan pass first)
-  → 0026 … through 0028 Final product polish (v1)
+  → 0025 Evaluation corpus and benchmarks — Completed
+  → 0026 Release packaging — next (placeholder; full plan pass first)
+  → 0027 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0024 Completed.** **Next implement: 0025**
-EvaluationCorpusAndBenchmarks (**placeholder — full plan pass first**). Orientation SoT is
+**28 tracks** (0001–0028). **0001–0025 Completed.** **Next implement: 0026**
+ReleasePackaging (**placeholder — full plan pass first**). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
@@ -146,6 +147,17 @@ baseline under **`[Unreleased]`** (0026 tags/promotes `[0.1.0]`); pyproject
 **`GPL-3.0-only`**; CLAUDE.md HL-first; `run_tests.py` retained as optional live
 harness; in-repo demo media; `tests/test_docs_product.py`. Authoritative table:
 `conductor/conductor.md`.
+
+**0025 EvaluationCorpusAndBenchmarks (Completed — PR #40 / main@48ff3ed):**
+Product evaluation corpus (tool-correctness, not LLM beauty). `tests/evals/cases.json`
+catalogs CGPT 30-row suite + Google critical with honest modes
+(offline/structure/live_residual/oos_agent). Pure scorer
+`score(cases, passed_nodeids) → RubricReport` → `output/eval-report.json` via
+`scripts/run_eval_report.py`. **H1:** `E-BATCH-SMALL` = structure (`validate_job` only).
+**H2:** scorer never imports pytest. **H3:** non-status assert integrity. Release gates
+documented in **`docs/evaluation.md`** (`#release-gates` for 0027). Synthetic
+`tests/fixtures/eval/` 16×16. **0026** should parse `release_gates` programmatically.
+Pin hold: mcp/fastmcp majors. See `conductor/conductor.md`.
 
 ---
 
