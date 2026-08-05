@@ -117,14 +117,13 @@ minting. Track IDs are creation order, not execution order.
   → 0021 Codex/Grok adapters — Completed
   → 0022 E2E/CI — Completed
   → 0023 Performance snapshot budget — Completed
-  → 0024 Documentation product polish — Implemented (complete; orchestrator finalizes conductor)
-  → 0025 Evaluation corpus and benchmarks — next implement
+  → 0024 Documentation product polish — Completed
+  → 0025 Evaluation corpus and benchmarks — next (placeholder; full plan pass first)
   → 0026 … through 0028 Final product polish (v1)
 ```
 
-**28 tracks** (0001–0028). **0001–0024 Completed** (0024 implemented on product docs;
-orchestrator owns conductor registry / review.md / ledger finalize). **Next implement:
-0025** EvaluationCorpusAndBenchmarks. Orientation SoT is
+**28 tracks** (0001–0028). **0001–0024 Completed.** **Next implement: 0025**
+EvaluationCorpusAndBenchmarks (**placeholder — full plan pass first**). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
@@ -138,10 +137,10 @@ Client adapters + dual image delivery **0021**. Fixture corpus + offline E2E + C
 edge **1024**, hard **4096**, region **8192**, host TCP **60s** / `CODE_TIMEOUT`;
 `docs/performance.md`; soft encoded-byte ImageContent guard deferred.
 
-**0024 DocumentationProductPolish (implemented):** Public docs front door —
+**0024 DocumentationProductPolish (Completed):** Public docs front door —
 README for **Ryan-AI-Studios** fork; HL-first compact catalog; `docs/architecture.md`
 (user capabilities, **no conductor track IDs**) + `docs/operator-runbook.md`
-(`#start-order`); SECURITY refresh (**TIMEOUT** row; workspace `.gimp-mcp-tmp`
+(`#start-order` GFM-safe); SECURITY refresh (**TIMEOUT** row; workspace `.gimp-mcp-tmp`
 snapshot path primary; stdio ≠ HTTP OAuth); **CHANGELOG** Keep a Changelog 1.1.0
 baseline under **`[Unreleased]`** (0026 tags/promotes `[0.1.0]`); pyproject
 **`GPL-3.0-only`**; CLAUDE.md HL-first; `run_tests.py` retained as optional live
@@ -333,14 +332,23 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-04 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (HEAD ~e7f534f post-0022) |
-| Quality gates | full product ruff + format; basedpyright server+tests; offline pytest (fixtures + offline E2E); ledgerful verify |
-| Active focus | **0023 implemented** (product defaults); next **0024-DocumentationProductPolish**; prior **0022 Completed** fixtures + offline E2E + CI policy |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0024 docs polish) |
+| Quality gates | full product ruff + format; basedpyright server+tests; offline pytest (fixtures + offline E2E + docs structure); ledgerful verify |
+| Active focus | **0024 Completed** (docs front door); next **0025-EvaluationCorpusAndBenchmarks** (plan first); prior **0023** snapshot budgets |
 | Track count | 0001–0028 (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
 | Runtime skills | Committed repo `skills/` (router `gimp` + 5 focused); `uv run gimp-agent skills list\|validate\|install` |
 | Client adapters | Committed `adapters/` (Grok/Codex/Claude); `.mcp.json` server id **`gimp`**; dual snapshot delivery |
+
+### 0024 Completed — DocumentationProductPolish
+
+- **Shipped:** README HL-first rewrite (fork URL, Python ≥3.11, GIMP 3.2.4+, compact HL 28, advanced details); `docs/architecture.md` (capabilities, no track IDs); `docs/operator-runbook.md` (`#start-order`); SECURITY TIMEOUT + workspace `.gimp-mcp-tmp` snapshot residual; CHANGELOG Keep a Changelog 1.1.0 under **`[Unreleased]`**; pyproject **`GPL-3.0-only`**; CLAUDE.md HL-first; legacy banners on best_practices/iterative_workflow; PROTOCOL CONNECTION_FAILED/TIMEOUT alignment.
+- **Tests:** `tests/test_docs_product.py` (13 structure tests).
+- **Cross-model:** Claude Sonnet **PASS** final gate (Codex rate-limited 2026-08-04); internal R1 GFM anchor + protocol fixes before final gate.
+- **Residuals:** CHANGELOG `[0.1.0]` promote + classifiers → **0026**; Codex re-run optional.
+- **Neighbor walls:** eval corpus **0025**; release packaging **0026**; golden path **0027** deep-links runbook `#start-order`.
+- **PR/SHA:** (filled after merge)
 
 ### 0022 Completed — IntegrationE2EAndCi
 
