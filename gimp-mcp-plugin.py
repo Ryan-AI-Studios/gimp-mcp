@@ -2266,7 +2266,7 @@ class MCPPlugin(Gimp.PlugIn):
             "api_version": "3.0",
             "os": platform.system() or "unknown",
             "executable": executable,
-            "plugin_version": "0.1.0",
+            "plugin_version": "0.2.0",
         }
         if config_directory:
             out["config_directory"] = config_directory

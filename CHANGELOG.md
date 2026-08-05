@@ -10,6 +10,8 @@ Package, CLI, and plug-in versions share the same semver string. See
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-05
+
 ### Added
 
 - Golden-path demo and smoke: `docs/golden-path.md` + `scripts/golden_path_smoke.py`
@@ -88,5 +90,6 @@ Package, CLI, and plug-in versions share the same semver string. See
 - Stdio MCP does not implement HTTP OAuth; credentials come from environment
   (MCP Authorization 2025-06-18 local posture).
 
-[Unreleased]: https://github.com/Ryan-AI-Studios/gimp-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Ryan-AI-Studios/gimp-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Ryan-AI-Studios/gimp-mcp/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Ryan-AI-Studios/gimp-mcp/releases/tag/v0.1.0

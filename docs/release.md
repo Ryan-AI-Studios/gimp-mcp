@@ -25,7 +25,7 @@ into the correct plug-ins path).
 
 ## Version triple
 
-Keep these three strings equal (first baseline: **0.1.0**):
+Keep these three strings equal (current baseline: **0.2.0**; first baseline was **0.1.0**):
 
 1. `pyproject.toml` → `[project].version`
 2. `gimp_agent.__version__`
@@ -136,12 +136,12 @@ A sidecar `.sha256` covers the zip archive itself. Prefer
 After offline gates are green **and** the release commit is on **main**:
 
 ```bash
-git tag -a v0.1.0 -m "Release 0.1.0 — first tagged baseline"
+git tag -a v0.2.0 -m "Release 0.2.0 — golden-path demo and smoke"
 ```
 
 - Create the annotated tag on the **main merge commit**, not a long-lived
   feature branch tip, unless that tip is what merges as the release.
-- **Do not** `git push origin v0.1.0` (or `--tags`) without explicit operator
+- **Do not** `git push origin v0.2.0` (or `--tags`) without explicit operator
   approval.
 - CHANGELOG footer links to compare/tag URLs may **404 until** the tag exists
   on the remote — that is expected before the first push.

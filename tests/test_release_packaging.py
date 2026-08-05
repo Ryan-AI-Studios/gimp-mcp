@@ -94,7 +94,7 @@ def test_version_triple_sync() -> None:
     assert matches[0] == pyproject_version
     # All matches must agree (single product version story)
     assert all(m == pyproject_version for m in matches)
-    assert pyproject_version == "0.1.0"
+    assert pyproject_version == "0.2.0"
 
 
 def test_optional_installed_metadata_version() -> None:
