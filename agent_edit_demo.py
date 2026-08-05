@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 """
+Legacy demo (requires Class A plugin exec / GIMP_MCP_ALLOW_EXEC).
+
+Prefer the hardened product golden path:
+  docs/golden-path.md
+  uv run python scripts/golden_path_smoke.py --dry-run
+  uv run python scripts/golden_path_smoke.py --live
+
 Demo: AI agent editing loop using get_state_snapshot for visual feedback.
 Pipeline:
   1. Open input image

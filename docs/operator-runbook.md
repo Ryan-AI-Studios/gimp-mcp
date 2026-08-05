@@ -30,6 +30,18 @@ Numbered sequence for a working interactive MCP session:
 > **Rule:** plugin first (token available), then MCP client. Reverse order causes
 > connection failures until the plugin is up.
 
+### Golden path
+
+After start-order, run the product golden-path smoke (plugin wire names only;
+no Class A exec). Full steps, hybrid surface table, and troubleshooting:
+**[golden-path.md#golden-path](golden-path.md#golden-path)**.
+
+```powershell
+$env:GIMP_WORKSPACE_ROOT = "C:\path\to\workspace"
+uv run python scripts/golden_path_smoke.py --dry-run   # default; no socket
+uv run python scripts/golden_path_smoke.py --live      # open→…→export→verify
+```
+
 ---
 
 ## Install / upgrade / doctor
@@ -124,7 +136,8 @@ Quick live path after start-order:
 
 ```bash
 uv run gimp-agent probe --json
-# Optional: uv run python run_tests.py   # live harness; requires GIMP + plugin
+uv run python scripts/golden_path_smoke.py --live   # preferred product smoke
+# Optional legacy: uv run python run_tests.py   # live harness; requires GIMP + plugin
 ```
 
 ---

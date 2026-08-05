@@ -10,6 +10,13 @@ Package, CLI, and plug-in versions share the same semver string. See
 
 ## [Unreleased]
 
+### Added
+
+- Golden-path demo and smoke: `docs/golden-path.md` + `scripts/golden_path_smoke.py`
+  (default dry-run; `--live` plugin wire path open→orient→protect→checkpoint→
+  composite→save XCF→export PNG→host verify + `evidence.json`). Optional
+  `@integration` test gated on `GIMP_MCP_LIVE=1`.
+
 ## [0.1.0] - 2026-08-04
 
 ### Added
