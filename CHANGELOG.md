@@ -10,6 +10,10 @@ Package, CLI, and plug-in versions share the same semver string. See
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed preserve_alpha PNG export failing on GIMP 3.2 `file-png-export` when `drawable` config property is absent (export-procedure model). (0031).
+
 ### Added
 
 - Added `clear_selection_to_transparent` and promoted `get_selection_bounds` to HL (catalog 28 → 30); advanced `fill_selection` transparent path fail-closed on empty (`SELECTION_EMPTY`). (0030).

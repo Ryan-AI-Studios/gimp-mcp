@@ -674,17 +674,24 @@ def test_export_image_flat_results_no_nested_status() -> None:
     assert '"results": flat' in body or "'results': flat" in body
 
 
-def test_export_drawable_fail_closed_when_preserve_alpha() -> None:
-    """IR1-04: alpha-preserving export must not run without drawable set."""
+def test_export_drawable_optional_on_export_procedure() -> None:
+    """0031: drawable property absence is not a failure (GIMP 3 export-procedure model)."""
     text = PLUGIN.read_text(encoding="utf-8")
     body = _method_body(text, "_export_to_path")
-    assert "drawable_set" in body
-    assert "CODE_EXPORT_FAILED" in body or "EXPORT_FAILED" in body
+    assert "drawable_set" in body  # soft diagnostic tracking kept
+    assert "Alpha-preserving export requires a drawable" not in body
+    assert "CODE_EXPORT_FAILED" in body or "EXPORT_FAILED" in body  # true readiness
     assert "preserve_alpha" in body
-    # Fail closed rather than soft-continue into proc.run
-    assert "Alpha-preserving export requires a drawable" in body or (
-        "not drawable_set" in body and "build_export_error" in body
-    )
+    # Regression locks (Codex P2): do not gate primary run on drawable_set
+    assert "if drawable_set:" not in body
+    # Soft-try drawable exception path must print, not pollute property_errors
+    soft_start = body.find("Soft-try drawable")
+    rgba_start = body.find("PNG RGBA8")
+    assert soft_start >= 0 and rgba_start > soft_start
+    soft_region = body[soft_start:rgba_start]
+    assert "property_errors.append" not in soft_region
+    assert "export-procedure model" in soft_region
+    assert "proc.run(" in body
 
 
 def test_pyproject_wires_export_module() -> None:

@@ -8,6 +8,14 @@ Used by:
 - the MCP server (capability matrix for docs/tools)
 - offline unit tests
 
+GIMP 3 export-procedure model (``file-*-export`` via ``gimp_export_procedure_new``):
+
+- Required config: ``image``, ``file``, and format knobs (e.g. PNG ``format``)
+- Drawable is **not** a procedure config property — the export procedure resolves
+  drawables internally via ``gimp_image_list_layers`` (after optional MCP
+  pre-merge on a duplicate for preserve_alpha policy control)
+- Soft-try of ``drawable``/``drawables`` is diagnostic only; absence is normal
+
 Phase-0 / GIMP 3.2.4 PNG pixel format (from GNOME file-png.c EXPORT_PROC):
 
 - Property name: ``"format"`` (choice argument ``gimp_procedure_add_choice_argument``)

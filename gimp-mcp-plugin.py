@@ -1464,6 +1464,9 @@ class MCPPlugin(Gimp.PlugIn):
                     export_config = export_proc.create_config()
                     export_config.set_property("image", dup)
                     export_config.set_property("file", file_obj)
+                    # Soft-try drawable/drawables: GIMP 3 file-png-export is an
+                    # export procedure (image+file+format); drawable is resolved
+                    # internally via list_layers — absence is normal, not fatal.
                     drawable_set = False
                     try:
                         export_config.set_property("drawable", drawable)
@@ -1473,19 +1476,24 @@ class MCPPlugin(Gimp.PlugIn):
                             export_config.set_property("drawables", [drawable])
                             drawable_set = True
                         except Exception as prop_err:
-                            # Do not run file-png-export without a drawable —
-                            # image-level fallbacks handle that path.
-                            export_errors.append(
-                                f"file-png-export drawable/drawables property failed: {prop_err}"
+                            print(
+                                "[MCP] drawable property not set "
+                                "(GIMP 3 export-procedure model — normal): "
+                                f"{prop_err}"
                             )
-
-                    if drawable_set:
-                        result = export_proc.run(export_config)
-                        print(f"Export result: {result}")
-                        if not _snap.validate_png_file(temp_path):
-                            export_errors.append(
-                                f"file-png-export produced empty/invalid PNG (result={result})"
-                            )
+                    if not drawable_set:
+                        # Soft diagnostic only — never gate proc.run on this.
+                        print(
+                            "[MCP] snapshot export proceeding without drawable "
+                            "config property (GIMP 3 export-procedure model)"
+                        )
+                    # Always run after image+file — do not gate on drawable_set.
+                    result = export_proc.run(export_config)
+                    print(f"Export result: {result}")
+                    if not _snap.validate_png_file(temp_path):
+                        export_errors.append(
+                            f"file-png-export produced empty/invalid PNG (result={result})"
+                        )
             except Exception as export_error:
                 print(f"Export error: {export_error}")
                 export_errors.append(f"file-png-export error: {export_error}")
@@ -4223,6 +4231,11 @@ class MCPPlugin(Gimp.PlugIn):
 
             drawable = None
             if policy.preserve_alpha:
+                # Intentional pre-merge for MCP policy control
+                # (resolve_export_policy). Do NOT replace with
+                # ExportOptions.get_image auto-transform — that would lose the
+                # flatten vs preserve_alpha policy matrix. Export procedure then
+                # list_layers on this pre-merged image.
                 self._selection_none_or_fail(
                     dup, "Selection.none before alpha-preserving export merge failed"
                 )
@@ -4304,7 +4317,8 @@ class MCPPlugin(Gimp.PlugIn):
             if proc is not None:
                 pdb_procedure = proc_name
                 cfg = proc.create_config()
-                # Alpha-critical props: image, file, drawable/drawables, pixel format
+                # Required props: image, file. Drawable is optional (export-procedure
+                # model — soft-try only). Pixel format is alpha-critical when preserve_alpha.
                 if not self._set_export_property_critical(
                     cfg, "image", dup, property_errors, required=True
                 ):
@@ -4334,42 +4348,43 @@ class MCPPlugin(Gimp.PlugIn):
                         pdb_procedure=pdb_procedure,
                     )
 
+                # Soft-try run-mode (export procedures may not expose it).
+                self._set_export_property_critical(
+                    cfg,
+                    "run-mode",
+                    Gimp.RunMode.NONINTERACTIVE,
+                    property_errors,
+                    required=False,
+                )
+
+                # Soft-try drawable/drawables: GIMP 3 file-*-export is an
+                # export-procedure (image+file+format); drawable is resolved
+                # internally via list_layers — absence is normal, not fatal.
+                # Do not append drawable absence to property_errors.
                 drawable_set = False
                 if drawable is not None:
                     try:
                         cfg.set_property("drawable", drawable)
                         drawable_set = True
                     except Exception as drawable_err:
-                        print(f"[MCP] export drawable property failed: {drawable_err}")
+                        print(
+                            "[MCP] drawable property not set "
+                            f"(GIMP 3 export-procedure model — normal): {drawable_err}"
+                        )
                         try:
                             cfg.set_property("drawables", [drawable])
                             drawable_set = True
                         except Exception as prop_err:
-                            property_errors.append(
-                                f"drawable/drawables property failed: {prop_err}"
+                            print(
+                                "[MCP] drawable property not set "
+                                f"(GIMP 3 export-procedure model — normal): {prop_err}"
                             )
                 if not drawable_set:
-                    if drawable is None:
-                        property_errors.append("No drawable available for export config")
-                    else:
-                        property_errors.append("Could not set drawable/drawables on export config")
-                    # Fail-closed when preserve_alpha (align with snapshot: do not
-                    # run file-*-export without a drawable for alpha-critical path).
-                    if policy.preserve_alpha:
-                        return _exp.build_export_error(
-                            code=_exp.CODE_EXPORT_FAILED,
-                            error=(
-                                "Alpha-preserving export requires a drawable on the "
-                                "export config; drawable/drawables property was not set"
-                            ),
-                            file_path=file_path,
-                            property_errors=property_errors,
-                            preserve_alpha=True,
-                            preflight_has_alpha=preflight_has_alpha,
-                            format=policy.format,
-                            export_method=export_method,
-                            pdb_procedure=pdb_procedure,
-                        )
+                    # Soft diagnostic only — never gate proc.run on this.
+                    print(
+                        "[MCP] export proceeding without drawable config property "
+                        "(GIMP 3 export-procedure model — normal)"
+                    )
 
                 # PNG RGBA8 when preserving alpha and preflight saw alpha (DoD-12 fail-closed)
                 if policy.format == "png" and policy.preserve_alpha and preflight_has_alpha:
@@ -4412,7 +4427,9 @@ class MCPPlugin(Gimp.PlugIn):
                     proc = None
 
             if proc is None or not os.path.isfile(write_path) or os.path.getsize(write_path) == 0:
-                # Degraded last resort — log; still verify when preserve_alpha.
+                # Degraded last resort only: prefer successful file-*-export.
+                # file_overwrite/file_save may strip alpha; IHDR verify still
+                # fail-closes ALPHA_LOST when preserve_alpha is required.
                 used_degraded = True
                 print(f"[MCP] DEGRADED export path for {write_path!r} (procedure={proc_name!r})")
                 try:
