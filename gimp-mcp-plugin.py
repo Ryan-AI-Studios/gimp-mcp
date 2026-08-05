@@ -4317,7 +4317,8 @@ class MCPPlugin(Gimp.PlugIn):
             if proc is not None:
                 pdb_procedure = proc_name
                 cfg = proc.create_config()
-                # Alpha-critical props: image, file, drawable/drawables, pixel format
+                # Required props: image, file. Drawable is optional (export-procedure
+                # model — soft-try only). Pixel format is alpha-critical when preserve_alpha.
                 if not self._set_export_property_critical(
                     cfg, "image", dup, property_errors, required=True
                 ):
