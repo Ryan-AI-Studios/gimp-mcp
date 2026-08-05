@@ -107,4 +107,12 @@ Offline unit coverage for resolve/clamp/region reject lives under
 uv run pytest -m "not integration and not slow"
 ```
 
+## Related docs
+
+- [architecture.md](architecture.md) — hybrid design and capability overview
+- [operator-runbook.md](operator-runbook.md) — start-order and operator checklist
+- [ci-and-testing.md](ci-and-testing.md) — offline CI policy
+- [SECURITY.md](../SECURITY.md) — env table including timeout variables
+- [README.md](../README.md) — public front door
+
 See [ci-and-testing.md](ci-and-testing.md).

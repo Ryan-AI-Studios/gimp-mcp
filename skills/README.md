@@ -1,5 +1,8 @@
 # gimp-mcp Agent Skills package
 
+Product front door: [README.md](../README.md). Architecture:
+[docs/architecture.md](../docs/architecture.md).
+
 Portable **runtime** Agent Skills for operating GIMP via this product’s hybrid
 MCP + CLI surface. Not a marketplace plugin and not the GIMP plug-in ship set.
 

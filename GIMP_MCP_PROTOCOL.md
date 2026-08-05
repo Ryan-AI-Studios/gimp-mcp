@@ -191,7 +191,8 @@ Schema-versioned **state manifest** (`urn:gimp-agent:state-manifest:1`, `schema_
 | `CHECKPOINT_NOT_FOUND` | Restore label missing |
 | `CHECKPOINT_CORRUPTED` | Soft integrity hash mismatch on restore (optional) |
 | `PARTIAL_MUTATION` | Mutation incomplete; **do not** blind-retry. Re-orient and inspect state (`state_may_have_changed: true`) |
-| `CONNECTION_FAILED` | TCP/socket/timeout to GIMP plugin — ensure plugin running, retry (`retryable: true`) |
+| `CONNECTION_FAILED` | Host↔plugin TCP **connect/refuse/reset** or transport failure before a completed command — ensure plugin running, retry (`retryable: true`). **Not** the host command wall-clock deadline |
+| `TIMEOUT` | Host command / I/O **wall-clock deadline** exceeded (e.g. `GIMP_MCP_COMMAND_TIMEOUT_S` or batch timeout). Distinct from `CONNECTION_FAILED` (`retryable: true`; CLI often exit **9**) |
 | `INTERNAL_ERROR` | Unexpected host/plugin failure; re-orient; check `GIMP_MCP_DEBUG` diagnostics |
 | `ALPHA_LOST` | Export lost alpha on **temp** (no final replace); `details.left_on_disk=false`, `final_intact=true`; check `png_color_type`; re-export with `preserve_alpha` / non-flatten |
 

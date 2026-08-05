@@ -152,3 +152,10 @@ uv run pytest -m "not integration and not slow"
 uv run pytest tests/test_offline_e2e.py tests/test_fixtures.py -q
 uv run gimp-agent doctor --strict --json
 ```
+
+## Related docs
+
+- [architecture.md](architecture.md) — hybrid design and capability overview
+- [operator-runbook.md](operator-runbook.md) — start-order and live ops checklist
+- [performance.md](performance.md) — snapshot budgets (not measured in CI)
+- [README.md](../README.md) — public front door
