@@ -205,7 +205,7 @@ the original 0001–0028 fence; full plan pass before implement. Suggested order
 
 | Track | Status | Why |
 |---|---|---|
-| **0029** DualEnvWorkspaceLaunch | **Implementing / ship on branch** | Dual-env docs; `gimp-agent launch-gui` + scripts; session_probe plugin/host roots; doctor **message only**; dual-server adapters |
+| **0029** DualEnvWorkspaceLaunch | **Completed** (PR #44 / main@aa375e1) | Dual-env docs; `gimp-agent launch-gui` + scripts; session_probe plugin/host roots; doctor **message only**; dual-server adapters; Claude PASS CLEAN |
 | **0030** HlCutoutSelectionHelpers | Placeholder | HL can select but not clear/fill transparent; avoid requiring full advanced for common cutouts |
 | **0031** PngExportDrawableHardening | Placeholder | Live `EXPORT_FAILED` / `file-png-export` drawable property failures |
 | **0032** SubjectIsolationPipeline | Placeholder | Optional host rembg/subject path + typed fuzzy select; **not** required dep / Class A |
@@ -214,12 +214,11 @@ the original 0001–0028 fence; full plan pass before implement. Suggested order
 `/mcps` refresh not reloading env — operator notes under **0029** only; do not mint
 gimp-mcp tracks for host product bugs.
 
-**0029 plan lock (2026-08-05; AI folded):** Host MCP env ≠ plugin env. Primary
-`uv run gimp-agent launch-gui` + `scripts/launch-gimp.*`. Plugin top-level
-`workspace_root`; session_probe always emits `plugin_workspace_root` /
-`host_workspace_root` / `workspace_root_mismatch`. Doctor honesty **messages only**
-(no auth plugin fetch). Grok dual-server commented advanced. Pins held. EXPECTED 10
-unchanged. Say **implement track 29** when ready.
+**0029 Completed (2026-08-05):** Host MCP env ≠ plugin env. Shipped `uv run gimp-agent
+launch-gui` + `scripts/launch-gimp.*`; plugin top-level `workspace_root`; session_probe
+always emits `plugin_workspace_root` / `host_workspace_root` / `workspace_root_mismatch`;
+doctor honesty **messages only**; Grok commented advanced; pins held; EXPECTED 10
+unchanged. **Next implement:** full plan then **0030** (or operator demand).
 
 ---
 
@@ -406,11 +405,11 @@ If indexes are empty: `ledgerful index --incremental`.
 |---|---|
 | Date | 2026-08-05 |
 | GIMP | 3.2.4 native Windows |
-| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0028 product readiness @ 0.2.x) |
+| Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0029 dual-env @ 0.2.x; PR #44 / main@aa375e1) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest (fixtures + offline E2E + docs structure); ledgerful verify |
-| Active focus | **0001–0028 complete** @ **0.2.x**; **next implement 0029** (Ready); 0030–0032 placeholders; residual fence `docs/known-residuals.md` |
-| Track count | 0001–0028 **complete**; 0029 **Ready**; 0030–0032 **placeholder** (see conductor.md) |
-| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
+| Active focus | **0001–0029 complete** @ **0.2.x**; **next** full plan **0030** (placeholder); 0031–0032 placeholders; residual fence `docs/known-residuals.md` |
+| Track count | 0001–0029 **complete**; 0030–0032 **placeholder** (see conductor.md) |
+| Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.6 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
 | Runtime skills | Committed repo `skills/` (router `gimp` + 5 focused); `uv run gimp-agent skills list\|validate\|install` |
 | Client adapters | Committed `adapters/` (Grok/Codex/Claude); `.mcp.json` server id **`gimp`**; dual snapshot delivery |
