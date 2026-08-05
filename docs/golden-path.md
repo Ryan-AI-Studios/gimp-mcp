@@ -62,7 +62,7 @@ Never treat `status: success` alone as composite success.
 | Surface | Role on this path | Names |
 |---|---|---|
 | **Plugin TCP (smoke)** | Live GIMP ops over authenticated loopback | Wire: `get_gimp_info`, `open_image`, `orient_workspace`, `ensure_source_immutable`, `checkpoint_create`, optional `select_all`/`select_none`, `get_image_bitmap`, `save_xcf`, `export_image` |
-| **MCP stdio HL (agents)** | Same product story via FastMCP tools | HL aliases: `session_probe`, `create_selection`, `render_visible_composite`, … (28 default tools) |
+| **MCP stdio HL (agents)** | Same product story via FastMCP tools | HL aliases: `session_probe`, `create_selection`, `render_visible_composite`, … (30 default tools) |
 | **Host-only** | Pixel/metadata gates without GIMP | `verify_artifact`, `compare_images` (`gimp_mcp_verify`) |
 | **CLI** | Hybrid operator verbs | `gimp-agent probe` / `doctor` / `save-xcf` / `export` / `compare` / `verify` |
 

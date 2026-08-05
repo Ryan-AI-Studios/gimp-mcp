@@ -24,7 +24,7 @@ Full demo (with audio): [docs/demo.mp4](docs/demo.mp4)
 
 Edit images with AI assistants that can **see** the canvas, **orient** a layered
 document, run **allowlisted recipes**, and **verify pixels** — under loopback auth,
-workspace path jail, and a curated **28-tool** default surface (optional advanced
+workspace path jail, and a curated **30-tool** default surface (optional advanced
 ~90 tools).
 
 ### Product readiness

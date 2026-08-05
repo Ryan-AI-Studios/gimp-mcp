@@ -117,7 +117,7 @@ relaunch GIMP, then **Tools → MCP → Start MCP Server**.
 
 ## Default vs advanced tool surface
 
-- **Default:** FastMCP lists **28** high-level tools (`include_tags={"hl"}`).
+- **Default:** FastMCP lists **30** high-level tools (`include_tags={"hl"}`).
 - **Advanced (~90 tools):** set `GIMP_MCP_ADVANCED_TOOLS=1` on the **host stdio
   MCP process**, then restart the MCP server **and** the LLM client session
   (clients cache `list_tools`).
