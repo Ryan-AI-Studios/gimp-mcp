@@ -22,7 +22,7 @@ require `GIMP_MCP_ADVANCED_TOOLS=1` on the host MCP process plus a written reaso
 | `save_xcf` | Atomic XCF save (temp→replace); collision `fail`/`version`/`replace` |
 | `export_image` | Atomic raster export; alpha-preserving by default for PNG |
 | `verify_alpha_channel` | Alpha preflight on open document |
-| `create_selection` | Unified selection (rectangle/ellipse/by_color/all/none) |
+| `create_selection` | Unified selection (rectangle/ellipse/by_color/contiguous/all/none); contiguous seeds are drawable-relative |
 | `get_selection_bounds` | Bounding rectangle of current selection (has_selection, x, y, width, height) |
 | `clear_selection_to_transparent` | Clear current selection to transparent (fail-closed on empty; Source_Immutable-aware) |
 | `compare_images` | Host PNG metrics (MAE / max AE / changed / SSIM) |

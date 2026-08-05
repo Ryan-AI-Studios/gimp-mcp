@@ -58,12 +58,15 @@ EXTRA_ALLOWED_IDENTIFIERS: frozenset[str] = frozenset(
         "export",
         "compare",
         "verify",
+        "subject-isolate",
         "recipes",
         "run",
         "batch",
         "skills",
         "list",
         "validate",
+        # Advanced selection alias (not HL)
+        "select_contiguous",
         # Batch / procedure
         "plug-in-gimp-mcp-batch",
         "gimp-mcp-recipe",

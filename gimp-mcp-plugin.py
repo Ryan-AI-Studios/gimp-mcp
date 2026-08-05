@@ -1069,6 +1069,8 @@ class MCPPlugin(Gimp.PlugIn):
                 return self._select_ellipse(j.get("params", {}))
             elif "type" in j and j["type"] == "select_by_color":
                 return self._select_by_color(j.get("params", {}))
+            elif "type" in j and j["type"] == "select_contiguous":
+                return self._select_contiguous(j.get("params", {}))
             elif "type" in j and j["type"] == "select_all":
                 return self._select_all(j.get("params", {}))
             elif "type" in j and j["type"] == "select_none":
@@ -5792,6 +5794,52 @@ class MCPPlugin(Gimp.PlugIn):
                 cfg.set_property("drawable", drawable)
                 cfg.set_property("color", color)
                 cfg.set_property("operation", op)
+                proc.run(cfg)
+            finally:
+                Gimp.context_pop()
+            Gimp.displays_flush()
+            return {"status": "success", "results": {"status": "success"}}
+        except Exception as e:
+            return {"status": "error", "error": str(e), "traceback": traceback.format_exc()}
+
+    def _select_contiguous(self, params):
+        """Contiguous (magic-wand / fuzzy) select from a seed point."""
+        try:
+            layer_name = params.get("layer_name", None)
+            layer_id = params.get("layer_id", None)
+            threshold = int(params.get("threshold", 15))
+            operation = params.get("operation", "replace")
+            x = float(params.get("x", 0))
+            y = float(params.get("y", 0))
+            try:
+                image, _iid = self._resolve_image_from_params(params)
+            except _handles.HandleError as e:
+                return self._handle_error_response(e)
+            # Prefer layer_id when provided (create_selection layer_handle path).
+            # Explicit layer_id must not silently fall back to the active layer.
+            if layer_id is not None and layer_name is None:
+                drawable = self._resolve_layer(image, None, None, layer_id=int(layer_id))
+            else:
+                drawable = self._resolve_layer(image, layer_name, None)
+            op = self._channel_ops_from_string(operation)
+            pdb = Gimp.get_pdb()
+            proc = pdb.lookup_procedure("gimp-image-select-contiguous-color")
+            if proc is None:
+                raise RuntimeError("PDB procedure 'gimp-image-select-contiguous-color' not found")
+            Gimp.context_push()
+            try:
+                Gimp.context_set_antialias(True)
+                Gimp.context_set_feather(False)
+                Gimp.context_set_sample_threshold_int(threshold)
+                # Product lock: drawable-relative seeds (not merged sample).
+                Gimp.context_set_sample_merged(False)
+                Gimp.context_set_sample_transparent(False)
+                cfg = proc.create_config()
+                cfg.set_property("image", image)
+                cfg.set_property("drawable", drawable)
+                cfg.set_property("operation", op)
+                cfg.set_property("x", x)
+                cfg.set_property("y", y)
                 proc.run(cfg)
             finally:
                 Gimp.context_pop()

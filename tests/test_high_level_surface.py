@@ -874,3 +874,118 @@ def test_plugin_cutout_wire_structure() -> None:
     between = text[bounds_disp:clear_disp]
     # No other type branch between them (only the return line for bounds)
     assert between.count('j["type"] ==') == 1
+
+
+# ---------------------------------------------------------------------------
+# Track 0032 — contiguous select (type on create_selection; advanced alias)
+# ---------------------------------------------------------------------------
+
+
+def test_validate_create_selection_contiguous_success() -> None:
+    out = validate_create_selection_params(
+        {"type": "contiguous", "x": 10, "y": 20, "operation": "ADD"}
+    )
+    assert out["type"] == "contiguous"
+    assert out["operation"] == "add"
+    assert out["x"] == 10 and out["y"] == 20
+    assert out["threshold"] == 15  # default
+    # feather may be in shared out but is not required / not plugin-relevant
+
+
+def test_validate_create_selection_contiguous_threshold() -> None:
+    out = validate_create_selection_params({"type": "contiguous", "x": 1, "y": 2, "threshold": 42})
+    assert out["threshold"] == 42
+
+
+def test_validate_create_selection_contiguous_requires_xy() -> None:
+    with pytest.raises(ValueError, match="requires x"):
+        validate_create_selection_params({"type": "contiguous", "y": 0})
+    with pytest.raises(ValueError, match="requires y"):
+        validate_create_selection_params({"type": "contiguous", "x": 0})
+
+
+def test_validate_create_selection_contiguous_rejects_non_numeric() -> None:
+    with pytest.raises(ValueError, match="x must be a number"):
+        validate_create_selection_params({"type": "contiguous", "x": "10", "y": 0})
+    with pytest.raises(ValueError, match="y must be a number"):
+        validate_create_selection_params({"type": "contiguous", "x": 0, "y": "1"})
+    with pytest.raises(ValueError, match="x must be a number"):
+        validate_create_selection_params({"type": "contiguous", "x": True, "y": 0})
+    with pytest.raises(ValueError, match="threshold must be a number"):
+        validate_create_selection_params({"type": "contiguous", "x": 0, "y": 0, "threshold": True})
+
+
+def test_validate_create_selection_contiguous_feather_not_required() -> None:
+    # Works without feather key
+    out = validate_create_selection_params({"type": "contiguous", "x": 5, "y": 6})
+    assert out["x"] == 5 and out["y"] == 6
+    assert out["threshold"] == 15
+
+
+def test_create_selection_contiguous_maps_to_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    captured: list[dict[str, Any]] = []
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            captured.append({"cmd": cmd, "params": params or {}})
+            return {"status": "success", "results": {"status": "success"}}
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    _tool_fn(srv.create_selection)(  # type: ignore[arg-type]
+        _Ctx(),
+        type="contiguous",
+        x=3,
+        y=4,
+        threshold=20,
+        operation="add",
+        layer_handle={"item_id": 9, "image_id": 1, "generation": 1, "session_epoch": 1},
+    )
+    assert captured[0]["cmd"] == "select_contiguous"
+    p = captured[0]["params"]
+    assert p["x"] == 3 and p["y"] == 4
+    assert p["threshold"] == 20
+    assert p["operation"] == "add"
+    assert p["layer_id"] == 9
+    assert "feather" not in p
+    assert "color" not in p
+
+
+def test_select_contiguous_advanced_not_hl() -> None:
+    """Advanced select_contiguous is tagged advanced and not in HL catalog (M1/L4)."""
+    import gimp_mcp_server as srv
+
+    assert not is_hl_tool("select_contiguous")
+    assert "select_contiguous" not in HL_TOOL_NAMES
+    assert len(get_hl_catalog_names()) == 30
+
+    async def _check() -> None:
+        tools = await srv.mcp.get_tools()
+        assert "select_contiguous" in tools
+        tags = getattr(tools["select_contiguous"], "tags", None) or set()
+        assert tags == {ADVANCED_TAG}
+
+    asyncio.run(_check())
+
+
+def test_plugin_contiguous_wire_structure() -> None:
+    """Plugin has select_contiguous + contiguous-color PDB + sample_merged=False."""
+    text = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    assert "def _select_contiguous" in text
+    assert 'j["type"] == "select_contiguous"' in text or ('type"] == "select_contiguous"' in text)
+    assert "gimp-image-select-contiguous-color" in text
+
+    start = text.index("def _select_contiguous")
+    end = text.find("\n    def _", start + 10)
+    body = text[start : end if end != -1 else start + 3000]
+    assert "gimp-image-select-contiguous-color" in body
+    assert "context_set_sample_merged(False)" in body
+    assert "context_set_sample_threshold_int" in body
+    # M5 layer_id fail-closed pattern
+    assert "layer_id is not None and layer_name is None" in body

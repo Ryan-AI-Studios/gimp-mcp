@@ -48,6 +48,7 @@ SemVer **1.0.0** public API freeze. Accepted debt and declined work live in
 | [docs/release.md](docs/release.md) | Release checklist, version triple, build and tag |
 | [docs/evaluation.md](docs/evaluation.md) | Scored eval corpus, release gates, rubric report |
 | [docs/known-residuals.md](docs/known-residuals.md) | Public residual inventory (accepted / ops / declined) |
+| [docs/subject-isolation.md](docs/subject-isolation.md) | Contiguous select + optional rembg host cutout paths |
 | [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md) | Wire protocol and tool detail |
 | [adapters/](adapters/README.md) | Grok / Codex / Claude client examples |
 | [skills/](skills/README.md) | Portable Agent Skills package |
@@ -128,7 +129,7 @@ Restart the MCP server **and** the LLM client session after flipping (clients ca
 |---|---|
 | `session_probe` | `check_server` |
 | `render_visible_composite` | `get_image_bitmap` / `get_state_snapshot` |
-| `create_selection` | `select_rectangle` / `select_ellipse` / `select_by_color` / `select_all` / `select_none` |
+| `create_selection` | `select_rectangle` / `select_ellipse` / `select_by_color` / `select_contiguous` / `select_all` / `select_none` |
 
 `call_api` remains Class B exec and requires `GIMP_MCP_ALLOW_EXEC=1` separately.
 
@@ -153,6 +154,9 @@ Restart the MCP server **and** the LLM client session after flipping (clients ca
 git clone https://github.com/Ryan-AI-Studios/gimp-mcp.git
 cd gimp-mcp
 uv sync --group dev
+# Optional ML subject isolation (rembg/onnxruntime; not required for default CI):
+# uv sync --extra subject
+# See docs/subject-isolation.md
 ```
 
 ### 2. Install the GIMP plugin

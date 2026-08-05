@@ -36,16 +36,27 @@ Interactive edit path on a live MCP session. Prefer non-destructive ops.
 
 1. `ensure_source_immutable`
 2. `checkpoint_create`
-3. `create_selection` — prefer **rectangle** / **ellipse**; use type=by_color only when
-   the color is unique and unambiguous (costume greens, soft edges, and similar
-   signatures often over-select and wipe working layers)
+3. `create_selection` — prefer **rectangle** / **ellipse**; for flat paper BG use
+   **type=contiguous** with drawable-relative seeds (multi-seed: first
+   `operation=replace`, then `operation=add` on more edge seeds). Use type=by_color
+   only when the color is unique and unambiguous (costume greens, soft edges, and
+   similar signatures often over-select and wipe working layers)
 4. `get_selection_bounds` — if has_selection is false, **STOP** (clear fails closed
    with SELECTION_EMPTY); if area is huge/ambiguous, reselect or escalate
 5. `clear_selection_to_transparent` — prefer layer_handle; Source_Immutable-aware
 6. `render_visible_composite` / `export_image` / `verify_artifact`
 
-Hard subject isolation (soft ghosts, hair, complex backgrounds) remains **0032**
-(rembg / ML pipeline) — do not treat by_color + clear as a perfect cutout.
+### Decision tree (classic vs rembg)
+
+| Situation | Prefer |
+|-----------|--------|
+| Clean geometry mask | rect / ellipse → clear |
+| Flat unique background | contiguous multi-seed → clear |
+| Soft ghosts / hair / complex BG | Host rembg: `uv sync --extra subject` then CLI `subject-isolate` (see [subject-isolation](../../docs/subject-isolation.md)); optional HL cleanup after |
+
+Do not treat by_color + clear as a perfect cutout. Contiguous seeds are
+**drawable-relative** (`sample_merged=False`); subtract layer offsets when seeding
+from canvas space. Do **not** use Class A demos (`bg_remove*.py`).
 
 Advanced remain for invert/grow/feather/border and unrestricted color/pattern
 fill (advanced surface). Do **not** enable full advanced surface just for transparent clear.

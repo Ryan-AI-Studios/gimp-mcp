@@ -54,7 +54,7 @@ HL_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
-_SELECTION_TYPES = frozenset({"rectangle", "ellipse", "by_color", "all", "none"})
+_SELECTION_TYPES = frozenset({"rectangle", "ellipse", "by_color", "contiguous", "all", "none"})
 _SELECTION_OPS = frozenset({"replace", "add", "subtract", "intersect"})
 _DOTTED_INT = re.compile(r"^\d+(\.\d+)*$")
 
@@ -204,6 +204,22 @@ def validate_create_selection_params(params: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("create_selection threshold must be a number")
         out["threshold"] = int(threshold)
         # feather not applicable — omit from plugin payload for by_color
+
+    elif sel_type == "contiguous":
+        for key in ("x", "y"):
+            if key not in params or params[key] is None:
+                raise ValueError(f"create_selection type=contiguous requires {key}")
+            val = params[key]
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                raise ValueError(f"create_selection {key} must be a number")
+            out[key] = int(val)
+        threshold = params.get("threshold", 15)
+        if threshold is None:
+            threshold = 15
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+            raise ValueError("create_selection threshold must be a number")
+        out["threshold"] = int(threshold)
+        # feather not applicable — omit from plugin payload for contiguous
 
     # all / none: no geometry
 

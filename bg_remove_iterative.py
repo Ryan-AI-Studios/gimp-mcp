@@ -2,6 +2,12 @@
 """
 Iterative background removal using get_state_snapshot as AI visual feedback.
 
+LEGACY DEMO ONLY — not the product path.
+Product: create_selection type=contiguous (multi-seed operation=add) →
+  clear_selection_to_transparent → export_image preserve_alpha; or host rembg:
+  uv sync --extra subject && gimp-agent subject-isolate
+See docs/subject-isolation.md. Do not re-enable Class A cmds for this.
+
 Loop:
   1. Scan image for remaining background-colored opaque pixels
   2. Run contiguous-select (magic wand) + delete on each found seed point

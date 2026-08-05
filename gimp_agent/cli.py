@@ -563,6 +563,52 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return ec.EXIT_SUCCESS
 
 
+def _cmd_subject_isolate(args: argparse.Namespace) -> int:
+    """Host-only rembg subject isolation — no TCP/token/plugin."""
+    import gimp_mcp_subject as subject
+
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
+    try:
+        input_path = _jail_cli_path(str(args.input), "input")
+        output_path = _jail_cli_path(str(args.output), "output")
+    except sec.SecurityError as exc:
+        return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
+
+    model = str(getattr(args, "model", None) or "u2net")
+    alpha_matting = bool(getattr(args, "alpha_matting", False))
+
+    try:
+        result = subject.isolate_subject(
+            input_path,
+            output_path,
+            model=model,
+            alpha_matting=alpha_matting,
+        )
+    except sec.GimpMcpError as exc:
+        return _emit_host_error(
+            code=exc.code,
+            message=exc.message,
+            as_json=as_json,
+            data=exc.details or {},
+        )
+    except sec.SecurityError as exc:
+        return _emit_host_error(code=exc.code, message=exc.message, as_json=as_json)
+
+    envelope = jsonio.make_envelope(
+        ok=True,
+        exit_code=ec.EXIT_SUCCESS,
+        code=None,
+        message="subject-isolate ok",
+        data=result,
+    )
+    human = [
+        f"subject-isolate {result.get('input_path')} -> {result.get('output_path')} "
+        f"model={result.get('model')} bytes={result.get('bytes_written')}"
+    ]
+    jsonio.emit(envelope, as_json=as_json, human_lines=human)
+    return ec.EXIT_SUCCESS
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     """Host-only artifact verify — no TCP/token/plugin."""
     import gimp_mcp_verify as verify
@@ -1404,6 +1450,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_json_arg(p_verify)
     p_verify.set_defaults(func=_cmd_verify)
+
+    p_subject = sub.add_parser(
+        "subject-isolate",
+        help=(
+            "Host-only subject isolation via optional rembg "
+            "(uv sync --extra subject); exit 12 if rembg missing"
+        ),
+    )
+    p_subject.add_argument(
+        "--input",
+        required=True,
+        help="Workspace-jailed input image path",
+    )
+    p_subject.add_argument(
+        "--output",
+        required=True,
+        help="Workspace-jailed output PNG path",
+    )
+    p_subject.add_argument(
+        "--model",
+        default="u2net",
+        help="rembg model name (default: u2net; comic/anime try isnet-anime)",
+    )
+    p_subject.add_argument(
+        "--alpha-matting",
+        action="store_true",
+        default=False,
+        help="Enable soft-edge alpha matting (slower)",
+    )
+    _add_json_arg(p_subject)
+    p_subject.set_defaults(func=_cmd_subject_isolate)
 
     p_recipes = sub.add_parser(
         "recipes",

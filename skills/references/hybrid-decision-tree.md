@@ -16,6 +16,7 @@ Primary tools: full HL set — start with `session_probe` → `orient_workspace`
 | `install` / `uninstall` / `doctor` / `probe` / `version` / `codes` | Setup & diagnostics |
 | `save-xcf` / `export` | Atomic IO via live plugin TCP |
 | `compare` / `verify` | Host-only pixel/artifact gates (no TCP) |
+| `subject-isolate` | Host-only optional rembg cutout (`uv sync --extra subject`) |
 | `recipes` / `run` / `batch` | Versioned recipes; optional headless backend |
 | `skills` `list` / `validate` / `install` | This skills package helper |
 
@@ -23,7 +24,7 @@ Primary tools: full HL set — start with `session_probe` → `orient_workspace`
 
 1. **Inspect then deterministic op:** MCP orient + composite → CLI `export` / `run`.
 2. **Bulk / CI:** CLI `batch` with `--backend auto|session|headless`.
-3. **No MCP server:** host-only `compare` / `verify` / `recipes`; headless `run` when `batch_safe`.
+3. **No MCP server:** host-only `compare` / `verify` / `subject-isolate` / `recipes`; headless `run` when `batch_safe`.
 
 ## Prefer HL
 

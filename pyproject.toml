@@ -38,6 +38,9 @@ Issues = "https://github.com/Ryan-AI-Studios/gimp-mcp/issues"
 gimp-mcp-server = "gimp_mcp_server:main"
 gimp-agent = "gimp_agent.cli:main"
 
+[project.optional-dependencies]
+subject = ["rembg[cpu]>=2.0.77"]
+
 [tool.setuptools]
 py-modules = [
     "gimp_mcp_server",
@@ -54,6 +57,7 @@ py-modules = [
     "gimp_mcp_recipes",
     "gimp_mcp_filters",
     "gimp_mcp_tx",
+    "gimp_mcp_subject",
 ]
 packages = ["gimp_agent"]
 
@@ -121,6 +125,7 @@ known-first-party = [
     "gimp_mcp_recipes",
     "gimp_mcp_filters",
     "gimp_mcp_tx",
+    "gimp_mcp_subject",
     "gimp_agent",
 ]
 
@@ -159,6 +164,7 @@ include = [
     "gimp_mcp_recipes.py",
     "gimp_mcp_filters.py",
     "gimp_mcp_tx.py",
+    "gimp_mcp_subject.py",
     "gimp_agent",
     "tests",
 ]
