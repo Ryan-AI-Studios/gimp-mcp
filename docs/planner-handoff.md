@@ -120,12 +120,12 @@ minting. Track IDs are creation order, not execution order.
   → 0024 Documentation product polish — Completed
   → 0025 Evaluation corpus and benchmarks — Completed
   → 0026 Release packaging — Completed
-  → 0027 Golden path demo and smoke — next (placeholder; full plan pass first)
+  → 0027 Golden path demo and smoke — **Ready — not started** (next implement)
   → 0028 Final product polish (v1)
 ```
 
 **28 tracks** (0001–0028). **0001–0026 Completed.** **Next implement: 0027**
-GoldenPathDemoAndSmoke (**placeholder — full plan pass first**). Orientation SoT is
+GoldenPathDemoAndSmoke (**Ready — not started**). Orientation SoT is
 `orient_workspace`. Handles **0007**. Alpha **0005**. Composite **0004**. EXIF **0008**.
 Policy **0009**. HL surface **0010** → **28** with **0017**. Errors **0011** + honest
 `rollback_available` when open agent undo TX (**0017**). CLI **0012**. Atomic **0013**.
@@ -166,6 +166,21 @@ default** kept (**H1**) with `--require-pass` alias + `--inspect`; `docs/release
 (wheel ≠ APPDATA); `scripts/pack_plugin_shipset.py` EXPECTED-10 zip + MANIFEST/sha256;
 `@slow` `uv build` verify (not default CI); `MANIFEST.in` for sdist plugin. **Do not**
 push remote tag without approval (`git push origin v0.1.0`). Live golden path → **0027**.
+
+**0027 GoldenPathDemoAndSmoke (Ready — not started; planned 2026-08-05; AI fold-in):**
+One coherent hybrid story: probe → open → orient → protect source →
+`ensure_source_immutable` + `checkpoint_create` → composite → atomic `save_xcf` →
+export PNG → host `verify_artifact`. **Wire vs HL (H1/H2):** smoke uses plugin TCP
+names only (`get_image_bitmap`, never HL-only `create_selection` /
+`render_visible_composite` as `type`). Composite evidence: decode base64 → file +
+non-status asserts (**H3**). Deliverables: **`docs/golden-path.md#golden-path`**,
+**`scripts/golden_path_smoke.py`** (default dry-run / `--live`), offline structure
+tests (exec ban + integration-marker greps), optional `@integration` +
+`GIMP_MCP_LIVE=1`, jailed out-dir evidence schema, README demote + **mandatory**
+`ci-and-testing.md` first-integration note. Offline **E-OFFLINE-GOLDEN** stays
+release gate; eval report fail-closed already shipped (**H4**). Pin hold. Per-track
+live matrices **not** all closed. Implement only on **implement track 27**. Next:
+**0028**.
 
 ---
 

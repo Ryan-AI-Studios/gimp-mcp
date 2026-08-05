@@ -160,13 +160,23 @@ discoverability when publishing is chosen.
 
 ## Live residuals
 
-Live GIMP golden-path smoke, multi-host operator matrices, and demo polish are
-**out of band** for this checklist’s offline gate. Treat them as a separate
-operator pass after install (see [operator-runbook.md](operator-runbook.md) and
-[evaluation.md](evaluation.md) live residual section).
+Primary live product path is documented in
+**[golden-path.md#golden-path](golden-path.md#golden-path)** with scripted smoke:
+
+```powershell
+# After operator-runbook start-order (plugin server up, GIMP_WORKSPACE_ROOT set)
+uv run python scripts/golden_path_smoke.py --dry-run   # default; no socket
+uv run python scripts/golden_path_smoke.py --live      # full plugin path + evidence.json
+```
+
+Multi-host operator matrices and marketing demo polish remain **out of band**
+for this checklist’s offline gate (see [operator-runbook.md](operator-runbook.md)
+and [evaluation.md](evaluation.md) live residual section). Offline release gates
+(including **E-OFFLINE-GOLDEN**) do **not** replace live plugin smoke.
 
 ## Related docs
 
+- [golden-path.md](golden-path.md) — golden path SoT + live/dry-run smoke
 - [evaluation.md](evaluation.md) — scored corpus and `#release-gates`
 - [ci-and-testing.md](ci-and-testing.md) — offline CI SoT and markers
 - [operator-runbook.md](operator-runbook.md) — start order and install

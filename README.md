@@ -325,18 +325,21 @@ Policy, markers, fixtures, and branch protection:
 Scored evaluation corpus and release gates:
 **[docs/evaluation.md](docs/evaluation.md)** (`uv run python scripts/run_eval_report.py --offline`).
 
-**Optional live harness:** [`run_tests.py`](run_tests.py) exercises tools against a
-running GIMP + MCP plugin. It is **not** the offline product quality gate.
+**Product golden path (preferred):** open → orient → protect → composite →
+save/export → host verify. Docs: **[docs/golden-path.md](docs/golden-path.md)**.
 
 | Script | Description |
 |---|---|
-| [`run_tests.py`](run_tests.py) | Optional live integration harness (requires GIMP + plugin) |
-| [`bg_remove_iterative.py`](bg_remove_iterative.py) | Iterative BG removal with snapshot checkpoints |
-| [`bg_remove.py`](bg_remove.py) | Simple single-pass background removal |
-| [`agent_edit_demo.py`](agent_edit_demo.py) | Full pipeline demo |
+| [`scripts/golden_path_smoke.py`](scripts/golden_path_smoke.py) | **Golden-path smoke** — default dry-run; `--live` against GIMP plugin (no Class A exec) |
+| [`run_tests.py`](run_tests.py) | Legacy — requires exec for some paths, prefer golden-path smoke; optional live harness |
+| [`bg_remove_iterative.py`](bg_remove_iterative.py) | Legacy — requires exec, prefer golden-path smoke; iterative BG removal |
+| [`bg_remove.py`](bg_remove.py) | Legacy — requires exec, prefer golden-path smoke; simple single-pass BG removal |
+| [`agent_edit_demo.py`](agent_edit_demo.py) | Legacy — requires exec, prefer golden-path smoke; full pipeline demo |
 
-> Demos that use plugin `cmds` require `GIMP_MCP_ALLOW_EXEC=1` and a valid session
-> token. Without advanced exec they exit with a friendly `EXEC_DISABLED` message.
+> Legacy demos that use plugin `cmds` require `GIMP_MCP_ALLOW_EXEC=1` and a valid
+> session token. Prefer **`scripts/golden_path_smoke.py`** for the hardened product
+> path. Without advanced exec, Class A demos exit with a friendly `EXEC_DISABLED`
+> message.
 
 ---
 

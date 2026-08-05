@@ -11,7 +11,7 @@ defaults, timeouts, and operator bench methodology live in
 | Path | What it is | Required for merge? |
 |---|---|---|
 | **Offline** | Host-only unit + fixture + golden-path E2E (`pytest -m "not integration and not slow"`). No `gi`, no GIMP process. | **Yes** — sole quality SoT |
-| **Live** | Operator path with GIMP 3.2 + plug-in TCP `:9877` (`Tools > MCP > Start MCP Server`). Future tests may opt in with `GIMP_MCP_LIVE=1`. | No |
+| **Live** | Operator path with GIMP 3.2 + plug-in TCP `:9877` (`Tools > MCP > Start MCP Server`). Opt in with `GIMP_MCP_LIVE=1` for `@integration` tests (first consumer: 0027 golden-path live smoke). | No |
 | **Headless on GA** | Running `gimp-console` / BatchProcedure on GitHub-hosted `ubuntu-latest`. | **Document-only** — not implemented as a default-on or required job |
 
 ### Why headless GIMP is document-only on GitHub Actions
@@ -36,12 +36,14 @@ Therefore:
 | `slow` | Intentionally long host path (**runtime > 1s** on typical CI hardware) | **exclude** |
 | `integration` | Live GIMP plugin TCP `:9877` | **exclude** |
 
-- Track **0022 ships zero** `@integration` tests. The marker stays declared for
-  future use.
-- Offline golden-path E2E (`tests/test_offline_e2e.py`) is **not** `@slow` and
-  must stay sub-second.
-- Future live tests should gate on env **`GIMP_MCP_LIVE=1`** (convention only
-  until such tests exist):
+- **First `@integration` consumer (0027):** golden-path live smoke
+  (`tests/test_golden_path.py` / `scripts/golden_path_smoke.py --live`).
+  Still **skipped** without **`GIMP_MCP_LIVE=1`** — default CI stays green
+  without a running GIMP.
+- Offline golden-path E2E (`tests/test_offline_e2e.py`, eval **E-OFFLINE-GOLDEN**)
+  is **host-only** (verify/compare/recipes) — **not** live plugin open/save —
+  and is **not** `@slow` / must stay sub-second.
+- Live tests gate on env **`GIMP_MCP_LIVE=1`**:
 
   ```powershell
   $env:GIMP_MCP_LIVE=1; uv run pytest -m integration
@@ -135,7 +137,9 @@ tree). Live product path summary:
 3. `Tools > MCP > Start MCP Server` (loopback TCP `:9877`)
 4. Set **`GIMP_WORKSPACE_ROOT`** to a workspace directory for path-jailed FS ops
 5. `uv run gimp-agent doctor` / `probe` as needed
-6. Optional future: `$env:GIMP_MCP_LIVE=1` then `pytest -m integration`
+6. Preferred live smoke: `uv run python scripts/golden_path_smoke.py --live`
+   (see [golden-path.md](golden-path.md)); optional
+   `$env:GIMP_MCP_LIVE=1` then `pytest -m integration`
 
 Live matrices are **not** required CI. Do not re-run every historical ops matrix
 as automated GA jobs.

@@ -407,7 +407,17 @@
       "test_nodeids": [
         "tests/test_offline_e2e.py::test_offline_golden_path_verify_compare_recipes"
       ],
-      "notes": "Single offline golden-path (L5)."
+      "notes": "Single offline golden-path (L5). Host verify/compare/recipes only — not live plugin smoke."
+    },
+    {
+      "id": "E-LIVE-GOLDEN",
+      "design_ref": "0027-golden-path",
+      "category": "determinism",
+      "weight_category": 8,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Live golden-path smoke (scripts/golden_path_smoke.py --live / @integration). Not offline-scored; operator residual."
     },
     {
       "id": "E-VISUAL-QUALITY-RESIDUAL",
