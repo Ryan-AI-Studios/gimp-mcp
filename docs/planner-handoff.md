@@ -125,21 +125,22 @@ minting. Track IDs are creation order, not execution order.
 ```
 
 **28 tracks** (0001–0028) form the original product fence — **complete** at readiness
-**0.2.x**. **Post-fence demand tracks 0029–0032** are **placeholders** (from
-`C:\dev\Grok-feedback.md`); full plan before implement. **Release baseline:** remote
+**0.2.x**. **Post-fence demand tracks 0029–0032 are Completed** (from
+`C:\dev\Grok-feedback.md`). **Release baseline:** remote
 annotated tag **`v0.2.0`** @ `65783d1` (version triple + CHANGELOG + uv.lock).
 **Product mission complete at 0.2.x** (not SemVer 1.0.0). Maintainers: public residual
 fence **`docs/known-residuals.md`**; golden path **`docs/golden-path.md`**; release
-checklist **`docs/release.md`**. Local-only `v0.1.0` may exist on disk; remote product
-tag SoT is **v0.2.0**. Orientation SoT is `orient_workspace`. Handles **0007**. Alpha
-**0005**. Composite **0004**. EXIF **0008**. Policy **0009**. HL surface **0010** →
-**28** with **0017**. Errors **0011** + honest `rollback_available` when open agent
-undo TX (**0017**). CLI **0012**. Atomic **0013**. Pixel verify **0014** (decoded budget
-**50M** trusted / **25M** untrusted — do not raise to design 250M). Recipes **0015**.
-NDE **0016**. Undo groups **0017**. Install SoT **`uv run gimp-agent install`**
-(**0018**, EXPECTED **10**). Headless batch **0019** (constrained BatchProcedure).
-Runtime Agent Skills package **`skills/`** (**0020**). Client adapters + dual image
-delivery **0021**. Fixture corpus + offline E2E + CI policy **0022** (`tests/fixtures/`,
+checklist **`docs/release.md`**; subject isolation **`docs/subject-isolation.md`**.
+Local-only `v0.1.0` may exist on disk; remote product tag SoT is **v0.2.0**.
+Orientation SoT is `orient_workspace`. Handles **0007**. Alpha **0005**. Composite
+**0004**. EXIF **0008**. Policy **0009**. HL surface **0010** → **30** with **0030**.
+Errors **0011** + honest `rollback_available` when open agent undo TX (**0017**).
+CLI **0012**. Atomic **0013**. Pixel verify **0014** (decoded budget **50M** trusted /
+**25M** untrusted — do not raise to design 250M). Recipes **0015**. NDE **0016**.
+Undo groups **0017**. Install SoT **`uv run gimp-agent install`** (**0018**, EXPECTED
+**10**). Headless batch **0019** (constrained BatchProcedure). Runtime Agent Skills
+package **`skills/`** (**0020**). Client adapters + dual image delivery **0021**.
+Fixture corpus + offline E2E + CI policy **0022** (`tests/fixtures/`,
 `docs/ci-and-testing.md`; headless GIMP on GA is **document-only**; self-hosted Windows
 residual). Snapshot budget **0023**: default max edge **1024**, hard **4096**, region
 **8192**, host TCP **60s** / `CODE_TIMEOUT`; `docs/performance.md`; soft encoded-byte
@@ -198,17 +199,17 @@ handles, B904/E501, or mcp/fastmcp majors. Did **not** re-tag `v0.2.0`. Claude f
 PASS CLEAN (Codex rate-limited). Maintainers after sequence:
 **`docs/known-residuals.md`**, **`docs/golden-path.md`**, **`docs/release.md`**.
 
-### Post-sequence demand tracks (placeholders — 2026-08-05)
+### Post-sequence demand tracks (Completed — 2026-08-05)
 
 From live Grok + GIMP session feedback (`C:\dev\Grok-feedback.md`). **Not** part of
-the original 0001–0028 fence; full plan pass before implement. Suggested order:
+the original 0001–0028 fence. All four demand tracks shipped:
 
 | Track | Status | Why |
 |---|---|---|
 | **0029** DualEnvWorkspaceLaunch | **Completed** (PR #44 / main@aa375e1) | Dual-env docs; `gimp-agent launch-gui` + scripts; session_probe plugin/host roots; doctor **message only**; dual-server adapters; Claude PASS CLEAN |
 | **0030** HlCutoutSelectionHelpers | **Completed** (PR #45 / main@6c38194) | HL **30**: `clear_selection_to_transparent` + `get_selection_bounds`; empty → `SELECTION_EMPTY`; skill protocol; Claude PASS WITH DEFERRED P3 |
 | **0031** PngExportDrawableHardening | **Completed** (PR #46 / main@5b62925) | GIMP 3 export-procedure: drawable optional; snapshot ungated `proc.run`; IR1-04 rewrite; Claude PASS |
-| **0032** SubjectIsolationPipeline | Placeholder | Optional host rembg/subject path + typed fuzzy select; **not** required dep / Class A |
+| **0032** SubjectIsolationPipeline | **Completed** (PR #47 / main@f338923) | Optional host rembg (`subject` extra + CLI) + typed `create_selection type=contiguous`; Claude final PASS |
 
 **OOS (Grok Build host):** mid-flight MCP env respawn, leftover `uv` process hygiene,
 `/mcps` refresh not reloading env — operator notes under **0029** only; do not mint
@@ -235,7 +236,21 @@ GIMP 3.2 export-procedure model (image+file+format; drawables via internal `list
 IR1-04 hard-require; always `proc.run` after image+file (export + snapshot); keep merge +
 RGBA8 + IHDR + degraded last resort; residuals absorb; CHANGELOG Unreleased. Claude final
 PASS (Codex R1 FAIL on weak tests → fixed; Codex then usage-limited). Pins hold; EXPECTED
-10; no HL/SemVer change. **Next:** full plan **0032** when operator demands (placeholder).
+10; no HL/SemVer change.
+
+**0032 Completed (2026-08-05; PR #47 / main@f338923):** Hard cutouts (soft ghosts /
+multi-character comic art) need more than `by_color` + clear. **Shipped:** (A) host
+optional rembg — pure `gimp_mcp_subject.py` + `gimp-agent subject-isolate` +
+`[project.optional-dependencies] subject = ["rembg[cpu]>=2.0.77"]` (fail-closed
+`CODE_UNSUPPORTED` if missing; models → `~/.u2net`); session cache + force PNG +
+optional `--alpha-matting`; (B) typed contiguous via extend `create_selection
+type=contiguous` (plugin PDB `gimp-image-select-contiguous-color`;
+`sample_merged=False`; drawable-relative seeds; advanced `select_contiguous` alias —
+**no** new HL tool / catalog stays **30**); (C) `docs/subject-isolation.md` + skills
+decision tree classic vs rembg; known-residuals absorb; demo banners. Soft HOST_OPS
+`subject_isolate`. **Declined:** rembg required; weights in-repo; Class A; `seeds[]`
+auto edge API; mcp/fastmcp majors; EXPECTED growth. Claude final PASS (Codex
+rate-limited). Pins hold; EXPECTED 10.
 
 ---
 
