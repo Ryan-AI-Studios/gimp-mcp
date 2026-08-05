@@ -139,6 +139,10 @@ pretty label `gimp-mcp-recipe`) — **not** stock `python-fu-eval` and not arbit
 | Token file race | MCP server retries; start plugin before heavy MCP traffic |
 | Temp / snapshot paths | **Primary:** when `GIMP_WORKSPACE_ROOT` is set, dual-delivery snapshot writes use `{GIMP_WORKSPACE_ROOT}/.gimp-mcp-tmp/snapshots/` (write default **on**). **Fallback:** when workspace is unset, `{tempdir}/gimp-mcp-{pid}/` (and related temp helpers). Permissions **0o700** best-effort where the OS allows. |
 
+Broader product debt (vision, packaging, live/ops, tooling, explicitly declined
+work) is inventoried in **[docs/known-residuals.md](docs/known-residuals.md)** —
+not security-default bypasses.
+
 ## Error codes
 
 | Code | Meaning |

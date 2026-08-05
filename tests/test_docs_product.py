@@ -144,3 +144,91 @@ def test_architecture_no_track_ids() -> None:
     text = _read("docs/architecture.md")
     match = re.search(r"\b00[0-2][0-9]\b", text)
     assert match is None, f"architecture.md must not contain track id {match.group(0)!r}"
+
+
+# --- 0028 Final Product Polish: residual inventory + readiness (additive) ---
+
+# Required public inventory section headers (flexible: match key tokens).
+_KNOWN_RESIDUAL_SECTIONS = (
+    r"(?im)^##\s+.*security\s+accepted",
+    r"(?im)^##\s+.*live\s*/\s*ops",
+    r"(?im)^##\s+.*vision\s*/\s*perf",
+    r"(?im)^##\s+.*packaging\s*/\s*install",
+    r"(?im)^##\s+.*protocol\s*/\s*product",
+    r"(?im)^##\s+.*tooling\s*/\s*deps",
+    r"(?im)^##\s+.*explicitly\s+declined",
+)
+
+
+def test_known_residuals_exists_with_seven_sections() -> None:
+    """docs/known-residuals.md must exist with all seven inventory sections."""
+    text = _read("docs/known-residuals.md")
+    assert text.strip(), "docs/known-residuals.md must be non-empty"
+    missing = [pat for pat in _KNOWN_RESIDUAL_SECTIONS if not re.search(pat, text)]
+    assert not missing, "docs/known-residuals.md missing required section header(s): " + "; ".join(
+        missing
+    )
+
+
+def test_readme_links_known_residuals() -> None:
+    text = _read("README.md")
+    assert "known-residuals" in text.lower(), (
+        "README must link docs/known-residuals.md (path or link text)"
+    )
+
+
+def test_readme_docs_table_mentions_known_residuals() -> None:
+    text = _read("README.md")
+    # Prefer docs-table region; path anywhere in README is the hard floor above.
+    table_match = re.search(
+        r"(?ims)^##\s+Documentation index\s*\n(.*?)(?=^##\s|\Z)",
+        text,
+    )
+    assert table_match is not None, "README must have ## Documentation index"
+    assert "known-residuals" in table_match.group(1).lower(), (
+        "README docs table/index must mention known-residuals"
+    )
+
+
+def test_readme_product_readiness_at_0_2() -> None:
+    text = _read("README.md")
+    lower = text.lower()
+    has_readiness = (
+        "product readiness" in lower
+        or "mission complete" in lower
+        or "hybrid complete" in lower
+        or "product mission complete" in lower
+    )
+    has_0_2 = bool(re.search(r"0\.2(\.x|\.0)?", text))
+    assert has_readiness and has_0_2, (
+        "README must mention product readiness / mission complete / hybrid complete "
+        "at 0.2 (flexible phrasing)"
+    )
+
+
+def test_changelog_has_dated_0_2_0() -> None:
+    """Additive: dated ## [0.2.0] - YYYY-MM-DD (keep 0.1.0 test unchanged)."""
+    text = _read("CHANGELOG.md")
+    assert "[Unreleased]" in text
+    assert re.search(r"(?m)^##\s+\[0\.2\.0\]\s+-\s+\d{4}-\d{2}-\d{2}\s*$", text), (
+        "CHANGELOG must have ## [0.2.0] - YYYY-MM-DD section"
+    )
+
+
+def test_release_md_0_2_baseline_not_0_1_only() -> None:
+    text = _read("docs/release.md")
+    assert "0.2.0" in text or "0.2.x" in text, (
+        "docs/release.md must mention 0.2.0 / 0.2.x as current baseline"
+    )
+    # Must not claim the primary checklist is only 0.1.x (stale header).
+    assert not re.search(
+        r"(?im)reproducible\s+\*\*0\.1\.x\*\*\s+release",
+        text,
+    ), "docs/release.md must not claim primary checklist is only 0.1.x"
+
+
+def test_security_md_links_known_residuals() -> None:
+    text = _read("SECURITY.md")
+    assert "known-residuals" in text, (
+        "SECURITY.md must contain known-residuals link/path for product debt"
+    )
