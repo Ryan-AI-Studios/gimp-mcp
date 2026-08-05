@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -337,7 +338,7 @@ def test_image_delivery_five_keys() -> None:
 
 
 def test_workspace_root_mismatch_helper() -> None:
-    """Host vs plugin path compare: null short-circuit and equality."""
+    """Host vs plugin path compare: null short-circuit, equal, and differ."""
     import gimp_mcp_server as srv
 
     assert srv._workspace_root_mismatch(None, "/a") is None
@@ -345,6 +346,49 @@ def test_workspace_root_mismatch_helper() -> None:
     assert srv._workspace_root_mismatch(None, None) is None
     # Same path after normalize
     assert srv._workspace_root_mismatch("/tmp/ws", "/tmp/ws") is False
+    # Both set but different → True
+    assert srv._workspace_root_mismatch("/tmp/ws-a", "/tmp/ws-b") is True
+
+
+def test_probe_connection_extracts_plugin_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Connected get_gimp_info results.workspace_root → plugin_workspace_root (H3)."""
+    import gimp_mcp_server as srv
+
+    plugin_root = str(tmp_path / "plugin-ws")
+    host_root = str(tmp_path / "host-ws")
+    (tmp_path / "plugin-ws").mkdir()
+    (tmp_path / "host-ws").mkdir()
+
+    class _FakeConn:
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+        def connect(self) -> None:
+            return None
+
+        def send_command(self, cmd: str) -> dict[str, Any]:
+            assert cmd == "get_gimp_info"
+            return {
+                "results": {
+                    "workspace_root": plugin_root,
+                    "version": {"version_method": "3.2.4"},
+                }
+            }
+
+    monkeypatch.setattr(srv, "GimpConnection", _FakeConn)
+    monkeypatch.setenv("GIMP_WORKSPACE_ROOT", host_root)
+
+    class _Ctx:
+        pass
+
+    out = _tool_fn(srv.session_probe)(_Ctx())  # type: ignore[arg-type]
+    assert out["connected"] is True
+    assert out["plugin_workspace_root"] == plugin_root
+    assert out["host_workspace_root"] is not None
+    assert out["workspace_root_mismatch"] is True
+    assert out["gimp_version"] == "3.2.4"
 
 
 def test_instructions_prefix_self_contained() -> None:
