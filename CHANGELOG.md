@@ -10,6 +10,15 @@ Package, CLI, and plug-in versions share the same semver string. See
 
 ## [Unreleased]
 
+### Added
+
+- Dual-env workspace launch: `gimp-agent launch-gui` plus `scripts/launch-gimp.ps1`
+  / `scripts/launch-gimp.sh` so `GIMP_WORKSPACE_ROOT` is set on the **GIMP process**
+  (plugin path jail), not only on the host MCP spawn.
+- `session_probe` always reports `plugin_workspace_root`, `host_workspace_root`,
+  and `workspace_root_mismatch`; plugin `get_gimp_info` exposes top-level
+  `workspace_root`. Doctor workspace messages clarify host-CLI-only honesty.
+
 ## [0.2.0] - 2026-08-05
 
 ### Added

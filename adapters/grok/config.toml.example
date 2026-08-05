@@ -23,6 +23,30 @@ PYTHONUNBUFFERED = "1"
 # GIMP_MCP_ADVANCED_TOOLS = "0"
 # GIMP_MCP_SNAPSHOT_WRITE = "1"
 
+# Host MCP env above does NOT set GIMP_WORKSPACE_ROOT on the GIMP plugin process.
+# Launch GIMP with: uv run gimp-agent launch-gui --workspace C:/path/to/workspace
+# (or scripts/launch-gimp.ps1 / launch-gimp.sh).
+
+# Optional second server for the ~90-tool advanced surface (host-only).
+# Prefer ONE enabled server at a time (overlapping tools/prefixes).
+# After enable/disable: start a new Grok session (list_tools cache + stdio respawn).
+# [mcp_servers.gimp-advanced]
+# command = "uv"
+# args = [
+#   "run",
+#   "--directory",
+#   "C:/path/to/gimp-mcp",
+#   "gimp_mcp_server.py",
+# ]
+# enabled = false
+# startup_timeout_sec = 60
+# tool_timeout_sec = 300
+#
+# [mcp_servers.gimp-advanced.env]
+# GIMP_WORKSPACE_ROOT = "C:/path/to/workspace"
+# PYTHONUNBUFFERED = "1"
+# GIMP_MCP_ADVANCED_TOOLS = "1"
+
 # Optional: Grok supports ${VAR} / ${VAR:-default} expansion in command/args/env.
 # Example:
 #   GIMP_WORKSPACE_ROOT = "${GIMP_WORKSPACE_ROOT}"

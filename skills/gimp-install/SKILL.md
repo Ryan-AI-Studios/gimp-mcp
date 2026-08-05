@@ -20,17 +20,23 @@ Host-side plugin ship-set install. Skills package ≠ plug-in files.
 ```text
 uv run gimp-agent install
 uv run gimp-agent doctor --strict
+uv run gimp-agent launch-gui --workspace <path>   # set plugin-process jail + launch GIMP
 uv run gimp-agent probe
 uv run gimp-agent version
 ```
 
-Optional thin scripts exist; prefer `uv run gimp-agent install`.
+Optional thin scripts exist; prefer `uv run gimp-agent install` and
+`uv run gimp-agent launch-gui` (or `scripts/launch-gimp.*`).
 
 ## Expectations
 
 - EXPECTED ship set size: **10** files (product lock; skills are not among them).
-- After install: **fully quit and restart GIMP**, then start MCP server from the menu.
-- `doctor --strict` exits non-zero on first required failure.
+- After install: **fully quit and restart GIMP** with workspace root on the
+  **GIMP process** (`launch-gui`), then start MCP server from the menu.
+- Start-order dual-env: host client config ≠ plugin jail — see operator-runbook
+  `#dual-env` / `#start-order`.
+- `doctor --strict` exits non-zero on first required failure (workspace check is
+  CLI-env honesty only; use `session_probe.plugin_workspace_root` for plugin jail).
 
 ## Backups
 

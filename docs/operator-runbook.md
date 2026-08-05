@@ -9,23 +9,48 @@ gimp-mcp product on a workstation. For architecture context see
 
 ## Start order
 
-Numbered sequence for a working interactive MCP session:
+Numbered sequence for a working interactive MCP session. Plugin-process env must
+be set **before** the plugin server starts (see [Dual-env](#dual-env)).
+
+### One-time / after upgrade
 
 1. **Clone and sync** the fork; install Python deps (`uv sync --group dev`).
 2. **Deploy the plugin ship set** (`uv run gimp-agent install`) — EXPECTED **10**
    files into the newest GIMP `3.*` user plug-ins directory.
 3. **Verify install** (`uv run gimp-agent doctor --strict --json`) — expect
-   `plugin_files` 10/10.
-4. **Fully quit and relaunch GIMP** after install or upgrade.
-5. **Set workspace jail** — `GIMP_WORKSPACE_ROOT` to a directory agents may
-   read/write (required for open/save/export).
-6. **Open an image** in GIMP (plugin expects a live document for most tools).
-7. **Start the plugin server** — **Tools → MCP → Start MCP Server** (binds
-   `127.0.0.1:9877`, writes session token file).
-8. **Start the MCP client** / `gimp_mcp_server.py` (lazy token load with retry if
-   the token file appears slightly late).
-9. **Probe** — `session_probe` (MCP) or `uv run gimp-agent probe --json` should
-   succeed before heavy edit traffic.
+   `plugin_files` 10/10. Doctor workspace lines report **CLI env only**, not
+   the GIMP plugin jail.
+
+### Every interactive session
+
+4. **Set workspace root for the GIMP process** and **launch GIMP** with that env
+   (primary):
+
+   ```powershell
+   uv run gimp-agent launch-gui --workspace C:\path\to\workspace
+   # or:
+   powershell -ExecutionPolicy Bypass -File .\scripts\launch-gimp.ps1 -WorkspaceRoot C:\path\to\workspace
+   ```
+
+   ```bash
+   uv run gimp-agent launch-gui --workspace /path/to/workspace
+   # or: ./scripts/launch-gimp.sh --workspace /path/to/workspace
+   # macOS: export GIMP_EXE="/Applications/GIMP.app/Contents/MacOS/gimp" if needed
+   ```
+
+   Do **not** rely on host MCP `config.toml` alone — that env does not reach the
+   plugin process.
+
+5. **Open an image** in GIMP (plugin expects a live document for most tools).
+6. **Start the plugin server** — **Tools → MCP → Start MCP Server** (binds
+   `127.0.0.1:9877`, writes session token file). Confirm the GIMP console log
+   shows `[MCP] Workspace root: …` (not the unset warning).
+7. **Start the MCP client** / `gimp_mcp_server.py` (set host
+   `GIMP_WORKSPACE_ROOT` in client config for dual-delivery; lazy token load
+   with retry if the token file appears slightly late).
+8. **Probe** — `session_probe` (MCP) or `uv run gimp-agent probe --json` should
+   succeed before heavy edit traffic. Prefer MCP `session_probe` and check
+   `plugin_workspace_root` is set and `workspace_root_mismatch` is not `true`.
 
 > **Rule:** plugin first (token available), then MCP client. Reverse order causes
 > connection failures until the plugin is up.
@@ -97,6 +122,29 @@ folder exists.
 
 ---
 
+## Dual-env
+
+Host MCP and the GIMP plugin are **two environment worlds**:
+
+| World | Process | Sets `GIMP_WORKSPACE_ROOT` for |
+|-------|---------|--------------------------------|
+| **Host** | Client-spawned `gimp_mcp_server.py` | Host dual-delivery / host path helpers |
+| **Plugin** | GIMP process + plug-in | open / save / export / **checkpoint** path jail |
+
+- Host client config **cannot** inject env into already-running GIMP.
+- Primary launch: `uv run gimp-agent launch-gui --workspace <path>`.
+- Scripts: `scripts/launch-gimp.ps1`, `scripts/launch-gimp.sh` (require
+  workspace param or env; no hardcoded machine path).
+- PowerShell env syntax: `$env:GIMP_WORKSPACE_ROOT = "C:\path\to\workspace"`.
+- If `.ps1` is blocked:  
+  `powershell -ExecutionPolicy Bypass -File .\scripts\launch-gimp.ps1 -WorkspaceRoot <path>`.
+- macOS: override GUI discovery with `GIMP_EXE` when PATH lookup fails  
+  (e.g. `export GIMP_EXE="/Applications/GIMP.app/Contents/MacOS/gimp"`).
+- After plugin start, `session_probe` always exposes `plugin_workspace_root`,
+  `host_workspace_root`, and `workspace_root_mismatch`.
+
+Architecture detail: [architecture.md](architecture.md) (dual-env section).
+
 ## Workspace jail
 
 | Variable | Role |
@@ -104,9 +152,11 @@ folder exists.
 | `GIMP_WORKSPACE_ROOT` | Path jail root for open/save/export and dual-delivery snapshot writes |
 
 - **Required** for file tools (fail-closed when unset).
+- For **plugin** path ops, the variable must be set on the **GIMP process**
+  (launcher / launch-gui), not only on the host MCP spawn.
 - Snapshot dual-delivery writes go under
-  `{GIMP_WORKSPACE_ROOT}/.gimp-mcp-tmp/snapshots/` when the workspace is set
-  (default write on). See [SECURITY.md](../SECURITY.md) residuals and
+  `{GIMP_WORKSPACE_ROOT}/.gimp-mcp-tmp/snapshots/` when the **host** workspace
+  is set (default write on). See [SECURITY.md](../SECURITY.md) residuals and
   [performance.md](performance.md).
 
 ---
@@ -119,7 +169,19 @@ folder exists.
 | **Advanced** | `GIMP_MCP_ADVANCED_TOOLS=1` on the **host stdio MCP process** | Full ~90-tool surface |
 
 After flipping `GIMP_MCP_ADVANCED_TOOLS`, restart the **MCP server process and
-the LLM client session** (clients cache `list_tools`).
+the LLM client session** (clients cache `list_tools`). Product cannot hot-respawn
+Grok/Claude stdio hosts from inside chat — start a **new client session**.
+
+### Dual MCP servers (optional pattern)
+
+Some clients (e.g. Grok) can declare two server blocks:
+
+- `[mcp_servers.gimp]` — HL default (`enabled = true`, no advanced env)
+- `[mcp_servers.gimp-advanced]` — `GIMP_MCP_ADVANCED_TOOLS=1` (prefer
+  `enabled = false` until needed)
+
+**Prefer one enabled at a time** (overlapping tools / prefixes). See
+[adapters/grok/](../adapters/grok/).
 
 `call_api` / plugin exec still require `GIMP_MCP_ALLOW_EXEC=1` separately — do
 not enable for untrusted agents. Details: [SECURITY.md](../SECURITY.md).
@@ -162,7 +224,9 @@ see **[ci-and-testing.md § Branch-protection checklist](ci-and-testing.md#branc
 |---------|--------|
 | Could not connect | Plugin started? Image open? Port 9877 free? Token file present? |
 | Plugin missing under Tools | 10/10 ship files? Correct GIMP version plug-ins dir? Restart GIMP? |
-| PATH_DENIED | `GIMP_WORKSPACE_ROOT` set and path under that root? |
+| PATH_DENIED (plugin / checkpoint) | Is `GIMP_WORKSPACE_ROOT` set on the **GIMP process**? Launch via `launch-gui` / `scripts/launch-gimp.*`; confirm log `[MCP] Workspace root:` and `session_probe.plugin_workspace_root` |
+| PATH_DENIED (host dual-delivery) | Is `GIMP_WORKSPACE_ROOT` set on the **host** MCP process (client config)? Path under that root? |
+| workspace_root_mismatch true | Host and plugin roots both set but differ — align paths or re-launch GIMP with the intended root |
 | EXEC_DISABLED | Typed tools only by default — do not expect `call_api` without ALLOW_EXEC |
 | TIMEOUT | Host command wall-clock; raise carefully via envs in performance.md |
 

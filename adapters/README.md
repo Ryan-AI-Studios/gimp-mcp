@@ -56,10 +56,13 @@ Rules:
 ## Prerequisites
 
 1. Install plugin: `uv run gimp-agent install` then fully quit/relaunch GIMP.
-2. Open GIMP → **Tools → MCP → Start MCP Server**.
-3. Set `GIMP_WORKSPACE_ROOT` to the project image workspace (path jail).
-4. Optional doctor: `uv run gimp-agent doctor --strict` (and `--json` for automation).
-5. Skills: `uv run gimp-agent skills install --target <skills-root>` (see 0020 package).
+2. **Plugin-process workspace root:** launch GIMP with
+   `uv run gimp-agent launch-gui --workspace <path>` (or `scripts/launch-gimp.*`).
+   Host `GIMP_WORKSPACE_ROOT` in client config does **not** set the plugin jail.
+3. Open GIMP → **Tools → MCP → Start MCP Server**.
+4. Set host `GIMP_WORKSPACE_ROOT` in client config for dual-delivery (path jail helpers).
+5. Optional doctor: `uv run gimp-agent doctor --strict` (and `--json` for automation).
+6. Skills: `uv run gimp-agent skills install --target <skills-root>` (see skills package).
 
 ## Image dual-delivery (agents)
 

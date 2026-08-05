@@ -9,7 +9,7 @@ defaults:
 | Session auth | Per-message `"auth"` token (env or auto-generated file) |
 | Class A exec | Plugin `cmds` / `python-fu-eval` / `python-fu-exec` **off** |
 | Class B exec | MCP `call_api` **hard-fails** unless `GIMP_MCP_ALLOW_EXEC=1` |
-| Path jail | All param-driven open/save/export under `GIMP_WORKSPACE_ROOT` |
+| Path jail | All param-driven open/save/export under `GIMP_WORKSPACE_ROOT` (plugin process for plugin path ops) |
 | Errors | Structured envelope + `code`; ToolError single-line wire; no traceback unless `GIMP_MCP_DEBUG` |
 | Audit | Split JSONL: `audit-server.jsonl` + `audit-plugin.jsonl` (join by `request_id`; not a secret, not tamper-evident) |
 
@@ -46,7 +46,7 @@ References:
 | `GIMP_MCP_PORT` | Port | `9877` |
 | `GIMP_MCP_TOKEN` | Shared secret | env, else generated file |
 | `GIMP_MCP_TOKEN_FILE` | Override token path | platform default below |
-| `GIMP_WORKSPACE_ROOT` | Path jail root | **required** for file ops (fail-closed) |
+| `GIMP_WORKSPACE_ROOT` | Path jail root (see dual-env note) | **required** for file ops (fail-closed) |
 | `GIMP_MCP_ALLOW_EXEC` | Class A + Class B exec | **off** |
 | `GIMP_MCP_ALLOW_NON_LOOPBACK` | Non-loopback bind | **off** |
 | `GIMP_MCP_DEBUG` | Tracebacks + verbose diagnostics only (never a policy bypass) | **off** |
@@ -81,6 +81,17 @@ Audit default (split files — avoids Windows sharing locks):
 - **Never** log tokens, auth secrets, or file bytes.
 - Host does **not** call `traceback.print_exc()` on expected tool failures unless `GIMP_MCP_DEBUG=1`.
 
+## Path jail dual-env (plugin process)
+
+The workspace path jail for **plugin** open/save/export/checkpoint is enforced
+inside the **GIMP plugin process**, using `GIMP_WORKSPACE_ROOT` as seen by that
+process (how GIMP was launched). Host MCP client config sets a separate host
+world (dual-delivery helpers, host path checks) and does **not** inject env into
+already-running GIMP. Launch with `uv run gimp-agent launch-gui --workspace …`
+or `scripts/launch-gimp.*`, then confirm `session_probe.plugin_workspace_root`.
+See [docs/operator-runbook.md#dual-env](docs/operator-runbook.md#dual-env) and
+[docs/architecture.md](docs/architecture.md).
+
 ## Start order
 
 1. Install **10 files** into the GIMP plug-ins folder (same directory):
@@ -90,7 +101,9 @@ Audit default (split files — avoids Windows sharing locks):
    and `gimp_mcp_tx.py`
    (NDE + agent undo TX helpers; shared install set matches
    `EXPECTED_PLUGIN_FILES` / README).
-2. Set `GIMP_WORKSPACE_ROOT` (and optional `GIMP_MCP_TOKEN`) for the GIMP process if needed.
+2. Set `GIMP_WORKSPACE_ROOT` on the **GIMP process** (launcher / `launch-gui`;
+   optional `GIMP_MCP_TOKEN` override) — host-only env is not enough for plugin
+   path ops.
 3. Start GIMP → **Tools → MCP → Start MCP Server** (writes/reads token file, binds `127.0.0.1`).
 4. Start MCP client / `gimp_mcp_server.py` (lazy token load with retry if file appears late).
 

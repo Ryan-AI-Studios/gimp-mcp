@@ -49,7 +49,8 @@ tree). This package is for *running* image work.
 ## Hard safety
 
 - No Class A plugin exec / arbitrary code execution paths.
-- TCP **loopback** only; workspace jail (`GIMP_WORKSPACE_ROOT`).
+- TCP **loopback** only; workspace jail (`GIMP_WORKSPACE_ROOT` on the **GIMP
+  process** for plugin path ops — host MCP env alone is not enough).
 - No `python-fu-eval` product path.
 - Headless uses `plug-in-gimp-mcp-batch` only.
 
