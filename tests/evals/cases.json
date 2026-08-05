@@ -1,0 +1,423 @@
+{
+  "schema_version": 1,
+  "description": "Product evaluation corpus: design competency rows mapped to offline/structure asserts or residual modes. Equal-case weight within category; category weights sum 100.",
+  "cases": [
+    {
+      "id": "E-COORDS-NORMALIZE",
+      "design_ref": "CGPT-01",
+      "category": "orientation_coords",
+      "weight_category": 10,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_coords.py::test_plan_normalize_assume_no_ops",
+        "tests/test_coords.py::test_plan_normalize_trust_tag_ops"
+      ],
+      "notes": "EXIF open/normalize pure plan ops."
+    },
+    {
+      "id": "E-COMPOSITE-STRUCTURE",
+      "design_ref": "CGPT-02",
+      "category": "layer_preservation",
+      "weight_category": 15,
+      "mode": "structure",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_snapshot_composite.py::test_bitmap_method_uses_duplicate_and_merge",
+        "tests/test_snapshot_composite.py::test_bitmap_method_no_single_layer_edit_copy"
+      ],
+      "notes": "Two-layer composite snapshot: merge-visible structure greps. Live pixel projection = residual."
+    },
+    {
+      "id": "E-CGPT-03-HIDE-LAYER",
+      "design_ref": "CGPT-03",
+      "category": "layer_preservation",
+      "weight_category": 15,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Hide layer snapshot needs live GIMP projection; not offline-provable."
+    },
+    {
+      "id": "E-CGPT-04-LAYER-MASK",
+      "design_ref": "CGPT-04",
+      "category": "layer_preservation",
+      "weight_category": 15,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Layer mask visual truth requires live GIMP."
+    },
+    {
+      "id": "E-ALPHA-PNG",
+      "design_ref": "CGPT-05-06",
+      "category": "pixel_metadata",
+      "weight_category": 25,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_verify.py::test_alpha_stats_rgba",
+        "tests/test_export_alpha.py::test_png_ihdr_rgba8"
+      ],
+      "notes": "BG remove / PNG alpha fixture stats + IHDR RGBA8 (CGPT rows 5–6)."
+    },
+    {
+      "id": "E-EXPORT-ALPHA-STRUCTURE",
+      "design_ref": "Google-alpha",
+      "category": "pixel_metadata",
+      "weight_category": 25,
+      "mode": "structure",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_export_alpha.py::test_export_path_no_silent_png_format_fallback",
+        "tests/test_export_alpha.py::test_export_image_default_flatten_false"
+      ],
+      "notes": "No silent PNG format fallback; flatten default false."
+    },
+    {
+      "id": "E-CGPT-07-TEXT-LAYER",
+      "design_ref": "CGPT-07",
+      "category": "layer_preservation",
+      "weight_category": 15,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Text layer reopen (XCF) needs live GIMP."
+    },
+    {
+      "id": "E-CGPT-08-DUP-LAYER-NAMES",
+      "design_ref": "CGPT-08",
+      "category": "recoverability",
+      "weight_category": 10,
+      "mode": "offline",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/test_handles.py::test_fingerprint_excludes_name",
+        "tests/test_handles.py::test_require_item_handle_valid"
+      ],
+      "notes": "Duplicate layer names: handles identify by id/fingerprint not display name."
+    },
+    {
+      "id": "E-CGPT-09-NESTED-GROUPS",
+      "design_ref": "CGPT-09",
+      "category": "layer_preservation",
+      "weight_category": 15,
+      "mode": "structure",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/test_export_alpha.py::test_preflight_has_alpha_walks_groups_recursively"
+      ],
+      "notes": "Nested groups: recursive alpha walk structure; full tree live residual."
+    },
+    {
+      "id": "E-CGPT-10-SOURCE-IMMUTABLE",
+      "design_ref": "CGPT-10",
+      "category": "layer_preservation",
+      "weight_category": 15,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_layer_policy.py::test_source_immutable_constants",
+        "tests/test_layer_policy.py::test_is_working_layer_name"
+      ],
+      "notes": "Source immutable policy constants + working-layer name rules."
+    },
+    {
+      "id": "E-CGPT-11-SAVE-XCF",
+      "design_ref": "CGPT-11",
+      "category": "recoverability",
+      "weight_category": 10,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Save/reopen XCF requires live GIMP."
+    },
+    {
+      "id": "E-CGPT-12-EXPORT-JPEG",
+      "design_ref": "CGPT-12",
+      "category": "pixel_metadata",
+      "weight_category": 25,
+      "mode": "structure",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/test_export_alpha.py::test_format_capability_matrix",
+        "tests/test_export_alpha.py::test_policy_jpeg_auto_no_alpha"
+      ],
+      "notes": "JPEG export format map structure (no alpha). Live encode residual."
+    },
+    {
+      "id": "E-BATCH-SMALL",
+      "design_ref": "CGPT-13-14",
+      "category": "portability",
+      "weight_category": 3,
+      "mode": "structure",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/evals/test_eval_cases.py::test_batch_small_validate_job_five_steps",
+        "tests/evals/test_eval_cases.py::test_batch_procedure_name_and_interpreter"
+      ],
+      "notes": "CLI resize / process many: validate_job ≤5 GIMP steps + procedure/interpreter flags only. Actual ≤5-image host run = live_residual; 100-image batch residual."
+    },
+    {
+      "id": "E-CGPT-15-FILENAME-SPACES",
+      "design_ref": "CGPT-15",
+      "category": "portability",
+      "weight_category": 3,
+      "mode": "offline",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/evals/test_eval_cases.py::test_filename_spaces_under_workspace"
+      ],
+      "notes": "Filename with spaces accepted under workspace jail; outside denied."
+    },
+    {
+      "id": "E-CGPT-16-UNICODE-FILENAME",
+      "design_ref": "CGPT-16",
+      "category": "portability",
+      "weight_category": 3,
+      "mode": "offline",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/evals/test_eval_cases.py::test_unicode_filename_under_workspace"
+      ],
+      "notes": "Unicode filename under workspace path jail."
+    },
+    {
+      "id": "E-CGPT-17-LONG-PATH",
+      "design_ref": "CGPT-17",
+      "category": "portability",
+      "weight_category": 3,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Long Windows path edge cases: fail-closed or residual; not fully automated offline."
+    },
+    {
+      "id": "E-CGPT-18-INVALID-PARAM",
+      "design_ref": "CGPT-18",
+      "category": "recoverability",
+      "weight_category": 10,
+      "mode": "offline",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/test_coords.py::test_validate_declaration_rejects_bad",
+        "tests/test_atomic_io.py::test_parse_collision_invalid_raises"
+      ],
+      "notes": "Invalid parameter / schema fail-closed (POLICY or ValueError)."
+    },
+    {
+      "id": "E-CGPT-19-CONNECTION-INTERRUPT",
+      "design_ref": "CGPT-19",
+      "category": "recoverability",
+      "weight_category": 10,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Connection interrupt needs live TCP path."
+    },
+    {
+      "id": "E-HANDLE-STALE",
+      "design_ref": "CGPT-20",
+      "category": "recoverability",
+      "weight_category": 10,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_handles.py::test_require_image_handle_stale_gen"
+      ],
+      "notes": "STALE_HANDLE pure registry."
+    },
+    {
+      "id": "E-PIXEL-IDENTICAL",
+      "design_ref": "CGPT-21",
+      "category": "determinism",
+      "weight_category": 8,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_verify.py::test_identical_mae_zero",
+        "tests/test_verify.py::test_require_mutation_fails_identical"
+      ],
+      "notes": "Silent no-op: identical MAE=0; require_mutation fails."
+    },
+    {
+      "id": "E-PIXEL-DELTA",
+      "design_ref": "CGPT-22",
+      "category": "pixel_metadata",
+      "weight_category": 25,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_verify.py::test_one_pixel_change"
+      ],
+      "notes": "Before/after diff: opaque vs delta MAE>0."
+    },
+    {
+      "id": "E-CGPT-23-LARGE-PERF",
+      "design_ref": "CGPT-23",
+      "category": "speed",
+      "weight_category": 4,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Large image perf methodology in docs/performance.md; optional @slow micro-bench only."
+    },
+    {
+      "id": "E-CGPT-24-OVERWRITE-DENIED",
+      "design_ref": "CGPT-24",
+      "category": "security",
+      "weight_category": 15,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_atomic_io.py::test_resolve_fail_existing_raises_output_collision",
+        "tests/test_atomic_io.py::test_parse_collision_default_fail"
+      ],
+      "notes": "Overwrite denied by default collision=fail."
+    },
+    {
+      "id": "E-SEC-PATH-TRAVERSAL",
+      "design_ref": "CGPT-25",
+      "category": "security",
+      "weight_category": 15,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_security_policy.py::test_path_jail_dotdot_escape",
+        "tests/test_security_policy.py::test_path_jail_outside_absolute"
+      ],
+      "notes": "External path / .. traversal denied (Google critical)."
+    },
+    {
+      "id": "E-SEC-EXEC",
+      "design_ref": "CGPT-26",
+      "category": "security",
+      "weight_category": 15,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_security_policy.py::test_exec_allowed_default_off",
+        "tests/test_security_policy.py::test_class_a_exec_disabled_envelope"
+      ],
+      "notes": "Class A arbitrary Python exec disabled by default."
+    },
+    {
+      "id": "E-SEC-BIND",
+      "design_ref": "0003-bind",
+      "category": "security",
+      "weight_category": 15,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_security_policy.py::test_assert_bind_host_rejects_non_loopback"
+      ],
+      "notes": "Non-loopback bind denied."
+    },
+    {
+      "id": "E-CGPT-27-BATCH-FALLBACK",
+      "design_ref": "CGPT-27",
+      "category": "tool_token_efficiency",
+      "weight_category": 3,
+      "mode": "structure",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/test_recipes.py::test_batch_safe_plugin_down_headless_fallback"
+      ],
+      "notes": "MCP unavailable → batch_safe headless fallback structure."
+    },
+    {
+      "id": "E-CGPT-28-CLI-MCP-REORIENT",
+      "design_ref": "CGPT-28",
+      "category": "orientation_coords",
+      "weight_category": 10,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "CLI→MCP reorient hybrid path needs live GIMP."
+    },
+    {
+      "id": "E-CGPT-29-PREVIEW-MAP",
+      "design_ref": "CGPT-29",
+      "category": "orientation_coords",
+      "weight_category": 10,
+      "mode": "offline",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/test_coords.py::test_preview_to_image_full_canvas",
+        "tests/test_snapshot_mapping.py::test_build_mapping_full_canvas_scales"
+      ],
+      "notes": "Preview coordinate mapping pure helpers."
+    },
+    {
+      "id": "E-CGPT-30-REFINEMENT",
+      "design_ref": "CGPT-30",
+      "category": "visual_quality",
+      "weight_category": 7,
+      "mode": "oos_agent",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Repeated agent refinement / human visual beauty scoring is oos_agent (refine unit exists but agent loop is OOS)."
+    },
+    {
+      "id": "E-VERIFY-BUDGET",
+      "design_ref": "0014-budget",
+      "category": "pixel_metadata",
+      "weight_category": 25,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_verify.py::test_pixel_budget_policy_denied",
+        "tests/test_verify.py::test_file_size_budget_policy_denied"
+      ],
+      "notes": "Pixel/file size verify budgets only (M7; not snapshot edge)."
+    },
+    {
+      "id": "E-SNAPSHOT-BUDGET",
+      "design_ref": "0023-budget",
+      "category": "speed",
+      "weight_category": 4,
+      "mode": "offline",
+      "gate": "informational",
+      "test_nodeids": [
+        "tests/test_snapshot_budget.py::test_default_box",
+        "tests/test_snapshot_budget.py::test_explicit_512_and_clamp_8000",
+        "tests/test_snapshot_budget.py::test_env_override_default_and_hard"
+      ],
+      "notes": "Snapshot max-edge resolve / hard cap (M7; no shared nodeids with E-VERIFY-BUDGET)."
+    },
+    {
+      "id": "E-RECIPE-CATALOG",
+      "design_ref": "0015-recipes",
+      "category": "tool_token_efficiency",
+      "weight_category": 3,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/evals/test_eval_cases.py::test_recipe_catalog_transparent_png_and_web_export"
+      ],
+      "notes": "transparent-png + web-export listed in package recipes."
+    },
+    {
+      "id": "E-OFFLINE-GOLDEN",
+      "design_ref": "0022-e2e",
+      "category": "determinism",
+      "weight_category": 8,
+      "mode": "offline",
+      "gate": "release",
+      "test_nodeids": [
+        "tests/test_offline_e2e.py::test_offline_golden_path_verify_compare_recipes"
+      ],
+      "notes": "Single offline golden-path (L5)."
+    },
+    {
+      "id": "E-VISUAL-QUALITY-RESIDUAL",
+      "design_ref": "Google-visual",
+      "category": "visual_quality",
+      "weight_category": 7,
+      "mode": "live_residual",
+      "gate": "informational",
+      "test_nodeids": [],
+      "notes": "Human/agent visual quality is residual; not LLM beauty scoring in CI."
+    }
+  ]
+}

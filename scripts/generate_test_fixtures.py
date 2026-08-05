@@ -5,7 +5,7 @@ Deterministic stdlib PNGs (no Pillow / GIMP). Re-run after changing pixel layout
 
     uv run python scripts/generate_test_fixtures.py
 
-0025 owns corpus growth; this script ships the 0022 min-set only.
+Min-set only; eval corpus growth is scripts/generate_eval_fixtures.py.
 """
 
 from __future__ import annotations
