@@ -206,7 +206,7 @@ the original 0001–0028 fence; full plan pass before implement. Suggested order
 | Track | Status | Why |
 |---|---|---|
 | **0029** DualEnvWorkspaceLaunch | **Completed** (PR #44 / main@aa375e1) | Dual-env docs; `gimp-agent launch-gui` + scripts; session_probe plugin/host roots; doctor **message only**; dual-server adapters; Claude PASS CLEAN |
-| **0030** HlCutoutSelectionHelpers | **Completed** (pending PR merge) | HL **30**: `clear_selection_to_transparent` + `get_selection_bounds`; empty → `SELECTION_EMPTY`; skill protocol; Claude PASS WITH DEFERRED P3 |
+| **0030** HlCutoutSelectionHelpers | **Completed** (PR #45 / main@6c38194) | HL **30**: `clear_selection_to_transparent` + `get_selection_bounds`; empty → `SELECTION_EMPTY`; skill protocol; Claude PASS WITH DEFERRED P3 |
 | **0031** PngExportDrawableHardening | Placeholder | Live `EXPORT_FAILED` / `file-png-export` drawable property failures |
 | **0032** SubjectIsolationPipeline | Placeholder | Optional host rembg/subject path + typed fuzzy select; **not** required dep / Class A |
 
@@ -220,14 +220,14 @@ always emits `plugin_workspace_root` / `host_workspace_root` / `workspace_root_m
 doctor honesty **messages only**; Grok commented advanced; pins held; EXPECTED 10
 unchanged.
 
-**0030 Completed (2026-08-05):** Default HL can select but not clear to transparent.
-**Shipped:** `get_selection_bounds` (HL, **single-tag**, handle-aware host+plugin) +
-`clear_selection_to_transparent` (HL; `SELECTION_EMPTY` via prefer `Selection.is_empty`;
-mandatory `add_alpha`; Source_Immutable via policy); harden advanced transparent
-`fill_selection` empty path; catalog **30**; skill cutout protocol. **Declined:**
-unrestricted fill/invert/modify; color-remove recipe; `max_coverage_fraction` params;
-dual-tag tools. Claude PASS WITH DEFERRED P3 (Codex rate-limited). Pins hold. OOS:
-**0031** export, **0032** rembg. **Next:** full plan then **0031** (or operator demand).
+**0030 Completed (2026-08-05; PR #45 / main@6c38194):** Default HL can select but not
+clear to transparent. **Shipped:** `get_selection_bounds` (HL, **single-tag**, handle-aware
+host+plugin) + `clear_selection_to_transparent` (HL; `SELECTION_EMPTY` via prefer
+`Selection.is_empty`; mandatory `add_alpha`; Source_Immutable via policy); harden advanced
+transparent `fill_selection` empty path; catalog **30**; skill cutout protocol.
+**Declined:** unrestricted fill/invert/modify; color-remove recipe; `max_coverage_fraction`
+params; dual-tag tools. Claude PASS WITH DEFERRED P3 (Codex rate-limited). Pins hold.
+OOS: **0031** export, **0032** rembg. **Next:** full plan then **0031** (or operator demand).
 
 ---
 
