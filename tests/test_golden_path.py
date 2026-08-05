@@ -2,15 +2,19 @@
 
 No GIMP process required. Guards docs anchors, wire-name honesty, Class A bans,
 cross-links, and the optional @integration live consumer marker (M3).
+Also covers dry-run fail-closed contracts (M1/M2/L5) and optional L4 mapping.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,6 +25,16 @@ LIVE_TEST_CANDIDATES = (
     ROOT / "tests" / "test_golden_path.py",
     ROOT / "tests" / "test_golden_path_live.py",
 )
+
+
+def _load_smoke_module() -> Any:
+    """Import scripts/golden_path_smoke.py as a module for pure helper unit tests."""
+    spec = importlib.util.spec_from_file_location("golden_path_smoke_under_test", SMOKE_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
 
 REQUIRED_WIRES = (
     "open_image",
@@ -238,6 +252,109 @@ def test_smoke_dry_run_exit_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert "evidence.json" not in out or "dry" in out.lower()
 
 
+def test_smoke_dry_run_missing_workspace_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M1: dry-run without workspace (env unset, no --workspace) fails non-zero."""
+    monkeypatch.delenv("GIMP_WORKSPACE_ROOT", raising=False)
+    monkeypatch.delenv("GIMP_MCP_LIVE", raising=False)
+    env = {k: v for k, v in os.environ.items() if k not in ("GIMP_WORKSPACE_ROOT", "GIMP_MCP_LIVE")}
+    proc = subprocess.run(
+        [sys.executable, str(SMOKE_SCRIPT), "--dry-run", "--json"],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode != 0, (
+        f"expected non-zero without workspace; stdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    assert (
+        "PATH_DENIED" in combined
+        or "Workspace required" in combined
+        or "workspace" in combined.lower()
+    )
+    # JSON envelope when --json
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    if payload:
+        assert payload.get("ok") is False
+        assert payload.get("exit_code", 0) != 0
+        assert (
+            payload.get("code") == "PATH_DENIED"
+            or "workspace" in str(payload.get("message", "")).lower()
+        )
+
+
+def test_smoke_out_dir_outside_workspace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M2: --out-dir absolute path outside workspace jail → PATH_DENIED."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside-out"
+    outside.mkdir()
+    monkeypatch.setenv("GIMP_WORKSPACE_ROOT", str(ws))
+    monkeypatch.delenv("GIMP_MCP_LIVE", raising=False)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(SMOKE_SCRIPT),
+            "--dry-run",
+            "--json",
+            "--workspace",
+            str(ws),
+            "--out-dir",
+            str(outside),
+        ],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "GIMP_WORKSPACE_ROOT": str(ws)},
+    )
+    assert proc.returncode != 0, (
+        f"expected PATH_DENIED for out-dir outside jail; stdout={proc.stdout}\nstderr={proc.stderr}"
+    )
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    assert "PATH_DENIED" in combined
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    if payload:
+        assert payload.get("ok") is False
+        assert payload.get("code") == "PATH_DENIED"
+
+
+def test_clamp_timeout_bounds() -> None:
+    """L5: --timeout clamp 5-600 via pure helper."""
+    smoke = _load_smoke_module()
+    assert smoke._clamp_timeout(1) == 5.0
+    assert smoke._clamp_timeout(999) == 600.0
+    assert smoke._clamp_timeout(9999) == 600.0
+    assert smoke._clamp_timeout(60) == 60.0
+    assert smoke._clamp_timeout(5) == 5.0
+    assert smoke._clamp_timeout(600) == 600.0
+
+
+def test_map_exception_auth_failed_exit_4() -> None:
+    """L4: AUTH_FAILED RuntimeError maps to transport/auth exit 4."""
+    smoke = _load_smoke_module()
+    import gimp_mcp_security as sec
+    from gimp_agent import exit_codes as ec
+
+    code, exit_n, message = smoke._map_exception(
+        RuntimeError(f"{sec.CODE_AUTH_FAILED}: token missing")
+    )
+    assert code == sec.CODE_AUTH_FAILED
+    assert exit_n == ec.EXIT_TRANSPORT_AUTH
+    assert exit_n == 4
+    assert "AUTH_FAILED" in message
+
+
 # ---------------------------------------------------------------------------
 # Optional live integration (skipped without GIMP_MCP_LIVE=1)
 # ---------------------------------------------------------------------------
@@ -273,13 +390,27 @@ def test_golden_path_live_smoke_evidence() -> None:
     )
     evidence_path = out_dir / "evidence.json"
     assert evidence_path.is_file(), f"missing evidence.json under {out_dir}"
-    import json
 
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence.get("schema_version") == 1
     assert evidence.get("overall") == "PASS"
     arts = evidence.get("artifacts") or {}
+
     export_png = arts.get("export_png")
-    assert export_png and Path(export_png).is_file()
+    assert export_png and Path(str(export_png)).is_file(), "artifacts.export_png must exist"
+
+    composite_png = arts.get("composite_png")
+    assert composite_png and Path(str(composite_png)).is_file(), (
+        "artifacts.composite_png must exist as a file"
+    )
+
+    xcf = arts.get("xcf")
+    assert xcf and Path(str(xcf)).is_file(), "artifacts.xcf must exist as a file"
+
+    checkpoint = arts.get("checkpoint")
+    assert checkpoint and str(checkpoint).strip(), "artifacts.checkpoint path must be non-empty"
+    ck_path = Path(str(checkpoint))
+    assert ck_path.is_file(), f"artifacts.checkpoint must exist as a file: {ck_path}"
+
     ev = evidence.get("export_verification") or {}
     assert ev.get("pass") is True

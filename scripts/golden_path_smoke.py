@@ -396,7 +396,9 @@ def run_live(
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        # Ensure host + plugin see the same jail
+        # Host-side workspace for local path ops only. Plugin jail is fixed at MCP
+        # server start in the GIMP process — operators must set GIMP_WORKSPACE_ROOT
+        # before start-order (this env write does not update a running plugin).
         os.environ[sec.ENV_WORKSPACE] = str(workspace)
 
         fixture = _fixture_path()
@@ -431,24 +433,30 @@ def run_live(
         )
         open_results = _require_success(open_raw, "open_image")
         handle = open_results.get("handle")
-        if handle is None and open_results.get("image_id") is not None:
-            # Fallback: image_index 0 after open
-            handle = None
+        if handle is None:
+            record(2, "open", False, sec.CODE_INVALID_HANDLE)
+            raise RuntimeError(f"{sec.CODE_INVALID_HANDLE}: open_image returned no handle")
         record(2, "open", True)
 
+        # Retain open_image handle for subsequent steps (orient has no top-level handle)
         hp = _handle_params(handle)
 
-        # 3. Orient
+        # 3. Orient — assert open image(s) present (spec §2.5 step 3)
         orient_raw = send_authenticated_command(
             "orient_workspace",
             {**hp},
             timeout=timeout,
         )
         orient_results = _require_success(orient_raw, "orient_workspace")
-        # Prefer handle from orient if present
-        if isinstance(orient_results.get("handle"), dict):
-            handle = orient_results["handle"]
-            hp = _handle_params(handle)
+        images = orient_results.get("images")
+        has_images = isinstance(images, list) and len(images) > 0
+        if not has_images:
+            # Fail-closed: orient success with empty images is not a usable workspace
+            record(3, "orient", False, sec.CODE_INVALID_HANDLE)
+            raise RuntimeError(
+                f"{sec.CODE_INVALID_HANDLE}: orient_workspace returned no open images "
+                "(assert handles / image present)"
+            )
         record(3, "orient", True)
 
         # 4. Protect
@@ -460,7 +468,7 @@ def run_live(
         _require_success(protect_raw, "ensure_source_immutable")
         record(4, "protect", True)
 
-        # 5. Checkpoint (persisted XCF — M5)
+        # 5. Checkpoint (persisted XCF — M5); only record path when file exists
         ck_raw = send_authenticated_command(
             "checkpoint_create",
             {**hp, "label": CHECKPOINT_LABEL, "overwrite": True},
@@ -470,12 +478,19 @@ def run_live(
         ck_path = (
             ck_results.get("xcf_path") or ck_results.get("file_path") or ck_results.get("path")
         )
-        if ck_path:
+        if ck_path and Path(str(ck_path)).is_file():
             artifacts["checkpoint"] = str(ck_path)
         else:
-            # Convention: workspace/.gimp-mcp-checkpoints/<label>/project.xcf
+            # Convention fallback only when the guessed file actually exists
             guess = workspace / ".gimp-mcp-checkpoints" / CHECKPOINT_LABEL / "project.xcf"
-            artifacts["checkpoint"] = str(guess)
+            if guess.is_file():
+                artifacts["checkpoint"] = str(guess)
+        if not artifacts["checkpoint"]:
+            record(5, "checkpoint", False, sec.CODE_VERIFY_FAILED)
+            raise RuntimeError(
+                f"{sec.CODE_VERIFY_FAILED}: checkpoint_create succeeded but no "
+                "checkpoint file path on disk"
+            )
         record(5, "checkpoint", True)
 
         # 6. Optional selection no-op (wire select_all / select_none only)
@@ -493,9 +508,17 @@ def run_live(
             )
             _require_success(sel_none, "select_none")
             record(6, "optional_selection", True)
+        except sec.SecurityError:
+            raise
+        except (ConnectionError, OSError, TimeoutError):
+            raise
         except Exception as sel_exc:
+            # Re-raise hard transport/auth failures; swallow soft selection policy only
+            text = str(sel_exc)
+            if sec.CODE_AUTH_FAILED in text or sec.CODE_CONNECTION_FAILED in text:
+                raise
             record(6, "optional_selection", False, type(sel_exc).__name__)
-            # Non-fatal: continue; light edit primary is ensure+checkpoint
+            # Non-fatal soft failure: light edit primary is ensure+checkpoint
 
         # 7. Composite via get_image_bitmap only (H2/H3)
         bmp_raw = send_authenticated_command(
