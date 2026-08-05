@@ -155,6 +155,10 @@ def test_bitmap_method_export_validates_png() -> None:
         body,
         re.DOTALL,
     ), "drawable/drawables both-fail must not bare-pass into export run"
+    # 0031 H2 regression: never gate primary export_proc.run on drawable_set
+    assert "if drawable_set:" not in body
+    assert "export_proc.run(" in body
+    assert "export-procedure model" in body
 
 
 def test_plugin_imports_snapshot_module() -> None:

@@ -682,6 +682,16 @@ def test_export_drawable_optional_on_export_procedure() -> None:
     assert "Alpha-preserving export requires a drawable" not in body
     assert "CODE_EXPORT_FAILED" in body or "EXPORT_FAILED" in body  # true readiness
     assert "preserve_alpha" in body
+    # Regression locks (Codex P2): do not gate primary run on drawable_set
+    assert "if drawable_set:" not in body
+    # Soft-try drawable exception path must print, not pollute property_errors
+    soft_start = body.find("Soft-try drawable")
+    rgba_start = body.find("PNG RGBA8")
+    assert soft_start >= 0 and rgba_start > soft_start
+    soft_region = body[soft_start:rgba_start]
+    assert "property_errors.append" not in soft_region
+    assert "export-procedure model" in soft_region
+    assert "proc.run(" in body
 
 
 def test_pyproject_wires_export_module() -> None:
