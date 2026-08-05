@@ -54,7 +54,7 @@ Objective before/after and artifact checks so silent no-ops fail closed.
 
 | Surface | Tools / verbs |
 |---|---|
-| MCP HL (catalog **28**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe`, NDE filter tools, undo_group_* |
+| MCP HL (catalog **30**) | `compare_images`, `verify_artifact`, `list_recipes`, `apply_recipe`, NDE filter tools, undo_group_* |
 | CLI (host-only) | `gimp-agent compare`, `gimp-agent verify` |
 | Capability | `pixel_verification: true` (extension; not `_CAPABILITY_REQUIRED`) |
 | **Not** flipped | `alpha_snapshot` stays **false** (live GIMP `render_alpha` unfinished) |
@@ -94,9 +94,10 @@ PDB names: only `file-png-export` / `file-jpeg-export` / `file-webp-export` / `f
 
 ## Available MCP Tools
 
-> **Default surface (0010 + 0014 + 0015 + 0016 + 0017):** hosts list **28** high-level tools unless
+> **Default surface (0010 + 0014 + 0015 + 0016 + 0017 + 0030):** hosts list **30** high-level tools unless
 > `GIMP_MCP_ADVANCED_TOOLS=1`. Prefer design names: `session_probe`,
 > `render_visible_composite` (alias of the composite path below), `create_selection`,
+> `get_selection_bounds`, `clear_selection_to_transparent`,
 > `orient_workspace`, `apply_nde_filter` / `edit_filter_config` / `remove_nde_filter`.
 > Legacy names such as `get_image_bitmap` / `check_server` remain available in
 > **advanced** mode only.
@@ -267,7 +268,7 @@ Versioned allowlisted multi-step pipelines so agents run few-decision workflows.
 
 | Surface | API |
 |---|---|
-| MCP HL (catalog **28**) | `list_recipes`, `apply_recipe` (+ NDE + undo_group tools) |
+| MCP HL (catalog **30**) | `list_recipes`, `apply_recipe` (+ NDE + undo_group tools) |
 | CLI | `gimp-agent recipes` / `run` / `batch` |
 | Module | `gimp_mcp_recipes.py` (host pure; not EXPECTED plug-in ship) |
 | Package data | `gimp_agent/recipes/*.json` via `importlib.resources` |
@@ -281,7 +282,7 @@ tools always call `update()` + `displays_flush()` before return.
 
 | Surface | API |
 |---|---|
-| MCP HL (catalog **28**) | `apply_nde_filter`, `edit_filter_config`, `remove_nde_filter` (+ TX tools) |
+| MCP HL (catalog **30**) | `apply_nde_filter`, `edit_filter_config`, `remove_nde_filter` (+ TX tools) |
 | MCP advanced | `list_drawable_filters` (read-only), `merge_nde_filters` (destructive bake) |
 | Module | `gimp_mcp_filters.py` (**9th** EXPECTED plug-in ship file + host py-module) |
 | Capability | `nde_filters: true` (extension; not `_CAPABILITY_REQUIRED`) |
@@ -403,7 +404,7 @@ Atomic multi-step edit transactions via GIMP `image.undo_group_start/end`.
 
 | Surface | API |
 |---|---|
-| MCP HL (catalog **28**) | `undo_group_begin`, `undo_group_end`, `undo_group_rollback` |
+| MCP HL (catalog **30**) | `undo_group_begin`, `undo_group_end`, `undo_group_rollback` |
 | MCP advanced | `undo_group_status`, `undo_group_force_close` (+ step `undo`/`redo`) |
 | Module | `gimp_mcp_tx.py` (**10th** EXPECTED plug-in ship file) |
 | Capability | `undo_group_transactions: true` |

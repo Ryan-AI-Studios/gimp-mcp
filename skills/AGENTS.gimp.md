@@ -13,7 +13,7 @@ When operating GIMP images with this product:
 4. `ensure_source_immutable` + `checkpoint_create` before first mutation
 5. Route: interactive → `gimp-edit`; bulk/CI → `gimp-batch`; evidence →
    `gimp-verify`; setup → `gimp-install`
-6. Prefer the 28 HL tools; advanced only with `GIMP_MCP_ADVANCED_TOOLS=1` + reason
+6. Prefer the 30 HL tools; advanced only with `GIMP_MCP_ADVANCED_TOOLS=1` + reason
 7. Re-orient after structural mutation; max 3 refine loops
 8. `save_xcf` then `export_image` separately; never sole-source overwrite
 9. Never trust status alone — verify with composite/metrics/artifacts

@@ -24,7 +24,7 @@ AI client (Claude / Grok / Codex / …)
       ▼
 gimp_mcp_server.py          ← HOST process: HL tools, verify, recipes, surface
       · GIMP_WORKSPACE_ROOT     → host dual-delivery / host path helpers
-      · GIMP_MCP_ADVANCED_TOOLS → tool catalog size (HL 28 vs ~90)
+      · GIMP_MCP_ADVANCED_TOOLS → tool catalog size (HL 30 vs ~90)
       │  TCP JSON  127.0.0.1:9877  (session auth token)
       ▼
 gimp-mcp-plugin.py          ← PLUGIN process: runs inside GIMP (PyGObject)
@@ -100,7 +100,7 @@ relaunch GIMP, then **Tools → MCP → Start MCP Server**.
 
 | Capability | What it gives you | Where to read more |
 |------------|-------------------|--------------------|
-| **Default HL surface (28 tools)** | Curated agent tools: probe, orient, open/export, selection, vision, recipes, NDE, undo groups | [hl-tool-catalog](../skills/references/hl-tool-catalog.md), [protocol](../GIMP_MCP_PROTOCOL.md) |
+| **Default HL surface (30 tools)** | Curated agent tools: probe, orient, open/export, selection/cutout, vision, recipes, NDE, undo groups | [hl-tool-catalog](../skills/references/hl-tool-catalog.md), [protocol](../GIMP_MCP_PROTOCOL.md) |
 | **Live vision** | `render_visible_composite` — visible canvas PNG + mapping (default max edge **1024**) | [performance.md](performance.md) |
 | **Workspace orientation** | `orient_workspace` state-manifest (layers, handles, capabilities) | [protocol](../GIMP_MCP_PROTOCOL.md) |
 | **Stable handles** | Bind images/layers by handle; STALE after structural mutation | [protocol](../GIMP_MCP_PROTOCOL.md) |

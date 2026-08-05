@@ -1,4 +1,4 @@
-# High-level MCP tool catalog (28)
+# High-level MCP tool catalog (30)
 
 Source of truth: `gimp_mcp_surface.HL_TOOL_NAMES`. Prefer these names. Advanced tools
 require `GIMP_MCP_ADVANCED_TOOLS=1` on the host MCP process plus a written reason.
@@ -23,6 +23,8 @@ require `GIMP_MCP_ADVANCED_TOOLS=1` on the host MCP process plus a written reaso
 | `export_image` | Atomic raster export; alpha-preserving by default for PNG |
 | `verify_alpha_channel` | Alpha preflight on open document |
 | `create_selection` | Unified selection (rectangle/ellipse/by_color/all/none) |
+| `get_selection_bounds` | Bounding rectangle of current selection (has_selection, x, y, width, height) |
+| `clear_selection_to_transparent` | Clear current selection to transparent (fail-closed on empty; Source_Immutable-aware) |
 | `compare_images` | Host PNG metrics (MAE / max AE / changed / SSIM) |
 | `verify_artifact` | Host artifact dims/format/alpha/sha256 gates |
 | `list_recipes` | Shipped versioned recipe catalog |

@@ -27,10 +27,28 @@ Interactive edit path on a live MCP session. Prefer non-destructive ops.
 | Prefer | Tools / notes |
 |--------|----------------|
 | Masks / NDE | `apply_nde_filter`, `edit_filter_config`, `remove_nde_filter` |
-| Selections | `create_selection` |
+| Selections | `create_selection` → `get_selection_bounds` → `clear_selection_to_transparent` |
 | Multi-step TX | `undo_group_begin` → … → `undo_group_end` or `undo_group_rollback` |
 | Spatial map | `map_preview_to_image`; `normalize_image_orientation` when needed |
 | Vision | `render_visible_composite` between steps (prefer `filesystem_path` if ImageContent unrendered). Full preview **1024**; intermediate **768**; detail via region **512–1024** — not full-res vision |
+
+## Cutout sequence (HL)
+
+1. `ensure_source_immutable`
+2. `checkpoint_create`
+3. `create_selection` — prefer **rectangle** / **ellipse**; use type=by_color only when
+   the color is unique and unambiguous (costume greens, soft edges, and similar
+   signatures often over-select and wipe working layers)
+4. `get_selection_bounds` — if has_selection is false, **STOP** (clear fails closed
+   with SELECTION_EMPTY); if area is huge/ambiguous, reselect or escalate
+5. `clear_selection_to_transparent` — prefer layer_handle; Source_Immutable-aware
+6. `render_visible_composite` / `export_image` / `verify_artifact`
+
+Hard subject isolation (soft ghosts, hair, complex backgrounds) remains **0032**
+(rembg / ML pipeline) — do not treat by_color + clear as a perfect cutout.
+
+Advanced remain for invert/grow/feather/border and unrestricted color/pattern
+fill (advanced surface). Do **not** enable full advanced surface just for transparent clear.
 
 ## Destructive
 

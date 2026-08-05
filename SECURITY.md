@@ -112,8 +112,8 @@ Operator checklist with install/doctor detail:
 
 ## Advanced MCP tool surface
 
-Default model-facing surface is **28 high-level tools** (including NDE filter
-and undo-group TX tools). Setting `GIMP_MCP_ADVANCED_TOOLS=1` exposes the full
+Default model-facing surface is **30 high-level tools** (including NDE filter,
+undo-group TX, and cutout selection helpers). Setting `GIMP_MCP_ADVANCED_TOOLS=1` exposes the full
 ~90-tool footgun surface (legacy filters, low-level selection primitives, `call_api`,
 etc.). After flipping this env var, restart the **stdio MCP process and the LLM
 client** — clients cache `list_tools` and will keep the old list until re-handshake.
