@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import socket
+import sys
 import time
 import traceback
 from collections.abc import Callable
@@ -864,18 +865,59 @@ def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
 mcp = create_mcp_server()
 
 
+def _normalize_workspace_path(raw: str) -> str:
+    """Best-effort normalize for host vs plugin workspace path compare."""
+    try:
+        resolved = Path(raw).resolve()
+        s = str(resolved)
+        if sys.platform == "win32" and len(s) >= 2 and s[1] == ":":
+            s = s[0].upper() + s[1:]
+        return os.path.normcase(s) if sys.platform == "win32" else s
+    except (OSError, RuntimeError, ValueError):
+        s = os.path.normpath(raw)
+        return os.path.normcase(s) if sys.platform == "win32" else s
+
+
+def _workspace_root_mismatch(
+    plugin_root: str | None,
+    host_root: str | None,
+) -> bool | None:
+    """Compare plugin and host workspace roots.
+
+    Returns:
+    - True when both non-null and normalized paths differ
+    - False when both non-null and equal
+    - None when either is null (cannot compare)
+    """
+    if plugin_root is None or host_root is None:
+        return None
+    return _normalize_workspace_path(plugin_root) != _normalize_workspace_path(host_root)
+
+
 def _probe_connection() -> dict[str, Any]:
     """Shared TCP probe of the GIMP plug-in (used by session_probe / check_server)."""
     try:
         test_conn = GimpConnection(GIMP_HOST, GIMP_PORT)
         test_conn.connect()
         result = test_conn.send_command("get_gimp_info")
-        version = result.get("results", {}).get("version", {}).get("version_method", "unknown")
+        results = result.get("results") if isinstance(result, dict) else None
+        if not isinstance(results, dict):
+            results = {}
+        version = results.get("version", {}).get("version_method", "unknown")
+        plugin_ws = results.get("workspace_root")
+        plugin_workspace_root: str | None
+        if plugin_ws is None:
+            plugin_workspace_root = None
+        elif isinstance(plugin_ws, str):
+            plugin_workspace_root = plugin_ws
+        else:
+            plugin_workspace_root = str(plugin_ws)
         return {
             "connected": True,
             "host": GIMP_HOST,
             "port": GIMP_PORT,
             "gimp_version": version,
+            "plugin_workspace_root": plugin_workspace_root,
         }
     except Exception as e:
         return {
@@ -883,6 +925,7 @@ def _probe_connection() -> dict[str, Any]:
             "host": GIMP_HOST,
             "port": GIMP_PORT,
             "error": str(e),
+            "plugin_workspace_root": None,
         }
 
 
@@ -942,7 +985,10 @@ def session_probe(
     (emits_mcp_image_content, filesystem_snapshot_write,
     client_model_visibility always ``"unknown"``, fallback, snapshot_write_env),
     snapshot_budget (default/hard max edges, region edge, command_timeout_s,
-    env_names, guidance), nonce, version_ok, and error when disconnected.
+    env_names, guidance), nonce, version_ok, dual-env workspace fields
+    (``plugin_workspace_root``, ``host_workspace_root``,
+    ``workspace_root_mismatch`` — always present; nulls when unknown),
+    and error when disconnected.
     """
     probe = _probe_connection()
     gimp_version = probe.get("gimp_version") if probe.get("connected") else None
@@ -950,12 +996,23 @@ def session_probe(
         ver: str | None = gimp_version
     else:
         ver = None
+    plugin_ws = probe.get("plugin_workspace_root")
+    plugin_workspace_root: str | None = plugin_ws if isinstance(plugin_ws, str) else None
+    host_ws = sec.workspace_root()
+    host_workspace_root: str | None = str(host_ws) if host_ws is not None else None
     out = {
         **probe,
         **_surface_probe_fields(
             nonce=nonce,
             min_plugin_version=min_plugin_version,
             gimp_version=ver,
+        ),
+        # Dual-env honesty: always present for deterministic agent parse
+        "plugin_workspace_root": plugin_workspace_root,
+        "host_workspace_root": host_workspace_root,
+        "workspace_root_mismatch": _workspace_root_mismatch(
+            plugin_workspace_root,
+            host_workspace_root,
         ),
     }
     return out

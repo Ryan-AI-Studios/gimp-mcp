@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+import gimp_mcp_security as sec
 from gimp_agent import exit_codes as ec
 from gimp_agent import install as install_mod
 from gimp_agent import paths as pathmod
@@ -469,7 +470,6 @@ def _patch_doctor_base(
     )
     monkeypatch.setattr(pathmod, "find_gimp_gui", lambda: None)
     monkeypatch.setattr(pathmod, "find_plugin_dir", lambda base=None: plugin_dir)
-    import gimp_mcp_security as sec
 
     monkeypatch.delenv(sec.ENV_TOKEN, raising=False)
     monkeypatch.setattr(sec, "read_token_file", lambda path=None: None)
@@ -596,6 +596,41 @@ def test_doctor_tool_pins_package_not_found(
     assert "(not installed)" in pins.message
     assert pins.detail.get("mcp") == "(not installed)"
     assert pins.detail.get("fastmcp") == "(not installed)"
+
+
+def test_doctor_workspace_honesty_unset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Workspace check messages must not claim plugin-process jail proof."""
+    plugin_dir = tmp_path / "plug-ins" / "gimp-mcp-plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "gimp-mcp-plugin.py").write_text("x\n", encoding="utf-8")
+    _patch_doctor_base(tmp_path, monkeypatch, plugin_dir)
+    # _patch_doctor_base already forces workspace_root → None
+    report = run_doctor(strict=False)
+    ws = next(c for c in report.checks if c.name == "workspace")
+    assert ws.severity == "info"
+    assert "unset in CLI env" in ws.message
+    assert "GIMP process" in ws.message or "launcher" in ws.message
+    assert "plugin jail" in ws.message
+
+
+def test_doctor_workspace_honesty_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_dir = tmp_path / "plug-ins" / "gimp-mcp-plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "gimp-mcp-plugin.py").write_text("x\n", encoding="utf-8")
+    _patch_doctor_base(tmp_path, monkeypatch, plugin_dir)
+    monkeypatch.setattr(sec, "workspace_root", lambda: tmp_path)
+    report = run_doctor(strict=False)
+    ws = next(c for c in report.checks if c.name == "workspace")
+    assert ws.severity == "info"
+    assert "host CLI env" in ws.message
+    assert "plugin env may differ" in ws.message
+    assert "launcher" in ws.message or "GIMP process" in ws.message
 
 
 # ---------------------------------------------------------------------------

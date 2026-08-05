@@ -146,6 +146,46 @@ def test_architecture_no_track_ids() -> None:
     assert match is None, f"architecture.md must not contain track id {match.group(0)!r}"
 
 
+def test_architecture_dual_env_and_plugin_process() -> None:
+    """Dual-env: host vs plugin env and GIMP process workspace root."""
+    text = _read("docs/architecture.md")
+    lower = text.lower()
+    assert "dual-env" in lower or "dual env" in lower or "two env" in lower
+    assert "GIMP_WORKSPACE_ROOT" in text
+    assert "plugin" in lower and ("host" in lower)
+    assert "gimp process" in lower or "plugin process" in lower
+
+
+def test_operator_runbook_dual_env_and_launcher() -> None:
+    """Runbook dual-env section + launcher / GIMP process before plugin start."""
+    text = _read("docs/operator-runbook.md")
+    assert re.search(r"(?m)^##\s+Dual-env\s*$", text) or 'id="dual-env"' in text
+    assert "launch-gui" in text or "launch-gimp" in text
+    assert "GIMP process" in text or "plugin process" in text.lower()
+    assert "ExecutionPolicy Bypass" in text or "ExecutionPolicy" in text
+
+
+def test_launch_scripts_exist_with_workspace_env() -> None:
+    """Product launch scripts must mention GIMP_WORKSPACE_ROOT (content lock)."""
+    for rel in ("scripts/launch-gimp.ps1", "scripts/launch-gimp.sh"):
+        text = _read(rel)
+        assert "GIMP_WORKSPACE_ROOT" in text, f"{rel} must contain GIMP_WORKSPACE_ROOT"
+
+
+def test_adapters_dual_env_notes() -> None:
+    """Shared adapters + Grok adapter dual-env / dual-server notes."""
+    shared = _read("adapters/README.md")
+    assert "launch-gui" in shared or "plugin" in shared.lower()
+    assert "GIMP_WORKSPACE_ROOT" in shared
+    grok = _read("adapters/grok/README.md")
+    assert "plugin" in grok.lower()
+    assert "session" in grok.lower()
+    example = _read("adapters/grok/config.toml.example")
+    assert "gimp-advanced" in example
+    assert "GIMP_MCP_ADVANCED_TOOLS" in example
+    assert "enabled = false" in example
+
+
 # --- 0028 Final Product Polish: residual inventory + readiness (additive) ---
 
 # Required public inventory section headers (flexible: match key tokens).

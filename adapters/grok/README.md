@@ -44,8 +44,32 @@ Grok skills roots typically include `.grok/skills/` and `~/.grok/skills/`, or
 If the model does not receive the PNG, open `filesystem_path` from
 structuredContent / TextContent via host tools.
 
+## Dual-env (host vs plugin)
+
+`GIMP_WORKSPACE_ROOT` in this config applies to the **host** stdio MCP process
+only. Plugin open/save/export/checkpoint jail needs the same (or intended) root
+on the **GIMP process**:
+
+```powershell
+uv run gimp-agent launch-gui --workspace C:\path\to\workspace
+# or: powershell -ExecutionPolicy Bypass -File .\scripts\launch-gimp.ps1 -WorkspaceRoot C:\path\to\workspace
+```
+
+After **Tools → MCP → Start MCP Server**, `session_probe.plugin_workspace_root`
+should be set; `workspace_root_mismatch` should not be `true`.
+
+## Dual servers (HL + advanced)
+
+[config.toml.example](config.toml.example) keeps a single enabled HL server and a
+**commented** `[mcp_servers.gimp-advanced]` block (`enabled = false`,
+`GIMP_MCP_ADVANCED_TOOLS = "1"`). Prefer **one** server enabled at a time.
+After enable/disable, start a **new Grok session** (tool list cache + stdio
+respawn). Product cannot hot-respawn leftover `uv` host processes from inside chat.
+
 ## Notes
 
 - Prefer **native Windows** Grok — not WSL — so loopback TCP matches GIMP.
 - Do not commit live `.grok/config.toml` with machine-specific paths into shared repos.
 - Timeouts 60s startup / 300s tool avoid cold `uv run` failures.
+- Host env ≠ plugin env — see dual-env above and
+  [operator-runbook dual-env](../../docs/operator-runbook.md#dual-env).

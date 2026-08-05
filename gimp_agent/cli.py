@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from importlib import metadata
@@ -158,6 +160,85 @@ def _cmd_probe(args: argparse.Namespace) -> int:
     )
     jsonio.emit(envelope, as_json=jsonio.json_mode_enabled(flag=_json_flag(args)))
     return report.exit_code
+
+
+def _cmd_launch_gui(args: argparse.Namespace) -> int:
+    """Launch GIMP GUI with GIMP_WORKSPACE_ROOT set on the GIMP process."""
+    as_json = jsonio.json_mode_enabled(flag=_json_flag(args))
+    workspace_arg = getattr(args, "workspace", None)
+    if workspace_arg:
+        ws_path = Path(str(workspace_arg)).expanduser()
+    else:
+        existing = sec.workspace_root()
+        if existing is None:
+            envelope = jsonio.make_envelope(
+                ok=False,
+                exit_code=ec.EXIT_CLI_USAGE,
+                code=ec.CLI_USAGE,
+                message=(
+                    f"{sec.ENV_WORKSPACE} required via --workspace or env "
+                    "(fail-closed; plugin path jail needs root on the GIMP process)"
+                ),
+                data={},
+            )
+            jsonio.emit(envelope, as_json=as_json)
+            return ec.EXIT_CLI_USAGE
+        ws_path = existing
+
+    gui = pathmod.find_gimp_gui()
+    if gui is None:
+        envelope = jsonio.make_envelope(
+            ok=False,
+            exit_code=ec.EXIT_GIMP_OR_PLUGIN,
+            code=ec.GIMP_NOT_FOUND,
+            message=(f"GIMP GUI binary not found (set {pathmod.ENV_GUI} or install GIMP on PATH)"),
+            data={"workspace_root": str(ws_path)},
+        )
+        jsonio.emit(envelope, as_json=as_json)
+        return ec.EXIT_GIMP_OR_PLUGIN
+
+    gimp_args = list(getattr(args, "gimp_args", None) or [])
+    if gimp_args and gimp_args[0] == "--":
+        gimp_args = gimp_args[1:]
+
+    child_env = os.environ.copy()
+    child_env[sec.ENV_WORKSPACE] = str(ws_path)
+    cmd = [str(gui), *gimp_args]
+    try:
+        proc = subprocess.Popen(cmd, env=child_env)
+    except OSError as exc:
+        envelope = jsonio.make_envelope(
+            ok=False,
+            exit_code=ec.EXIT_GIMP_OR_PLUGIN,
+            code=ec.GIMP_NOT_FOUND,
+            message=f"failed to launch GIMP GUI: {exc}",
+            data={"gimp_gui": str(gui), "workspace_root": str(ws_path)},
+        )
+        jsonio.emit(envelope, as_json=as_json)
+        return ec.EXIT_GIMP_OR_PLUGIN
+
+    data: dict[str, Any] = {
+        "pid": proc.pid,
+        "gimp_gui": str(gui),
+        "workspace_root": str(ws_path),
+        "args": gimp_args,
+    }
+    envelope = jsonio.make_envelope(
+        ok=True,
+        exit_code=ec.EXIT_SUCCESS,
+        code=None,
+        message=f"launched GIMP GUI pid={proc.pid} with {sec.ENV_WORKSPACE}={ws_path}",
+        data=data,
+    )
+    human = [
+        envelope["message"],
+        f"  gimp_gui: {gui}",
+        f"  workspace_root: {ws_path}",
+        "  Next: open an image → Tools → MCP → Start MCP Server",
+        "  Then: session_probe → check plugin_workspace_root",
+    ]
+    jsonio.emit(envelope, as_json=as_json, human_lines=human)
+    return ec.EXIT_SUCCESS
 
 
 def _cmd_version(args: argparse.Namespace) -> int:
@@ -1139,6 +1220,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit JSON envelope on stdout",
     )
     p_probe.set_defaults(func=_cmd_probe)
+
+    p_launch = sub.add_parser(
+        "launch-gui",
+        help=(
+            "Launch GIMP GUI with GIMP_WORKSPACE_ROOT set on the GIMP process (plugin path jail)"
+        ),
+    )
+    p_launch.add_argument(
+        "--workspace",
+        default=None,
+        help=(f"Workspace jail root (sets {sec.ENV_WORKSPACE} on GIMP); required if env is unset"),
+    )
+    p_launch.add_argument(
+        "gimp_args",
+        nargs=argparse.REMAINDER,
+        default=[],
+        help="Trailing args passed to GIMP (optional leading -- is stripped)",
+    )
+    _add_json_arg(p_launch)
+    p_launch.set_defaults(func=_cmd_launch_gui)
 
     p_version = sub.add_parser("version", help="Show agent and discovered GIMP versions")
     p_version.add_argument(

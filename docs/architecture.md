@@ -20,20 +20,48 @@ and allowlisted recipes over arbitrary execution.
 ```text
 AI client (Claude / Grok / Codex / …)
       │  MCP over stdio
+      │  (client config env → host process only)
       ▼
-gimp_mcp_server.py          ← host process: HL tools, verify, recipes, surface
+gimp_mcp_server.py          ← HOST process: HL tools, verify, recipes, surface
+      · GIMP_WORKSPACE_ROOT     → host dual-delivery / host path helpers
+      · GIMP_MCP_ADVANCED_TOOLS → tool catalog size (HL 28 vs ~90)
       │  TCP JSON  127.0.0.1:9877  (session auth token)
       ▼
-gimp-mcp-plugin.py          ← runs inside GIMP (PyGObject)
+gimp-mcp-plugin.py          ← PLUGIN process: runs inside GIMP (PyGObject)
+      · GIMP_WORKSPACE_ROOT     → open/save/export/checkpoint path jail  ★
+      · (surface / advanced tools are host-only — not read here)
       │
       ▼
 GIMP 3.2 (gi.repository.Gimp)
 ```
 
+★ Setting `GIMP_WORKSPACE_ROOT` only on the host MCP client does **not** set the
+plugin root. Launch GIMP via `gimp-agent launch-gui` or `scripts/launch-gimp.*`
+so the **GIMP process** inherits the jail env.
+
 **CLI sidecar** (same host package): `gimp-agent` talks to the plugin when a
 session is required, or drives constrained headless `gimp-console` batch via
 `plug-in-gimp-mcp-batch`. Host-only commands (`compare`, `verify`, parts of
 `doctor`) never open the plugin socket.
+
+## Dual-env: host MCP vs GIMP plugin
+
+Two environment worlds must stay distinct:
+
+| World | Process | How env is set | `GIMP_WORKSPACE_ROOT` role |
+|-------|---------|----------------|----------------------------|
+| **Host** | `gimp_mcp_server.py` (stdio spawn) | Client config (`config.toml` / `.mcp.json`) | Host dual-delivery snapshot paths; host path helpers |
+| **Plugin** | GIMP + `gimp-mcp-plugin.py` | **How GIMP was launched** (launcher / shell / Start Menu) | Path jail for open/save/export/**checkpoint** |
+
+- Host config **cannot** inject env into an already-running GIMP.
+- Start Menu / bare `gimp` without env → plugin root unset → `PATH_DENIED` on
+  checkpoints and other file ops even when host env looks correct.
+- `session_probe` always reports `plugin_workspace_root`, `host_workspace_root`,
+  and `workspace_root_mismatch` so agents can detect the split.
+- `gimp-agent doctor` reads **CLI process** env only (message honesty); it does
+  **not** prove the plugin jail — use `session_probe` after Start MCP Server.
+- Primary launcher: `uv run gimp-agent launch-gui --workspace <path>` (also
+  `scripts/launch-gimp.ps1` / `scripts/launch-gimp.sh`).
 
 ## Ship set vs host-only modules
 

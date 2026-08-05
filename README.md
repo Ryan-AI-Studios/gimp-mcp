@@ -194,11 +194,21 @@ install, then **Tools → MCP → Start MCP Server**.
 
 ### 3. Workspace + start plugin
 
-1. Set `GIMP_WORKSPACE_ROOT` to a directory agents may read/write.
+Host MCP env and the GIMP **plugin process** are separate worlds. Set the jail on
+GIMP itself (not only in client config):
+
+```powershell
+uv run gimp-agent launch-gui --workspace C:\path\to\workspace
+# or: powershell -ExecutionPolicy Bypass -File .\scripts\launch-gimp.ps1 -WorkspaceRoot C:\path\to\workspace
+```
+
+1. Launch GIMP with `GIMP_WORKSPACE_ROOT` on the **GIMP process** (above).
 2. Open an image in GIMP.
 3. **Tools → MCP → Start MCP Server** (binds `127.0.0.1:9877`, writes session token).
+4. Confirm via MCP `session_probe.plugin_workspace_root` (and host root in client config for dual-delivery).
 
 Full numbered checklist: [docs/operator-runbook.md#start-order](docs/operator-runbook.md#start-order).
+Dual-env detail: [docs/operator-runbook.md#dual-env](docs/operator-runbook.md#dual-env).
 
 ### 4. Configure your MCP client
 

@@ -124,9 +124,10 @@ minting. Track IDs are creation order, not execution order.
   → 0028 Final product polish — **Completed**
 ```
 
-**28 tracks** (0001–0028). **Sequence 0001–0028 complete.** No further conductor
-product tracks in this set unless the operator mints new ones. **Release baseline:**
-remote annotated tag **`v0.2.0`** @ `65783d1` (version triple + CHANGELOG + uv.lock).
+**28 tracks** (0001–0028) form the original product fence — **complete** at readiness
+**0.2.x**. **Post-fence demand tracks 0029–0032** are **placeholders** (from
+`C:\dev\Grok-feedback.md`); full plan before implement. **Release baseline:** remote
+annotated tag **`v0.2.0`** @ `65783d1` (version triple + CHANGELOG + uv.lock).
 **Product mission complete at 0.2.x** (not SemVer 1.0.0). Maintainers: public residual
 fence **`docs/known-residuals.md`**; golden path **`docs/golden-path.md`**; release
 checklist **`docs/release.md`**. Local-only `v0.1.0` may exist on disk; remote product
@@ -196,6 +197,29 @@ into inventory. Did **not** implement soft ImageContent guard, prune-backups, ta
 handles, B904/E501, or mcp/fastmcp majors. Did **not** re-tag `v0.2.0`. Claude final
 PASS CLEAN (Codex rate-limited). Maintainers after sequence:
 **`docs/known-residuals.md`**, **`docs/golden-path.md`**, **`docs/release.md`**.
+
+### Post-sequence demand tracks (placeholders — 2026-08-05)
+
+From live Grok + GIMP session feedback (`C:\dev\Grok-feedback.md`). **Not** part of
+the original 0001–0028 fence; full plan pass before implement. Suggested order:
+
+| Track | Status | Why |
+|---|---|---|
+| **0029** DualEnvWorkspaceLaunch | **Implementing / ship on branch** | Dual-env docs; `gimp-agent launch-gui` + scripts; session_probe plugin/host roots; doctor **message only**; dual-server adapters |
+| **0030** HlCutoutSelectionHelpers | Placeholder | HL can select but not clear/fill transparent; avoid requiring full advanced for common cutouts |
+| **0031** PngExportDrawableHardening | Placeholder | Live `EXPORT_FAILED` / `file-png-export` drawable property failures |
+| **0032** SubjectIsolationPipeline | Placeholder | Optional host rembg/subject path + typed fuzzy select; **not** required dep / Class A |
+
+**OOS (Grok Build host):** mid-flight MCP env respawn, leftover `uv` process hygiene,
+`/mcps` refresh not reloading env — operator notes under **0029** only; do not mint
+gimp-mcp tracks for host product bugs.
+
+**0029 plan lock (2026-08-05; AI folded):** Host MCP env ≠ plugin env. Primary
+`uv run gimp-agent launch-gui` + `scripts/launch-gimp.*`. Plugin top-level
+`workspace_root`; session_probe always emits `plugin_workspace_root` /
+`host_workspace_root` / `workspace_root_mismatch`. Doctor honesty **messages only**
+(no auth plugin fetch). Grok dual-server commented advanced. Pins held. EXPECTED 10
+unchanged. Say **implement track 29** when ready.
 
 ---
 
@@ -384,8 +408,8 @@ If indexes are empty: `ledgerful index --incremental`.
 | GIMP | 3.2.4 native Windows |
 | Fork tip | origin = Ryan-AI-Studios/gimp-mcp (post-0028 product readiness @ 0.2.x) |
 | Quality gates | full product ruff + format; basedpyright server+tests; offline pytest (fixtures + offline E2E + docs structure); ledgerful verify |
-| Active focus | **0001–0028 sequence complete**; product readiness at **0.2.x**; residual fence `docs/known-residuals.md` |
-| Track count | 0001–0028 **complete** (see conductor.md) |
+| Active focus | **0001–0028 complete** @ **0.2.x**; **next implement 0029** (Ready); 0030–0032 placeholders; residual fence `docs/known-residuals.md` |
+| Track count | 0001–0028 **complete**; 0029 **Ready**; 0030–0032 **placeholder** (see conductor.md) |
 | Tool pins | ruff 0.16.1, basedpyright 1.39.9, pytest 9.1.1; mcp/fastmcp 1.10.1/2.10.1 (lock) with **pyproject** `mcp>=1.10,<2` and `fastmcp>=2.10,<3`. PyPI has mcp 2.0 / fastmcp 3.4.5 — **do not major-bump** casually. No Pillow. |
 | Live APPDATA | full EXPECTED **10** via `uv run gimp-agent install` (2026-08-04); restart GIMP after install/upgrade (batch procedure needs reinstall + restart) |
 | Runtime skills | Committed repo `skills/` (router `gimp` + 5 focused); `uv run gimp-agent skills list\|validate\|install` |

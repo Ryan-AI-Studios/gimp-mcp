@@ -76,6 +76,10 @@ threats), [docs/performance.md](performance.md), [docs/release.md](release.md),
 | **Auto ensure_source_immutable on open** — agent/skill duty, not automatic on every `open_image` | `accepted` | Call `ensure_source_immutable` before first mutation (router / gimp-edit sequence) |
 | **PROTOCOL full narrative rewrite** — spot consistency only | `future` | Prefer HL catalog + architecture for agent orientation |
 | **Prune-snapshots CLI verb** — dual-delivery has helper prune; no dedicated CLI | `future` | Manual prune under `.gimp-mcp-tmp/snapshots/` if needed |
+| **Host vs plugin env (dual-env)** — `GIMP_WORKSPACE_ROOT` on host MCP alone does not jail plugin checkpoints | `accepted` (absorbed) | Use `uv run gimp-agent launch-gui` or `scripts/launch-gimp.*`; verify with `session_probe.plugin_workspace_root` |
+| **HL cutout gap** — default surface selects but cannot fill/clear to transparent | `future` | Use advanced MCP server or plugin wire today; placeholder **0030** |
+| **PNG export drawable failures** — live `EXPORT_FAILED` / `file-png-export` property errors | `future` | Retry after re-orient/checkpoint; placeholder **0031** |
+| **Subject isolation quality** — color-select poor on soft ghosts; rembg worked out-of-band | `future` | Host rembg pipeline optional; placeholder **0032** (not a required product dep) |
 
 ---
 

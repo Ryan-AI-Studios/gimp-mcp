@@ -306,7 +306,7 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
             )
         )
 
-    # 6. GIMP_WORKSPACE_ROOT (info)
+    # 6. GIMP_WORKSPACE_ROOT (info) — host CLI env only; plugin jail is separate
     ws = sec.workspace_root()
     data["workspace_root"] = str(ws) if ws else None
     if ws is None:
@@ -315,17 +315,27 @@ def run_doctor(*, strict: bool = False) -> DoctorReport:
                 name="workspace",
                 severity="info",
                 status="info",
-                message=f"{sec.ENV_WORKSPACE} unset (required later for filesystem tools)",
+                message=(
+                    f"{sec.ENV_WORKSPACE} unset in CLI env "
+                    "(set on GIMP process via launcher for plugin jail)"
+                ),
             )
         )
     else:
         exists = ws.is_dir()
+        honesty = (
+            f"{sec.ENV_WORKSPACE}={ws} "
+            "(host CLI env; GIMP plugin env may differ — "
+            "use launcher or set env on GIMP process)"
+        )
+        if not exists:
+            honesty = f"{honesty} (path does not exist)"
         checks.append(
             CheckResult(
                 name="workspace",
                 severity="info",
                 status="pass" if exists else "info",
-                message=f"{sec.ENV_WORKSPACE}={ws}" + ("" if exists else " (path does not exist)"),
+                message=honesty,
                 detail={"path": str(ws), "exists": exists},
             )
         )
