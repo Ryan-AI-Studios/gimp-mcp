@@ -165,7 +165,7 @@ Architecture detail: [architecture.md](architecture.md) (dual-env section).
 
 | Mode | How | Surface |
 |------|-----|---------|
-| **Default** | No special env | **28** high-level tools |
+| **Default** | No special env | **30** high-level tools |
 | **Advanced** | `GIMP_MCP_ADVANCED_TOOLS=1` on the **host stdio MCP process** | Full ~90-tool surface |
 
 After flipping `GIMP_MCP_ADVANCED_TOOLS`, restart the **MCP server process and

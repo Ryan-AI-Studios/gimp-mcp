@@ -284,11 +284,11 @@ def test_exit_codes_tx_map_to_6() -> None:
     assert ec.exit_code_for(sec.CODE_TX_MISMATCH) == 6
 
 
-def test_hl_catalog_28_tx_tools() -> None:
+def test_hl_catalog_30_tx_tools() -> None:
     from gimp_mcp_surface import HL_TOOL_NAMES, get_hl_catalog_names, is_hl_tool
 
     names = get_hl_catalog_names()
-    assert len(names) == 28
+    assert len(names) == 30
     assert set(names) == HL_TOOL_NAMES
     assert "undo_group_begin" in HL_TOOL_NAMES
     assert "undo_group_end" in HL_TOOL_NAMES

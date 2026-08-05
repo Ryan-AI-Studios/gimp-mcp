@@ -4,7 +4,7 @@
 > front door is [README.md](../README.md); prefer the portable skills package
 > ([`skills/`](../skills/README.md)), [architecture.md](architecture.md), and
 > [operator-runbook.md](operator-runbook.md). Some older sections may still show
-> elevated-exec or advanced-tool patterns — default agent surface is **HL 28**.
+> elevated-exec or advanced-tool patterns — default agent surface is **HL 30**.
 
 **Agent skills:** portable runtime playbooks live in [`skills/`](../skills/README.md)
 (router `gimp` + orient/edit/batch/verify/install). Prefer that sequence over ad-hoc

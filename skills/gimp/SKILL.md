@@ -13,7 +13,7 @@ metadata:
 # gimp (runtime router)
 
 Portable runtime playbook for operating GIMP via this product’s hybrid surface
-(28 HL MCP tools + `gimp-agent` CLI + recipes + pixel verify + headless batch).
+(30 HL MCP tools + `gimp-agent` CLI + recipes + pixel verify + headless batch).
 
 **Not** the maintainer governance skill (`gimp-core` in a gitignored `.agents/`
 tree). This package is for *running* image work.

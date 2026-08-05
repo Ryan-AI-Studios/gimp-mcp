@@ -206,7 +206,7 @@ the original 0001–0028 fence; full plan pass before implement. Suggested order
 | Track | Status | Why |
 |---|---|---|
 | **0029** DualEnvWorkspaceLaunch | **Completed** (PR #44 / main@aa375e1) | Dual-env docs; `gimp-agent launch-gui` + scripts; session_probe plugin/host roots; doctor **message only**; dual-server adapters; Claude PASS CLEAN |
-| **0030** HlCutoutSelectionHelpers | Placeholder | HL can select but not clear/fill transparent; avoid requiring full advanced for common cutouts |
+| **0030** HlCutoutSelectionHelpers | **Completed** (pending PR merge) | HL **30**: `clear_selection_to_transparent` + `get_selection_bounds`; empty → `SELECTION_EMPTY`; skill protocol; Claude PASS WITH DEFERRED P3 |
 | **0031** PngExportDrawableHardening | Placeholder | Live `EXPORT_FAILED` / `file-png-export` drawable property failures |
 | **0032** SubjectIsolationPipeline | Placeholder | Optional host rembg/subject path + typed fuzzy select; **not** required dep / Class A |
 
@@ -218,7 +218,16 @@ gimp-mcp tracks for host product bugs.
 launch-gui` + `scripts/launch-gimp.*`; plugin top-level `workspace_root`; session_probe
 always emits `plugin_workspace_root` / `host_workspace_root` / `workspace_root_mismatch`;
 doctor honesty **messages only**; Grok commented advanced; pins held; EXPECTED 10
-unchanged. **Next implement:** full plan then **0030** (or operator demand).
+unchanged.
+
+**0030 Completed (2026-08-05):** Default HL can select but not clear to transparent.
+**Shipped:** `get_selection_bounds` (HL, **single-tag**, handle-aware host+plugin) +
+`clear_selection_to_transparent` (HL; `SELECTION_EMPTY` via prefer `Selection.is_empty`;
+mandatory `add_alpha`; Source_Immutable via policy); harden advanced transparent
+`fill_selection` empty path; catalog **30**; skill cutout protocol. **Declined:**
+unrestricted fill/invert/modify; color-remove recipe; `max_coverage_fraction` params;
+dual-tag tools. Claude PASS WITH DEFERRED P3 (Codex rate-limited). Pins hold. OOS:
+**0031** export, **0032** rembg. **Next:** full plan then **0031** (or operator demand).
 
 ---
 
@@ -334,7 +343,7 @@ Hard rules for product work:
 - Track layers by **stable handles**, not names (`orient_workspace` + `select_*`; re-orient or use mutator gen after structural ops; STALE_HANDLE on stale gen).
 - Spatial edits: use snapshot **mapping** + **0008** coordinate helpers; normalize EXIF before phase-sensitive work.
 - **Source integrity (0009):** `ensure_source_immutable` before first mutation; `checkpoint_create`; flatten/live-merge need `confirm_destructive`; restore → re-orient.
-- **Default MCP surface (0010 + 0016 + 0017):** **28** high-level tools via real FastMCP `include_tags={"hl"}`; design names (`session_probe`, `render_visible_composite`, `create_selection`, NDE apply/edit/remove, `undo_group_begin/end/rollback`); full ~90 tools only with `GIMP_MCP_ADVANCED_TOOLS=1` (restart MCP **and** LLM client). Prefer HL tools; do not major-bump mcp/fastmcp for 3.x visibility API.
+- **Default MCP surface (0010 + 0016 + 0017 + 0030):** **30** high-level tools via real FastMCP `include_tags={"hl"}` (design names: `session_probe`, `render_visible_composite`, `create_selection`, `get_selection_bounds`, `clear_selection_to_transparent`, NDE, undo TX). Full ~90 tools only with `GIMP_MCP_ADVANCED_TOOLS=1` (restart MCP **and** LLM client). Prefer HL tools; do not major-bump mcp/fastmcp for 3.x visibility API.
 - **Structured errors (0011):** product failures → FastMCP `ToolError` **single-line** text (`CODE: msg (request_id=…) | {json}`); never return error dicts as success. Split audit `audit-server.jsonl` / `audit-plugin.jsonl`. `rollback_available` honest post-**0017** (true when open agent undo TX). Parse helper: `parse_tool_error_text`.
 - **Agent CLI (0012 Completed):** `uv run gimp-agent doctor|probe|version|codes` with JSON + exit codes from `CODE_*` (0–12). Probe always JSON-auth; doctor connect-only TCP; `--strict` for CI. Non-strict doctor may exit 0 with `ok:false` — check envelope or use `--strict`. Headless recipes not in 0012.
 - Prefer non-destructive edits (masks, NDE filters) over flatten/erase.

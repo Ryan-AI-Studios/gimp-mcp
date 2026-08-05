@@ -27,9 +27,9 @@ from gimp_mcp_surface import (
 # ---------------------------------------------------------------------------
 
 
-def test_hl_catalog_exact_28() -> None:
+def test_hl_catalog_exact_30() -> None:
     names = get_hl_catalog_names()
-    assert len(names) == 28
+    assert len(names) == 30
     assert set(names) == HL_TOOL_NAMES
     assert names == sorted(names)
     assert "compare_images" in HL_TOOL_NAMES
@@ -42,6 +42,8 @@ def test_hl_catalog_exact_28() -> None:
     assert "undo_group_begin" in HL_TOOL_NAMES
     assert "undo_group_end" in HL_TOOL_NAMES
     assert "undo_group_rollback" in HL_TOOL_NAMES
+    assert "get_selection_bounds" in HL_TOOL_NAMES
+    assert "clear_selection_to_transparent" in HL_TOOL_NAMES
     assert "batch_run" not in HL_TOOL_NAMES
     assert "list_drawable_filters" not in HL_TOOL_NAMES
     assert "merge_nde_filters" not in HL_TOOL_NAMES
@@ -52,11 +54,14 @@ def test_hl_catalog_exact_28() -> None:
 def test_is_hl_tool() -> None:
     assert is_hl_tool("session_probe")
     assert is_hl_tool("create_selection")
+    assert is_hl_tool("get_selection_bounds")
+    assert is_hl_tool("clear_selection_to_transparent")
     assert is_hl_tool("apply_nde_filter")
     assert is_hl_tool("undo_group_begin")
     assert is_hl_tool("undo_group_rollback")
     assert not is_hl_tool("get_image_bitmap")
     assert not is_hl_tool("blur")
+    assert not is_hl_tool("fill_selection")
     assert not is_hl_tool("list_drawable_filters")
     assert not is_hl_tool("merge_nde_filters")
     assert not is_hl_tool("undo_group_status")
@@ -401,7 +406,7 @@ def test_instructions_prefix_self_contained() -> None:
     assert "Start MCP Server" in prefix
     assert "filesystem_path" in prefix or "unknown" in prefix or "client_model_visibility" in prefix
     assert "GIMP_WORKSPACE_ROOT" in prefix or "jail" in prefix.lower()
-    assert "28" in prefix
+    assert "30" in prefix
     assert "Class-A" in prefix or "Class A" in prefix or "no Class" in prefix
 
 
@@ -629,3 +634,243 @@ def test_pyproject_pins_and_surface_module() -> None:
     assert "gimp_mcp_surface" in text
     assert "mcp>=1.10,<2" in text or "mcp>=1.10,<2" in text
     assert "fastmcp>=2.10,<3" in text
+
+
+# ---------------------------------------------------------------------------
+# Track 0030 — HL cutout helpers (bounds promote + clear_selection_to_transparent)
+# ---------------------------------------------------------------------------
+
+
+def test_cutout_tools_in_hl_catalog() -> None:
+    assert "get_selection_bounds" in HL_TOOL_NAMES
+    assert "clear_selection_to_transparent" in HL_TOOL_NAMES
+    assert is_hl_tool("get_selection_bounds")
+    assert is_hl_tool("clear_selection_to_transparent")
+    # Unrestricted fill / invert / modify stay out of HL
+    assert not is_hl_tool("fill_selection")
+    assert not is_hl_tool("invert_selection")
+    assert not is_hl_tool("modify_selection")
+
+
+def test_cutout_tools_single_hl_tag_only() -> None:
+    """Single-tag invariant: bounds + clear are {hl} only (no dual-tag)."""
+    import gimp_mcp_server as srv
+
+    async def _check() -> None:
+        tools = await srv.mcp.get_tools()
+        for name in ("get_selection_bounds", "clear_selection_to_transparent"):
+            assert name in tools, f"missing tool {name}"
+            tags = getattr(tools[name], "tags", None) or set()
+            assert tags == {HL_TAG}, f"{name} tags={tags} (must be single HL tag)"
+
+    asyncio.run(_check())
+
+
+def test_code_selection_empty_defaults() -> None:
+    import gimp_mcp_security as sec
+
+    assert sec.CODE_SELECTION_EMPTY == "SELECTION_EMPTY"
+    spec = sec.CODE_DEFAULTS[sec.CODE_SELECTION_EMPTY]
+    assert spec["retryable"] is False
+    assert spec["state_may_have_changed"] is False
+    assert spec["approval_required"] is False
+
+
+def test_get_selection_bounds_forwards_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    captured: list[dict[str, Any]] = []
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            captured.append({"cmd": cmd, "params": params or {}})
+            return {
+                "status": "success",
+                "results": {
+                    "has_selection": True,
+                    "x": 1,
+                    "y": 2,
+                    "width": 10,
+                    "height": 20,
+                },
+            }
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    handle = {"image_id": 3, "generation": 1, "session_epoch": 1}
+    out = _tool_fn(srv.get_selection_bounds)(_Ctx(), handle=handle)  # type: ignore[arg-type]
+    assert out["has_selection"] is True
+    assert captured[0]["cmd"] == "get_selection_bounds"
+    assert captured[0]["params"].get("handle") == handle
+    assert "image_index" not in captured[0]["params"]
+
+
+def test_get_selection_bounds_defaults_image_index_0(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    captured: list[dict[str, Any]] = []
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            captured.append({"cmd": cmd, "params": params or {}})
+            return {
+                "status": "success",
+                "results": {
+                    "has_selection": False,
+                    "x": 0,
+                    "y": 0,
+                    "width": 0,
+                    "height": 0,
+                },
+            }
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    _tool_fn(srv.get_selection_bounds)(_Ctx())  # type: ignore[arg-type]
+    assert captured[0]["params"].get("image_index") == 0
+
+
+def test_clear_selection_to_transparent_success_mock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    captured: list[dict[str, Any]] = []
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            captured.append({"cmd": cmd, "params": params or {}})
+            return {
+                "status": "success",
+                "results": {
+                    "has_selection": True,
+                    "x": 0,
+                    "y": 0,
+                    "width": 50,
+                    "height": 40,
+                    "layer_id": 7,
+                    "layer_name": "Working",
+                    "layer_handle": {"item_id": 7, "image_id": 1},
+                },
+            }
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    lh = {"item_id": 7, "image_id": 1, "generation": 1, "session_epoch": 1}
+    out = _tool_fn(srv.clear_selection_to_transparent)(  # type: ignore[arg-type]
+        _Ctx(),
+        image_index=0,
+        layer_handle=lh,
+    )
+    assert out["layer_id"] == 7
+    assert captured[0]["cmd"] == "clear_selection_to_transparent"
+    assert captured[0]["params"].get("layer_handle") == lh
+    assert captured[0]["params"].get("layer_id") == 7
+    assert captured[0]["params"].get("allow_source_mutation") is False
+    assert captured[0]["params"].get("image_index") == 0
+
+
+def test_clear_selection_empty_refuse_mock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Host surfaces SELECTION_EMPTY from plugin empty refuse."""
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_security as sec
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            return {
+                "status": "error",
+                "code": sec.CODE_SELECTION_EMPTY,
+                "error": "No non-empty selection; refuse clear/transparent fill",
+            }
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    with pytest.raises(ToolError) as ei:
+        _tool_fn(srv.clear_selection_to_transparent)(_Ctx())  # type: ignore[arg-type]
+    text = str(ei.value)
+    assert "SELECTION_EMPTY" in text
+    parsed = sec.parse_tool_error_text(text)
+    if parsed is not None:
+        assert parsed["error"]["code"] == sec.CODE_SELECTION_EMPTY
+        assert parsed["error"].get("state_may_have_changed") is False
+
+
+def test_clear_selection_policy_denied_mock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Source_Immutable still surfaces POLICY_DENIED on clear path."""
+    from fastmcp.exceptions import ToolError
+
+    import gimp_mcp_security as sec
+    import gimp_mcp_server as srv
+
+    class _Ctx:
+        pass
+
+    class _Conn:
+        def send_command(self, cmd: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+            return {
+                "status": "error",
+                "code": sec.CODE_POLICY_DENIED,
+                "error": "item_id 1 is under Source_Immutable (durable policy)",
+            }
+
+    monkeypatch.setattr(srv, "get_gimp_connection", lambda: _Conn())
+    with pytest.raises(ToolError) as ei:
+        _tool_fn(srv.clear_selection_to_transparent)(  # type: ignore[arg-type]
+            _Ctx(),
+            layer_name="Background",
+        )
+    text = str(ei.value)
+    assert "POLICY_DENIED" in text
+
+
+def test_plugin_cutout_wire_structure() -> None:
+    """Plugin contracts: helper, clear, bounds resolve, fill harden, dispatcher order."""
+    text = Path("gimp-mcp-plugin.py").read_text(encoding="utf-8")
+    assert "def _require_nonempty_selection" in text
+    assert "CODE_SELECTION_EMPTY" in text
+    assert "def _clear_selection_to_transparent" in text
+    assert 'type"] == "clear_selection_to_transparent"' in text or (
+        'j["type"] == "clear_selection_to_transparent"' in text
+    )
+
+    # Bounds uses handle-aware resolve
+    b_start = text.index("def _get_selection_bounds")
+    b_body = text[b_start : b_start + 900]
+    assert "_resolve_image_from_params" in b_body
+
+    # Clear uses resolve + empty guard + mutable + add_alpha + edit_clear
+    c_start = text.index("def _clear_selection_to_transparent")
+    c_end = text.find("\n    def _", c_start + 10)
+    c_body = text[c_start : c_end if c_end != -1 else c_start + 2500]
+    assert "_resolve_image_from_params" in c_body
+    assert "_require_nonempty_selection" in c_body
+    assert "_resolve_mutable_layer" in c_body
+    assert "add_alpha" in c_body
+    assert "edit_clear" in c_body
+
+    # Advanced fill transparent branch uses shared empty helper
+    f_start = text.index("def _fill_selection")
+    f_end = text.find("\n    def _", f_start + 10)
+    f_body = text[f_start : f_end if f_end != -1 else f_start + 2500]
+    assert "_require_nonempty_selection" in f_body
+    assert 'fill_type == "transparent"' in f_body
+
+    # Dispatcher: clear immediately after get_selection_bounds
+    bounds_disp = text.index('j["type"] == "get_selection_bounds"')
+    clear_disp = text.index('j["type"] == "clear_selection_to_transparent"')
+    assert clear_disp > bounds_disp
+    between = text[bounds_disp:clear_disp]
+    # No other type branch between them (only the return line for bounds)
+    assert between.count('j["type"] ==') == 1

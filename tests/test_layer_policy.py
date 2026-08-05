@@ -346,6 +346,7 @@ def test_wiring_plugin_guarded_mutators_use_mutable_resolve() -> None:
         "def _reorder_layer",
         "def _fill_layer",
         "def _fill_selection",
+        "def _clear_selection_to_transparent",
         "def _draw_line",
         "def _draw_rectangle",
         "def _draw_ellipse",

@@ -27,6 +27,6 @@ Primary tools: full HL set — start with `session_probe` → `orient_workspace`
 
 ## Prefer HL
 
-Use the 28 HL tools by default. Enable advanced tools only with
+Use the 30 HL tools by default. Enable advanced tools only with
 `GIMP_MCP_ADVANCED_TOOLS=1` and a documented reason. Never Class A plugin exec;
 never product-default `python-fu-eval`.

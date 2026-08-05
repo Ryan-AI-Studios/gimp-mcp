@@ -12,6 +12,7 @@ Package, CLI, and plug-in versions share the same semver string. See
 
 ### Added
 
+- Added `clear_selection_to_transparent` and promoted `get_selection_bounds` to HL (catalog 28 → 30); advanced `fill_selection` transparent path fail-closed on empty (`SELECTION_EMPTY`). (0030).
 - Dual-env workspace launch: `gimp-agent launch-gui` plus `scripts/launch-gimp.ps1`
   / `scripts/launch-gimp.sh` so `GIMP_WORKSPACE_ROOT` is set on the **GIMP process**
   (plugin path jail), not only on the host MCP spawn.

@@ -12,7 +12,7 @@ docs: [README.md](README.md), [docs/architecture.md](docs/architecture.md),
 ### Components
 
 1. **GIMP Plugin** (`gimp-mcp-plugin.py` + 9 shared modules): TCP server inside GIMP
-2. **MCP Server** (`gimp_mcp_server.py`): stdio MCP host — default **28 high-level tools**
+2. **MCP Server** (`gimp_mcp_server.py`): stdio MCP host — default **30 high-level tools**
 3. **CLI** (`gimp_agent/`): install, doctor, probe, recipes, batch, skills
 
 ## Architecture (agent posture)
@@ -28,7 +28,7 @@ AI client  --stdio MCP-->  gimp_mcp_server.py  --TCP JSON-->  plugin in GIMP
 
 ## Primary MCP interface (HL-first)
 
-Prefer the default **28 high-level tools**. Start every session with:
+Prefer the default **30 high-level tools**. Start every session with:
 
 | Tool | Role |
 |------|------|

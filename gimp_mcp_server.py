@@ -846,7 +846,7 @@ def create_mcp_server(*, advanced_mode: bool | None = None) -> FastMCP:
     mode = surface.surface_mode(advanced_mode=advanced_mode)
     # First 512 chars must be self-contained (Codex/Grok clients truncate).
     instructions = (
-        "GIMP MCP — default HL 28 tools (GIMP_MCP_ADVANCED_TOOLS=1 for ~90 advanced). "
+        "GIMP MCP — default HL 30 tools (GIMP_MCP_ADVANCED_TOOLS=1 for ~90 advanced). "
         "GIMP must be open; Tools → MCP → Start MCP Server. "
         "Set GIMP_WORKSPACE_ROOT jail for file tools. "
         "image_delivery.client_model_visibility=unknown — prefer filesystem_path "
@@ -5793,19 +5793,95 @@ def close_image(
         raise
 
 
-@mcp.tool(tags={surface.ADVANCED_TAG})
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(read_only=True, idempotent=True))
 @with_structured_error()
-def get_selection_bounds(ctx: Context, image_index: int = 0) -> dict:
-    """Get the bounding rectangle of the current selection.
+def get_selection_bounds(
+    ctx: Context,
+    handle: dict | None = None,
+    image_index: int | None = None,
+) -> dict:
+    """Bounding rectangle of the current selection (HL cutout helper).
 
     Parameters:
-    - image_index: Target image index (default 0)
+    - handle: Preferred image handle; image_index used when handle omitted
+    - image_index: Legacy open-image index (default 0 when both omitted)
 
     Returns: {has_selection, x, y, width, height}
+
+    Prefer calling this after ``create_selection`` and before
+    ``clear_selection_to_transparent``. Empty selection reports
+    ``has_selection=false`` (clear will fail-closed with SELECTION_EMPTY).
     """
+    params: dict[str, Any] = {}
+    if handle is not None:
+        params["handle"] = handle
+    if image_index is not None:
+        params["image_index"] = int(image_index)
+    elif "handle" not in params:
+        params["image_index"] = 0
     try:
         conn = get_gimp_connection()
-        result = conn.send_command("get_selection_bounds", {"image_index": image_index})
+        result = conn.send_command("get_selection_bounds", params)
+        if result["status"] == "success":
+            return result["results"]
+        raise_from_plugin_result(result, "tool")
+    except ToolError:
+        raise
+    except Exception:
+        if sec.debug_enabled():
+            traceback.print_exc()
+        raise
+
+
+@mcp.tool(tags={surface.HL_TAG}, annotations=_ann(destructive=True))
+@with_structured_error()
+def clear_selection_to_transparent(
+    ctx: Context,
+    handle: dict | None = None,
+    image_index: int | None = None,
+    layer_handle: dict | None = None,
+    layer_name: str | None = None,
+    allow_source_mutation: bool = False,
+) -> dict:
+    """Clear current selection to transparent (HL cutout; fail-closed on empty).
+
+    Dedicated typed wire (not unrestricted fill_selection). Empty selection
+    → SELECTION_EMPTY. Source_Immutable layers need allow_source_mutation or
+    mutate a working copy. Prefer ``layer_handle``; optional ``layer_name``.
+
+    Parameters:
+    - handle: Preferred image handle; image_index used when handle omitted
+    - image_index: Legacy open-image index (default 0 when both omitted)
+    - layer_handle: Preferred item handle for the target layer
+    - layer_name: Fallback layer name when layer_handle omitted
+    - allow_source_mutation: Override Source_Immutable (default false)
+
+    Returns: bounds + layer identity used
+    ({has_selection, x, y, width, height, layer_id, layer_name, layer_handle}).
+
+    Protocol: ensure_source_immutable → checkpoint → create_selection →
+    get_selection_bounds (stop if empty/over-broad) → this tool → composite/export.
+    For invert/grow/feather/color fill use advanced tools. Hard subject isolation → 0032.
+    """
+    params: dict[str, Any] = {
+        "allow_source_mutation": bool(allow_source_mutation),
+    }
+    if handle is not None:
+        params["handle"] = handle
+    if image_index is not None:
+        params["image_index"] = int(image_index)
+    elif "handle" not in params:
+        params["image_index"] = 0
+    if layer_handle is not None:
+        params["layer_handle"] = layer_handle
+        # Prefer layer id on wire when present (plugin handle-first path)
+        if isinstance(layer_handle, dict) and "item_id" in layer_handle:
+            params["layer_id"] = int(layer_handle["item_id"])
+    if layer_name is not None:
+        params["layer_name"] = layer_name
+    try:
+        conn = get_gimp_connection()
+        result = conn.send_command("clear_selection_to_transparent", params)
         if result["status"] == "success":
             return result["results"]
         raise_from_plugin_result(result, "tool")

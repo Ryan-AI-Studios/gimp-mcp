@@ -24,7 +24,7 @@ Full demo (with audio): [docs/demo.mp4](docs/demo.mp4)
 
 Edit images with AI assistants that can **see** the canvas, **orient** a layered
 document, run **allowlisted recipes**, and **verify pixels** — under loopback auth,
-workspace path jail, and a curated **28-tool** default surface (optional advanced
+workspace path jail, and a curated **30-tool** default surface (optional advanced
 ~90 tools).
 
 ### Product readiness
@@ -61,7 +61,7 @@ SemVer **1.0.0** public API freeze. Accepted debt and declined work live in
 |---|---|
 | 👁️ **Live visual feedback** | `render_visible_composite` — visible canvas PNG + mapping mid-workflow |
 | 🧭 **Workspace orientation** | `orient_workspace` schema-versioned state manifest |
-| 🎨 **28 HL / ~90 advanced** | Curated default surface; full footgun surface via env |
+| 🎨 **30 HL / ~90 advanced** | Curated default surface; full footgun surface via env |
 | 📦 **Recipe library** | Versioned JSON recipes; MCP + CLI `run` / `batch` |
 | ✅ **Pixel verification** | Host `compare_images` / `verify_artifact` (and CLI) |
 | 🔒 **Hardened defaults** | Loopback, session token, exec off, path jail |
@@ -70,9 +70,9 @@ SemVer **1.0.0** public API freeze. Accepted debt and declined work live in
 
 ---
 
-## High-level tools (default 28)
+## High-level tools (default 30)
 
-By default the MCP server lists **28 high-level tools**. Detail catalog:
+By default the MCP server lists **30 high-level tools**. Detail catalog:
 [skills/references/hl-tool-catalog.md](skills/references/hl-tool-catalog.md).
 Protocol examples: [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md).
 
@@ -92,6 +92,8 @@ Protocol examples: [GIMP_MCP_PROTOCOL.md](GIMP_MCP_PROTOCOL.md).
 | `save_xcf` / `export_image` | Atomic XCF/export; collision `fail`/`version`/`replace` |
 | `verify_alpha_channel` | Alpha preflight on open document |
 | `create_selection` | Unified selection (rect/ellipse/by_color/all/none) |
+| `get_selection_bounds` | Bounding rectangle of current selection |
+| `clear_selection_to_transparent` | Clear selection to transparent (empty fail-closed) |
 | `compare_images` | Host PNG MAE / max AE / changed pixels / global SSIM |
 | `verify_artifact` | Host artifact dims/format/alpha/sha256 gates |
 | `list_recipes` / `apply_recipe` | Versioned allowlisted multi-step recipes |
@@ -272,7 +274,7 @@ See **[SECURITY.md](SECURITY.md)** for threat model, residuals, and full env tab
 | `GIMP_WORKSPACE_ROOT` | Path jail for open/save/export | **required** for file ops |
 | `GIMP_MCP_ALLOW_EXEC` | Plugin `cmds` + MCP `call_api` | **off** |
 | `GIMP_MCP_ALLOW_NON_LOOPBACK` | Non-loopback bind | **off** |
-| `GIMP_MCP_ADVANCED_TOOLS` | Full ~90-tool surface | **off** → 28 HL |
+| `GIMP_MCP_ADVANCED_TOOLS` | Full ~90-tool surface | **off** → 30 HL |
 | `GIMP_MCP_DEBUG` | Tracebacks only (never a policy bypass) | **off** |
 
 **Posture:** typed tools only; per-message auth; loopback `AF_INET`; workspace
