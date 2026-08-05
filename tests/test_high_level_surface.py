@@ -298,9 +298,14 @@ def test_session_probe_disconnected_shape() -> None:
     assert out["hl_tool_names"] == get_hl_catalog_names()
     assert "capabilities" in out
     assert out["capabilities"].get("high_level_mcp_surface") is True
+    # Dual-env keys always present (additive)
+    assert "plugin_workspace_root" in out
+    assert "host_workspace_root" in out
+    assert "workspace_root_mismatch" in out
     if not out["connected"]:
         assert "error" in out
         assert "host" in out and "port" in out
+        assert out["plugin_workspace_root"] is None
 
 
 def test_image_delivery_five_keys() -> None:
@@ -329,6 +334,17 @@ def test_image_delivery_five_keys() -> None:
 
     out = _tool_fn(srv.session_probe)(_Ctx())  # type: ignore[arg-type]
     assert out["image_delivery"]["client_model_visibility"] == "unknown"
+
+
+def test_workspace_root_mismatch_helper() -> None:
+    """Host vs plugin path compare: null short-circuit and equality."""
+    import gimp_mcp_server as srv
+
+    assert srv._workspace_root_mismatch(None, "/a") is None
+    assert srv._workspace_root_mismatch("/a", None) is None
+    assert srv._workspace_root_mismatch(None, None) is None
+    # Same path after normalize
+    assert srv._workspace_root_mismatch("/tmp/ws", "/tmp/ws") is False
 
 
 def test_instructions_prefix_self_contained() -> None:

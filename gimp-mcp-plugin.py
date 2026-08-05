@@ -2485,6 +2485,10 @@ class MCPPlugin(Gimp.PlugIn):
 
             gimp_info = {}
 
+            # Plugin-process workspace root (path jail for open/save/export/checkpoint).
+            # Host MCP env is a separate world — agents read this via session_probe.
+            gimp_info["workspace_root"] = str(self.workspace_root) if self.workspace_root else None
+
             # Basic GIMP version and build information
             try:
                 version_info = {}

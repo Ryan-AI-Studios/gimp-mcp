@@ -1,2 +1,3 @@
 tests/fixtures/** binary
 tests/fixtures/** -text
+scripts/*.sh text eol=lf

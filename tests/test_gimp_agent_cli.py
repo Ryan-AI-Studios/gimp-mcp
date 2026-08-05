@@ -650,6 +650,68 @@ def test_cli_probe_invalid_timeout_exit_2(
     assert body["code"] == ec.CLI_USAGE
 
 
+def test_cli_launch_gui_fail_closed_without_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """launch-gui requires --workspace or GIMP_WORKSPACE_ROOT (fail-closed)."""
+    monkeypatch.delenv(sec.ENV_WORKSPACE, raising=False)
+    monkeypatch.setattr(sec, "workspace_root", lambda: None)
+    code = main(["launch-gui", "--json"])
+    assert code == ec.EXIT_CLI_USAGE
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False
+    assert body["code"] == ec.CLI_USAGE
+    assert sec.ENV_WORKSPACE in body["message"]
+
+
+def test_cli_launch_gui_happy_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """launch-gui sets env and Popen's resolved GUI binary."""
+    fake_gui = tmp_path / "gimp-3.2.exe"
+    fake_gui.write_bytes(b"")
+    monkeypatch.setattr(pathmod, "find_gimp_gui", lambda: fake_gui)
+
+    class _Proc:
+        pid = 4242
+
+    seen: dict[str, Any] = {}
+
+    def _popen(cmd: list[str], env: dict[str, str] | None = None, **_kw: Any) -> _Proc:
+        seen["cmd"] = list(cmd)
+        seen["env"] = dict(env or {})
+        return _Proc()
+
+    monkeypatch.setattr("gimp_agent.cli.subprocess.Popen", _popen)
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    code = main(["launch-gui", "--workspace", str(ws), "--json", "--", "extra.xcf"])
+    assert code == 0
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is True
+    assert body["data"]["pid"] == 4242
+    assert body["data"]["workspace_root"] == str(ws)
+    assert seen["cmd"][0] == str(fake_gui)
+    assert seen["cmd"][-1] == "extra.xcf"
+    assert seen["env"].get(sec.ENV_WORKSPACE) == str(ws)
+
+
+def test_cli_launch_gui_gimp_not_found(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(pathmod, "find_gimp_gui", lambda: None)
+    code = main(["launch-gui", "--workspace", str(tmp_path), "--json"])
+    assert code == ec.EXIT_GIMP_OR_PLUGIN
+    body = json.loads(capsys.readouterr().out)
+    assert body["ok"] is False
+    assert body["code"] == ec.GIMP_NOT_FOUND
+
+
 def test_cli_env_json_without_flag(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
