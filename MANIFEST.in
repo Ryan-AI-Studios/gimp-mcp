@@ -1,0 +1,8 @@
+# Extra non-package files required in the source distribution.
+# gimp-mcp-plugin.py is the GIMP-embedded entry (hyphenated name — not a py-module).
+# It must ship in the sdist so operators can install from source; it is NOT
+# required in the wheel (host package ≠ APPDATA plug-in install path).
+include gimp-mcp-plugin.py
+include CHANGELOG.md
+include SECURITY.md
+include GIMP_MCP_PROTOCOL.md
